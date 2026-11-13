@@ -43,6 +43,8 @@ Partition-independence and the parallel BC solve are in
 ``tests/parallel/ptest_0844_line_cut_parallel.py``; the serial references it
 asserts against are produced here.
 """
+import re
+
 import numpy as np
 import pytest
 
@@ -1033,14 +1035,15 @@ def test_a_target_too_close_under_the_boundary_is_refused(kind):
     A target inside a boundary cell takes that cell's interior corner B. With
     the target at a fraction f of the cell's height above the boundary edge
     the cell is left with that much of its height, and at f = 0.02 its
-    quality is about 0.02: a sliver along the wall, where the fault tip is.
+    quality is 0.03 to 0.045 on these meshes: a sliver along the wall, where
+    the fault tip is.
 
     The target is 0.98 (0.6 W + 0.4 A) + 0.02 B in each cell with boundary
     corners W, A and interior corner B. Asserted: the pull is refused, naming
-    ``min_quality``; with the floor off B goes onto the target, the boundary
-    is bitwise where it was, and the worst cell is below 0.05, which is what
-    the refusal reports. At f = 0.2 the default accepts the pull (the test
-    above).
+    ``min_quality`` and the one interior corner; with the floor off B goes
+    onto the target, the boundary is bitwise where it was, and the worst cell
+    of the mesh is the one the refusal reported, to the three figures it
+    prints. At f = 0.2 the default accepts the pull (the test above).
     """
     from underworld3.utilities.line_cut import (_cell_quality, _cell_vertices,
                                                 _coords)
@@ -1058,13 +1061,17 @@ def test_a_target_too_close_under_the_boundary_is_refused(kind):
         B = corners[~wall[corners]][0]
         t = 0.98 * (0.6 * X[W] + 0.4 * X[A]) + 0.02 * X[B]
 
-        with pytest.raises(ValueError, match="min_quality=0.1"):
+        with pytest.raises(ValueError, match="min_quality=0.1") as refusal:
             pull_vertex_onto(dm, t)
+        assert "None of the 1 interior corner(s)" in str(refusal.value)
+        reported = float(re.search(r"\(worst ([^;]+);", str(refusal.value)).group(1))
 
         Xo = _coords(pull_vertex_onto(dm, t, min_quality=None))
         assert np.linalg.norm(Xo[B] - t) < 1e-12
         assert np.array_equal(Xo[wall], X[wall])
-        assert 0.0 < _cell_quality(Xo, cells).min() < 0.05
+        worst = _cell_quality(Xo, cells).min()
+        assert 0.0 < worst < 0.1
+        assert reported == pytest.approx(worst, rel=6e-3)
 
 
 def test_a_target_outside_the_mesh_takes_the_nearest_vertex_anywhere():
@@ -1172,3 +1179,145 @@ def test_a_boundary_target_is_placed_where_every_vertex_is_on_the_boundary():
     assert [tuple(x) for x in _coords(dm)[moved]] == [(1.0, 0.0)]
     assert [tuple(x) for x in _coords(out)[moved]] == [(0.7, 0.0)]
     assert cell_areas(out).sum() == pytest.approx(2.0, rel=1e-13)
+
+
+def _grid_of_eighteen_triangles(clockwise=False, wall_vertex_at=2.0):
+    """The square [0, 3] x [0, 3] as eighteen triangles: each unit square is
+    cut along its rising diagonal.
+
+    The cell (0, 1), (1, 1), (1, 2) has one boundary corner and two interior
+    ones. ``wall_vertex_at`` slides the boundary vertex (0, 2) along its wall:
+    at 1.02 the cell (0, 1), (1, 2), (0, 1.02) is a needle of quality 0.0175.
+    ``clockwise`` lists every cell the other way round.
+    """
+    from petsc4py import PETSc
+
+    def row(i, j):
+        return 4 * j + i
+
+    vertices = np.array([[i, j] for j in range(4) for i in range(4)], dtype=float)
+    vertices[row(0, 2)] = (0.0, wall_vertex_at)
+    cells = []
+    for j in range(3):
+        for i in range(3):
+            cells.append([row(i, j), row(i + 1, j), row(i + 1, j + 1)])
+            cells.append([row(i, j), row(i + 1, j + 1), row(i, j + 1)])
+    cells = np.array(cells, dtype=np.int32)
+    if clockwise:
+        cells = cells[:, ::-1].copy()
+    return PETSc.DMPlex().createFromCellList(2, cells, vertices,
+                                             comm=PETSc.COMM_SELF)
+
+
+def _moves(dm, out):
+    """What a pull moved: ``{where it was: where it is}``, and the quality of
+    the worst cell it left (1 equilateral), whichever way the cells are wound."""
+    from underworld3.utilities.line_cut import (_cell_quality, _cell_vertices,
+                                                _coords)
+
+    X, Y = _coords(dm), _coords(out)
+    moved = np.flatnonzero((Y != X).any(axis=1))
+    worst = np.abs(_cell_quality(Y, _cell_vertices(dm))).min()
+    return {tuple(X[m]): tuple(Y[m]) for m in moved}, worst
+
+
+@pytest.mark.parametrize("clockwise", [False, True])
+def test_the_next_interior_corner_takes_a_target_the_nearest_would_flatten(clockwise):
+    """A cell with two interior corners offers both before the pull is refused.
+
+    (0.3, 1.28) is in the cell (0, 1), (1, 1), (1, 2), nearest to its boundary
+    corner (0, 1) and 0.014 from the edge that runs from there to (1, 2). The
+    nearer interior corner is (1, 1): put on the target it leaves that cell
+    with a quality of 0.0218. The other, (1, 2), leaves every cell at 0.558 or
+    better. The pull was refused on the first, with a message about the
+    domain boundary, for a target 0.3 of a cell from it.
+
+    Asserted: (1, 2) is on the target and nothing else moved; with the floor
+    off the nearer corner is taken and the cell is at 0.0218. The same on a
+    mesh whose cells are listed clockwise, where a quality reads negative
+    before the pull and after it.
+    """
+    dm = _grid_of_eighteen_triangles(clockwise)
+    target = (0.3, 1.28)
+
+    moved, worst = _moves(dm, pull_vertex_onto(dm, np.array(target)))
+    assert moved == {(1.0, 2.0): target}
+    assert worst == pytest.approx(0.55847, abs=1e-5)
+
+    moved, worst = _moves(dm, pull_vertex_onto(dm, np.array(target),
+                                               min_quality=None))
+    assert moved == {(1.0, 1.0): target}
+    assert worst == pytest.approx(0.02181, abs=1e-5)
+
+
+@pytest.mark.parametrize("clockwise", [False, True])
+def test_a_target_no_interior_corner_can_take_is_refused_with_their_count(clockwise):
+    """Refused only when every interior corner of the cell has been tried.
+
+    (0.03, 1.02) is beside the boundary corner (0, 1) of the cell (0, 1),
+    (1, 1), (1, 2). Either interior corner put there leaves a cell along the
+    wall: 0.00888 with (1, 1), 0.0357 with (1, 2). The refusal names both
+    corners tried and reports the nearest.
+    """
+    dm = _grid_of_eighteen_triangles(clockwise)
+    with pytest.raises(ValueError, match="min_quality=0.1") as refusal:
+        pull_vertex_onto(dm, np.array([0.03, 1.02]))
+    message = str(refusal.value)
+    assert "None of the 2 interior corner(s)" in message
+    assert "the nearest, at (1.0, 1.0), would leave 2 cell(s)" in message
+    assert "(worst 0.00888;" in message
+
+
+def test_a_cell_already_below_the_floor_does_not_refuse_a_pull_that_improves_it():
+    """The floor is the lower of ``min_quality`` and the cell's present quality.
+
+    With the boundary vertex (0, 2) slid down to (0, 1.02) the cell (0, 1),
+    (1, 2), (0, 1.02) is a needle of quality 0.0175 before anything is asked.
+    The target (0.3, 1.28) takes (1, 2), as on the plain grid, and that brings
+    the needle to 0.0637: below 0.1, and better than it was. A mesh that has
+    been cut once carries such cells, and a floor of 0.1 on them would refuse
+    every pull beside the first fault.
+    """
+    from underworld3.utilities.line_cut import _cell_quality, _cell_vertices, _coords
+
+    dm = _grid_of_eighteen_triangles(wall_vertex_at=1.02)
+    assert _cell_quality(_coords(dm), _cell_vertices(dm)).min() == pytest.approx(
+        0.01749, abs=1e-5)
+
+    target = (0.3, 1.28)
+    moved, worst = _moves(dm, pull_vertex_onto(dm, np.array(target)))
+    assert moved == {(1.0, 2.0): target}
+    assert worst == pytest.approx(0.06368, abs=1e-5)
+
+
+def test_a_later_target_is_tested_on_the_mesh_the_earlier_ones_left():
+    """The quality test reads the mesh as the call has moved it so far.
+
+    Alone, (0.3, 1.28) cannot take (1, 1): the cell (0, 1), (1, 1), (1, 2)
+    would be left at 0.0218, so (1, 2) takes it (the test above). Here
+    (0.8, 2.4) comes first and takes (1, 2), its nearest corner, which opens
+    that cell out; (1, 1) on the second target then leaves it at 0.159, and
+    takes it. Tested against the mesh as given, the second target would refuse
+    (1, 1) and take (1, 2) from the first, which is left with no vertex.
+
+    Asserted: each target carries its own vertex.
+    """
+    dm = _grid_of_eighteen_triangles()
+    first, second = (0.8, 2.4), (0.3, 1.28)
+    moved, worst = _moves(dm, pull_vertex_onto(dm, np.array([first, second])))
+    assert moved == {(1.0, 2.0): first, (1.0, 1.0): second}
+    assert worst == pytest.approx(0.15891, abs=1e-5)
+
+
+@pytest.mark.parametrize("vertex", [(0.0, 1.0), (3.0, 3.0), (1.0, 1.0)])
+def test_a_target_on_a_vertex_moves_nothing(vertex):
+    """A target that is already a vertex is placed, wherever the vertex is.
+
+    A vertex is the smallest face holding such a target. On a wall, or at a
+    corner of the box, that face is on the domain boundary, so its one vertex
+    is the candidate and the boundary rule has nothing to refuse.
+    """
+    dm = _grid_of_eighteen_triangles()
+    moved, worst = _moves(dm, pull_vertex_onto(dm, np.array(vertex)))
+    assert moved == {}
+    assert worst == pytest.approx(0.86603, abs=1e-5)

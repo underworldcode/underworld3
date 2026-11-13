@@ -554,8 +554,8 @@ def test_a_target_too_close_under_the_wall_is_refused_on_every_rank():
     """The quality refusal is collective.
 
     (5/12 + 0.004, 1 - 0.002) is inside a top-wall cell of the regular 1/12
-    box, 0.024 of its height below the wall. The interior corner that would
-    take it leaves that cell with a quality near 0.03, below the floor of 0.1.
+    box, 0.024 of its height below the wall. Its one interior corner, put on
+    the target, leaves two cells below the floor of 0.1, the worse at 0.044.
     The cells around that corner can lie on several ranks; every rank raises.
     """
     from underworld3.utilities.line_cut import pull_vertex_onto

@@ -983,10 +983,13 @@ def pull_vertex_onto(dm, targets, min_quality=0.1):
     min_quality : float or None
         Floor on the quality (1 equilateral, 0 flat) of the cells around an
         interior vertex that is taken IN PLACE OF a nearer boundary vertex.
-        Such a pull is refused when it would invert a cell or leave one below
-        the floor (or below its present quality, when that is already lower).
-        The nearest corner itself is taken with no such test, as it always
-        was. ``None`` disables the test.
+        Such a corner is passed over when it would invert a cell or leave one
+        below the floor (or below its present quality, when that is already
+        lower), and the next nearest interior corner of the cell is tried;
+        the call raises when none is left. The floor is not a floor on the
+        mesh returned: the nearest corner itself is taken with no such test,
+        as it always was, and so is an interior corner exactly as near as
+        the boundary corner. ``None`` disables the test.
 
     Returns
     -------
@@ -997,8 +1000,8 @@ def pull_vertex_onto(dm, targets, min_quality=0.1):
     ------
     ValueError
         A target inside the mesh that no vertex can be put on: every corner
-        of the cell or edge holding it is on the domain boundary, or the
-        interior corner that would take it would ruin a cell (see
+        of the cell or edge holding it is on the domain boundary, or each
+        interior corner that could take it would ruin a cell (see
         ``min_quality``). Raised on every rank.
 
     Notes
@@ -1027,13 +1030,25 @@ def pull_vertex_onto(dm, targets, min_quality=0.1):
 
     An interior corner pulled close under the boundary leaves a thin cell
     between itself and the boundary — as thin as the target is close; on a
-    1/12 box the quality is about 1.8 times the target's height above the
-    boundary edge as a fraction of the cell's. ``min_quality`` is the limit:
-    at the default 0.1 a target closer than about a twentieth of a cell
-    height is refused. On a curved boundary the boundary is the mesh's own chords,
-    so a point of the true curve that falls inside a chord (on a concave
-    wall) is an interior target a sagitta from the boundary, and is refused
-    on the same ground; put such a point on the chord.
+    1/12 box and on an annulus of cell size 0.1 the quality is 1.1 to 2.3
+    times the target's height above the boundary edge as a fraction of the
+    cell's. ``min_quality`` is the limit: at the default 0.1 a target in a
+    cell with an edge on the boundary is refused when it is closer than a
+    twentieth to a tenth of the cell's height (0.044 to 0.088 measured on
+    those meshes). In a cell that touches the boundary at one corner the
+    two interior corners are tried in turn, and the target is refused only
+    close beside that corner (within 0.16 of the shorter edge from it, on
+    the same meshes). On a curved boundary the boundary is the
+    mesh's own chords, so a point of the true curve that falls inside a
+    chord (on a concave wall) is an interior target a sagitta from the
+    boundary. It is refused on the same ground where the sagitta is below
+    that limit (cell size 0.15 and finer on an inner radius of 0.5; at 0.2
+    and coarser the interior corner takes it, at a quality of 0.11 to
+    0.15); put such a point on the chord.
+
+    Where a split fault has to end closer under the boundary than this, a
+    welded fault zone with a transverse-isotropic rheology carries it with
+    no vertex at the tip.
 
     Two cases still move a boundary vertex off the boundary. A target OUTSIDE
     the mesh takes the nearest vertex anywhere, which is usually a boundary
@@ -1045,7 +1060,9 @@ def pull_vertex_onto(dm, targets, min_quality=0.1):
     then takes it from the earlier, which is left with no vertex (issue #559).
     The boundary rule makes this easier to reach beside a boundary: two targets
     in neighbouring boundary cells that share their one interior corner collide
-    at one cell spacing. Keep targets further apart than the cells they sit in.
+    at one cell spacing, and a target whose nearer interior corner is passed
+    over takes the further one, which an earlier or a later target may hold.
+    Keep targets further apart than the cells they sit in.
 
     The choice is made from the coordinates alone and reduced globally, so every
     rank moves the same vertex: a rank-local nearest-vertex search picks a
@@ -1136,9 +1153,9 @@ def pull_vertex_onto(dm, targets, min_quality=0.1):
                 local = (1, float(d.min()), *X[face[int(d.argmin())]], 0)
             else:
                 local = (2, np.inf, *([np.inf] * cdim), 0)
-            reduced = uw.mpi.comm.allreduce(local, op=MPI.MIN)
-            flag, distance, stands_in = reduced[0], reduced[1], reduced[-1]
-            where = np.array(reduced[2:-1])
+            flag, distance, *where, stands_in = uw.mpi.comm.allreduce(
+                local, op=MPI.MIN)
+            where = np.array(where)
             if refused and flag != 0:
                 # every interior corner of the face has been set aside
                 corner, n_ruined, worst = refused[0]
@@ -1173,7 +1190,9 @@ def pull_vertex_onto(dm, targets, min_quality=0.1):
             # ghost here and an owned point there, and both copies have to end
             # up in the same place without a star-forest exchange.
             hit = np.flatnonzero(np.linalg.norm(X - where, axis=1) < 1e-12 * scale)
-            if not (flag == 0 and stands_in and min_quality is not None):
+            if min_quality is None:
+                break
+            if not (flag == 0 and stands_in):
                 break
             # The interior corner comes from further away than the boundary
             # corner it stands in for, and can land close under the boundary:

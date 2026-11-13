@@ -183,12 +183,38 @@ on a boundary edge takes one of that edge's ends; a target inside the mesh
 takes an interior corner of the cell holding it, however close a boundary
 corner is, so the pull leaves a tip under a wall a tip and does not dent the
 wall. `pull_vertex_onto` raises `ValueError` on every rank when the cell holding
-an interior target has no interior corner, and when the interior corner would
-leave a cell below `min_quality` (0.1 by default: a target closer to the
-boundary than about a twentieth of the cell's height). On a curved boundary the
-boundary is the mesh's own chords, so a point of the true curve on a concave
-wall is an interior target a sagitta from the boundary and is refused; put it
-on the chord.
+an interior target has no interior corner, and when each interior corner it has
+would leave a cell below `min_quality` (0.1 by default). An interior corner
+that fails is passed over and the next nearest is tried, so a cell that touches
+the boundary at one corner refuses a target only close beside that corner. A
+cell with an edge on the boundary has one interior corner, and refuses a target
+closer to that edge than a twentieth to a tenth of the cell's height (0.044 to
+0.088 measured on a 1/12 box and on an annulus of cell size 0.1).
+
+`min_quality` applies to an interior corner taken in place of a nearer boundary
+corner, and to nothing else. A target whose nearest corner is interior takes
+that corner untested, as before, so the floor is not a floor on the mesh
+returned: on a regular 1/12 box, 14 of 2822 accepted pulls of random targets in
+cells touching the boundary left a cell below 0.1 (the worst at 0.02), each by
+the nearest corner. An irregular 1/12 box and an annulus of cell size 0.1 gave
+none.
+
+On a curved boundary the boundary is the mesh's own chords, so a point of the
+true curve on a concave wall is an interior target a sagitta from the boundary.
+It is refused where the sagitta is below the limit above (cell size 0.15 and
+finer on an inner radius of 0.5) and takes the interior corner on a coarser
+mesh; put it on the chord.
+
+Two targets of one call can choose the same vertex, and the later one then
+takes it from the earlier, which is left with no vertex and no error (issue
+#559). The boundary rule makes that easier to reach beside a boundary: two
+targets in neighbouring boundary cells that share their one interior corner
+collide at one cell spacing. Keep the targets of one call further apart than
+the cells they sit in.
+
+A split fault that has to end closer under the boundary than the pull allows
+can be a welded fault zone with a transverse-isotropic rheology there, which
+needs no vertex at the tip.
 
 This is the pull only. The cut's own snap (`snap_frac`) can still move a
 boundary vertex onto the line (issue #1089), and a box corner still slides
