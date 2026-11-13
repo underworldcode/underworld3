@@ -231,7 +231,7 @@ def test_a_moved_level_gives_its_nodes_where_it_was_built(degree, continuous, di
     """Bit for bit. The node-cloud builder is not continuous in the nodes it is
     given: one on a face of its triangulation is read in either neighbour, and
     nodes 2e-16 from the built ones changed a weight of a 3-D transfer by
-    1.4e-4 on 2, 4 and 8 ranks."""
+    1.4e-4 on 2 and 4 ranks and by 1.1e-4 on 8."""
     mesh = uw.meshing.UnstructuredSimplexBox(
         minCoords=(0,) * dim, maxCoords=(1,) * dim, cellSize=1 / 6 if dim == 2 else 1 / 3,
         regular=False, qdegree=3, refinement=1)

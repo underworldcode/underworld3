@@ -527,7 +527,7 @@ def provenance_transfer_parallel(coarse, fine, pre, degree, continuous,
     ``coarse``. That is its own position unless ``pre`` has moved since it was
     made (:func:`reference_vertices`); then the node is taken back through its
     cell of ``pre``, which is affine, so the pair has the transfer it had
-    before the move to round-off (#1091).
+    before the move (#1091).
     """
     m4 = comm.tompi4py()
     cn = np.asarray(coarse._cell_node_indices(degree, continuous))

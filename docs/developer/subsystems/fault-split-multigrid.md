@@ -235,20 +235,18 @@ the move and the positions are the built ones bit for bit, at any degree and for
 discontinuous space as well. The node-cloud builders need that. They are not
 continuous in the nodes they are given: a node on a face of the triangulation is
 read in either neighbour, and with the positions recovered only to round-off one
-weight of a pair of tetrahedral levels changed by $1.4\times10^{-4}$ on 2, 4 and 8
-ranks.
-Those positions are the fine side of the pair on
-three routes: the node-cloud builders, the cell-located transfer between split
-levels, and the embedding of a native refine pair. The native pair identifies a
-fine vertex with a coarse vertex or an edge midpoint by exact equality of
-coordinates, so it reads those vertices themselves; on the moved coordinates it
-found no match and the pair fell to the node-cloud builder. In 3-D the embedding
-carries the wrong entries of #449, and a moved pair now carries them as the pair
-at rest does. The parallel builders are handed the same positions. The recorded
-route between add-on levels on several ranks (`provenance_transfer_parallel`)
-locates nothing and takes each node back through its own cell, to round-off: with
-the nodes recovered that way no 2-D transfer changed by more than
-$8.5\times10^{-13}$ on 1 to 8 ranks. Only simplex levels are kept: a quadrilateral
+weight of a pair of tetrahedral levels changed by $1.4\times10^{-4}$ on 2 and 4
+ranks and by $1.1\times10^{-4}$ on 8. Those positions are the fine side of the
+pair on three routes: the node-cloud builders, the cell-located transfer between
+split levels, and the embedding of a native refine pair. The native pair
+identifies a fine vertex with a coarse vertex or an edge midpoint by exact
+equality of coordinates, so it reads those vertices themselves; on the moved
+coordinates it found no match and the pair fell to the node-cloud builder. In 3-D
+the embedding carries the wrong entries of #449, and a moved pair now carries
+them as the pair at rest does. The parallel builders are handed the same
+positions. The recorded route between add-on levels on several ranks
+(`provenance_transfer_parallel`) is not: it locates nothing and takes each node
+back through its own cell (#1091). Only simplex levels are kept: a quadrilateral
 or hexahedral level is read on its moved coordinates, and its transfers are
 rebuilt from them.
 
@@ -261,7 +259,7 @@ transfers after a move equal those before it entry for entry, and the same solve
 takes 6 iterations after each of three moves, as a solver built on the moved mesh
 does. On 2 to 5 ranks it took 6 at rest and 7 after each move.
 `tests/parallel/test_1176_custom_mg_transfer_after_a_move_parallel.py` holds those
-counts and is tier C until it has been run with the nodes recovered to the bit.
+counts.
 
 The kept transfers do not lower the count on every move. Under a mover that
 shifts interior nodes by one to four cell widths while the coarse levels still
@@ -293,8 +291,9 @@ move dropped it and the solve took 15, with the transfers unchanged, and the sam
 with them rebuilt. The patch comes back when the hierarchy is made again from the
 moved fault: re-refine the base from it and register the new levels
 (`set_custom_fmg`). Registering the old coarse levels again does not bring it
-back. On a level with a `fac_zone` registered the blocks of the zone are kept
-across the move, and only the structural rows of the split fault are dropped.
+back. On a level with a `fac_zone` registered the rows of the zone stay in the
+patch across the move and are cut into blocks again from the moved coordinates;
+a split level then loses only the structural rows of its fault.
 
 This is a mode for movers. A change of topology (an adapt, a remesh, a fault
 placed or moved) makes a new mesh, whose as-built geometry is its own, and its

@@ -3,21 +3,23 @@ several ranks.
 
 The serial half of the record is tests/test_1176_custom_mg_transfer_after_a_move.py.
 At more than one rank a native refine pair goes to the node-cloud builder and
-a split level to the partitioned cell-located transfer or to the recorded
-parent relation, so the routes here are not those of the serial file. The
-first two are handed a moved level on the nodes it was built with, bit for
-bit, and their transfers after a move are those before it entry for entry.
-The recorded route takes a node back through its own cell, to round-off.
+a pair of split levels to the partitioned cell-located transfer, so the routes
+here are not those of the serial file. Both are handed a moved level on the
+nodes it was built with, bit for bit, and their transfers after a move are
+those before it entry for entry.
 
 The node-cloud builder is not continuous in its nodes. With the built nodes
 recovered only to round-off (2e-16), one weight of the tetrahedral pair below
 changed by 1.4e-4 at 2 and 4 ranks and by 1.1e-4 at 8.
 
-The iteration counts were measured on one Linux host, with the nodes
-recovered to round-off, and are asserted at the rank counts they were
-measured on. Another rank count asserts the transfers only.
+The iteration counts were measured on 2026-11-13 on a 96-thread Linux
+workstation (Intel Xeon Gold 6240R, MPICH) at 2, 3, 4, 5 and 8 ranks, with the
+built nodes recovered to round-off; the tetrahedral counts at 8 ranks only.
+They are asserted at the rank counts they were measured on. Another rank count
+asserts the transfers only.
 
-Tier C: the file has not been run since the nodes come back to the bit.
+Tier C: the counts and the unchanged transfers have not been measured with the
+nodes read bit for bit.
 
     mpirun -n 2 python -m pytest --with-mpi tests/parallel/test_1176_custom_mg_transfer_after_a_move_parallel.py
 """
@@ -164,8 +166,8 @@ def test_a_split_level_keeps_the_transfers_and_the_velocity_iterations():
         s.solve()
         assert s.snes.getConvergedReason() > 0
         counts.append(max(s._rotated_freeslip_info["vel_its_last"]))
-    # the finest pair may be a recorded one, whose nodes go back to round-off
-    assert _largest_change(before, _transfers(s)) < 1.0e-10
+    # only the finest level moves, and its pair is one of split levels
+    assert _largest_change(before, _transfers(s)) == 0
     if uw.mpi.size in SPLIT_COUNTS:
         moved, built_on_it = SPLIT_COUNTS[uw.mpi.size]
         assert counts == moved
@@ -174,9 +176,9 @@ def test_a_split_level_keeps_the_transfers_and_the_velocity_iterations():
         assert max(built_after._rotated_freeslip_info["vel_its_last"]) == built_on_it
 
 
-# Iterations at rest and after each of two moves, by rank count. The pair
-# rebuilt from the moved coordinates takes as many; the transfers tell the two
-# apart.
+# Iterations at rest and after each of two moves, measured at 8 ranks only.
+# The pair rebuilt from the moved coordinates takes as many; the transfers
+# tell the two apart.
 TET_COUNTS = {8: [3, 3, 3]}
 
 
