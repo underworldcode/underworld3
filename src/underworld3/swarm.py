@@ -2107,7 +2107,16 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
         Writing the magnitude straight into ``.data`` stored a dimensional
         number as non-dimensional (#993).
         """
-        self.array[...] = array_value
+        view = self.array
+        shape = tuple(np.shape(view))
+        given = tuple(np.shape(array_value))
+        if (hasattr(array_value, "reshape") and given != shape and given[:1] == shape[:1]
+                and tuple(d for d in given[1:] if d != 1) == tuple(d for d in shape[1:] if d != 1)):
+            # Shapes that differ only by axes of length one, (N, 2, 1) for a
+            # vector viewed as (N, 1, 2) say, hold the entries in the same order;
+            # the old setter accepted them, so this one does too.
+            array_value = array_value.reshape(shape)
+        view[...] = array_value
 
     @property
     def sym(self):
