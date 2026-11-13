@@ -12,11 +12,10 @@ second. Three places took one for the other:
   called before the first solve, split the residual into fields by the
   variables' mesh positions.
 
-The two residual routines now split a vector with the index sets the solve
-keeps. Those describe one DM's section, and ``_reset()``, which drops the DM,
-left them behind: a solver that was used, reset and then given constraint
-multipliers copied its solution back with the old sets, and the velocity came
-back wrong with no error.
+The two residual routines split a vector with the index sets the solve keeps.
+Those describe one DM's section, so the build after a ``_reset()`` must make its
+own: with the sets of the DM that was dropped, a solver that is used, reset and
+then given constraint multipliers copies its solution back wrong, with no error.
 
 Power: every case runs for three creation orders and asserts the positions it
 relies on. With the pressure first, the velocity's walls must not be read as
@@ -145,8 +144,9 @@ def test_the_volume_residual_before_a_solve_is_split_by_solver_field(order):
     assert (rows["velocity"].size, rows["pressure"].size) == (VELOCITY_ENTRIES, PRESSURE_ENTRIES)
     momentum = float(np.linalg.norm(rows["velocity"]))
     assert abs(momentum - BODY_FORCE_RESIDUAL) <= 1.0e-6 * BODY_FORCE_RESIDUAL
-    # each row sits at its variable's own node: the load is (0, cos(pi x)), and
-    # the first moment in x of cos(pi x) over the box is -2/pi^2
+    # each row sits at a node with its own x: the load is (0, cos(pi x)), the
+    # residual is minus the load, and the first moment in x of cos(pi x) over the
+    # box is -2/pi^2. Rows exchanged between nodes that share an x would pass.
     at_nodes = rows["velocity"].reshape(-1, 2)
     assert float(np.abs(at_nodes[:, 0]).max()) == 0.0
     assert abs(float(at_nodes[:, 1] @ v.coords[:, 0]) - FIRST_MOMENT) <= 1.0e-6 * FIRST_MOMENT
@@ -208,7 +208,7 @@ def test_the_multiplier_rows_before_a_solve_are_split_by_solver_field(order):
 @pytest.mark.tier_b
 @pytest.mark.parametrize("first_use", ("a residual before any solve", "a solve"))
 def test_constraints_added_after_a_reset_get_their_own_index_sets(first_use):
-    """``_reset()`` is private, and three of the examples call it between solves."""
+    """``_reset()`` is private, and examples call it between solves."""
     stokes, v = _stokes(("v", "p"), uw.systems.Stokes_Constrained)
     stokes.add_essential_bc((0.0, 0.0), "Bottom")
     stokes.add_essential_bc((0.0, 0.0), "Top")
