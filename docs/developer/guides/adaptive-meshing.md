@@ -183,10 +183,22 @@ red-herring symptoms of the eval bug. Always confirm a CLEAN BUILD first
 own cause of holes.
 
 ### 6. Stokes free-slip
+**Project ruling: prefer rotated strong free-slip**,
+`stokes.add_rotated_freeslip_bc(0, "Upper")`. It holds v·n=0 to machine precision
+on a curved or moved boundary, has no penalty to tune, and its reaction is the
+wall normal traction (see `docs/developer/subsystems/rotated-freeslip.md`). Keep
+`add_nitsche_bc` for a condition that must change during the run. The notes below
+record what the adaptive-convection runs used and found.
+
+**Dated caution (2026-11):** every Nitsche observation in this section, in §8 and
+in the failure table was made before #1145 corrected the Nitsche condition, whose
+continuity-equation term was not assembled (#1072). None has been rerun on the
+corrected code, so treat the γ values and the diagnoses as unverified.
+
 Penalty (`add_natural_bc(KFS·v·n·n)`, KFS≈1e6) or Nitsche γ=10 both work on a
 UNIFORM mesh. Nitsche preferred for sharp fault corners. Do NOT diagnose free-slip
-with nodal v·n: Nitsche enforces v·n=0 weakly, so nodal v·n is large even when
-correct — use vrms (kinetic energy). (An earlier "warm-restart × Nitsche → blow-up,
+with nodal v·n: Nitsche enforces v·n=0 weakly, so nodal v·n is not zero even when
+the solve is correct — use vrms (kinetic energy). (An earlier "warm-restart × Nitsche → blow-up,
 use cold restart" diagnosis was WRONG / confounded by the §5 eval bug + a stale build.)
 
 **On an ADAPTIVE mesh, Nitsche free-slip γ=10 is TOO SOFT → intermittent vrms
@@ -224,7 +236,8 @@ time faster (needed to develop convection in stiff stagnant-lid regimes).
 - **TI / anisotropic** weak fault (`TransverseIsotropicFlowModel`:
   `shear_viscosity_0=η_FK`, `shear_viscosity_1=η_weak`, `director`=fault normal):
   keep the **default newtonls** (NOT ksponly — ksponly converges to the WRONG
-  answer); use **penalty** free-slip (Nitsche trips the anisotropic-Jacobian bug);
+  answer); use **penalty** free-slip (Nitsche trips the anisotropic-Jacobian bug;
+  observed before #1145, not re-verified);
   **GAMG** (FMG ~7× slower). Measured on the gmsh-resolved + one-sided base
   (Ra1e6 Δη1e3): ran clean to t=0.06, folded=0, vrms→20, **~10×** the isotropic
   cost per step (GAMG eats the 1000× anisotropic contrast — well under the feared
@@ -337,8 +350,8 @@ pass gaussian), geometric blend in `create_solvers`; `render_fields.py` light ma
 | Refinement drifts ABOVE the fault / "repels", deep fault starved | fault density fused by PRODUCT with ρ_T → thermal BL out-competes the fault near the surface | `ρ = max(ρ_T, fault_ρ)`; `amp > ρ_T` (~25); or one-sided `fault_metric_side`; +`fault_wedge` |
 | Refinement on both flanks but you want one side | symmetric (unsigned-distance) metric | signed `dfac` + `fault_metric_side`/`fault_rheology_side` tanh gate (`both=upper` = physical) |
 | TI fault solve: ksponly gives wrong answer | ksponly skips the Picard the inexact GAMG inner solve needs | keep default newtonls; penalty free-slip; GAMG (~10× isotropic cost, fine) |
-| free-slip ADAPTIVE: vrms spikes at adapt steps (e.g. 144→8887→144), T stays bounded | Nitsche γ=10 too soft on the distorted near-boundary cells the pinned-top+interior-refine creates (under-enforcement) | **Nitsche γ=100** (not 10); OR don't pin the boundary (tangential-slip `slip_surfaces=True`). h-scaling (local vs global) is moot here |
-| free-SURFACE held-lid: spurious one-step surface "mountain" / vhmax spike | global `h=get_min_radius` drifts below the surface cell as interior refines → Nitsche OVER-stiff | LOCAL per-cell h: `add_nitsche_bc(local_h=True)` (default, PR #275) = `mesh.cell_size()` |
+| free-slip ADAPTIVE: vrms spikes at adapt steps (e.g. 144→8887→144), T stays bounded | Nitsche γ=10 too soft on the distorted near-boundary cells the pinned-top+interior-refine creates (under-enforcement) | **Nitsche γ=100** (not 10); OR don't pin the boundary (tangential-slip `slip_surfaces=True`). h-scaling (local vs global) is moot here. Diagnosed before #1145 (#1072), not re-verified; rotated free-slip has no γ |
+| free-SURFACE held-lid: spurious one-step surface "mountain" / vhmax spike | global `h=get_min_radius` drifts below the surface cell as interior refines → Nitsche OVER-stiff | LOCAL per-cell h: `add_nitsche_bc(local_h=True)` (default, PR #275) = `mesh.cell_size()`. Diagnosed before #1145 (#1072), not re-verified |
 
 **Diagnose by:** vrms (KE), Nu (`BdIntegral` surface flux), fault/bulk NN-spacing
 RATIO (cKDTree), folded-element count + min cell area. Compare runs **at matched
@@ -391,7 +404,7 @@ Key choices, verified:
   onset vs a resolved arbiter — dt×1.5 recovers it). Use small dt_mult for faithful
   transients, large to reach quasi-steady fast.
 - **`--freeslip penalty`** (default) — REQUIRED for TI (Nitsche trips the
-  anisotropic-Jacobian bug). It's the raw velocity penalty `kfs·(v·n)n`.
+  anisotropic-Jacobian bug; observed before #1145, not re-verified). It's the raw velocity penalty `kfs·(v·n)n`.
 - Fault: `--fault-base-smin` (gmsh resolve), `--metric-combine max` +
   `--fault-refine-amp 25` (keep refinement ON the fault), `--fault-*-side` (one-sided),
   `--rheology ti` (real fault). Drop the fault flags for the no-fault control.
