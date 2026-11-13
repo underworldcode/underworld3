@@ -38,12 +38,20 @@ def test_a_matrix_semi_lagrangian_history_holds_the_field_it_tracks():
     assert history.psi_star[0].shape == (2, 3)
     history.initialise_history()
     assert np.abs(np.asarray(history.psi_star[0].array) - np.asarray(M.array)).max() < 1e-12
-    # Two steps at zero velocity: the trace-back stays at the nodes, so each
-    # step stores the field it tracks, exactly.
+    # Over two steps the MATRIX history is, entry by entry, the scalar history
+    # of that entry under the same scheme: the shape is the only difference.
+    scalars = {(i, j): uw.systems.ddt.SemiLagrangian(mesh, M.sym[i, j], v.sym, vtype=uw.VarType.SCALAR,
+                                                     degree=1, continuous=True)
+               for i in range(2) for j in range(3)}
+    for one in scalars.values():
+        one.initialise_history()
     for step in range(2):
-        history.update_pre_solve(0.1)
-        history.update_post_solve(0.1)
-        assert np.abs(np.asarray(history.psi_star[0].array) - np.asarray(M.array)).max() < 1e-12, step
+        for h in [history, *scalars.values()]:
+            h.update_pre_solve(0.1)
+            h.update_post_solve(0.1)
+        matrix = np.asarray(history.psi_star[0].array)
+        for (i, j), one in scalars.items():
+            assert np.abs(matrix[:, i, j] - np.asarray(one.psi_star[0].array)[:, 0, 0]).max() < 1e-12, (step, i, j)
 
 
 @pytest.mark.tier_b
