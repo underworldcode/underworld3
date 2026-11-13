@@ -5188,6 +5188,45 @@ class SolverBaseClass(uw_object):
         else:
             raise TypeError("Unsupported BC 'components' argument")
 
+        # The value holds one entry per field component, the free ones None:
+        # a component named by `components` must have its entry. A shorter
+        # value (the deprecated `components=` form with only the named values,
+        # e.g. add_dirichlet_bc(0.05, "Left", 1)) prescribed garbage on the
+        # wall: the generated function writes slot 0 only and PETSc reads the
+        # constrained slot, never written (#1129). Refused here, for essential
+        # and natural conditions alike, before anything is recorded.
+        n_entries = len(conds)
+        missing = sorted({int(c) for c in components if int(c) >= n_entries})
+        if missing:
+            # An example only where it follows from the call as written: one
+            # entry per named component, each put at its own component of the
+            # field. Anything else (more names than entries, a name repeated, a
+            # component the field does not have) has no single meaning, and a
+            # guessed example could free a constrained component, move a value
+            # to another, or name nothing at all and be accepted.
+            named = [int(c) for c in components]
+            if f_id == 0:
+                field_var = self.Unknowns.u
+            elif f_id == 1:
+                field_var = getattr(self.Unknowns, "p", None)
+            else:
+                field_var = None
+            n_field = getattr(field_var, "num_components", None)
+            example = ""
+            if (n_field is not None and n_entries == len(named)
+                    and len(set(named)) == len(named)
+                    and min(named) >= 0 and max(named) < n_field):
+                full = ["None"] * (max(named) + 1)
+                for c, value in zip(named, list(conds)):
+                    full[c] = repr(value)
+                example = f" (e.g. ({', '.join(full)}))"
+            raise ValueError(
+                f"add_condition: the value has {n_entries} entr"
+                f"{'y' if n_entries == 1 else 'ies'} but names component "
+                f"{', '.join(str(c) for c in missing)}, which has none. Give one "
+                f"entry per field component, None for the free ones{example}, "
+                f"rather than a short value with components=.")
+
         # ======================================================================
         # Apply non-dimensional scaling to BC values if ND is enabled
         # IMPORTANT: Only scale numeric values (floats, UWQuantity), NOT symbolic
