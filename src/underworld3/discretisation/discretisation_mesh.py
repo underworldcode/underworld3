@@ -4345,6 +4345,54 @@ class Mesh(Stateful, uw_object):
             self._bounding_surfaces = {}
         return self._bounding_surfaces
 
+    def analytic_surface(self, label):
+        """The exact circle, sphere or plane this mesh declares for boundary ``label``.
+
+        A method that uses an analytic shortcut on a wall (its exact radius and
+        centre, or the plane it lies in) reads it here, and must not take the
+        geometry from its caller. The registration is the declaration: the
+        constructors of the annulus, shell and box meshes register their walls,
+        and :meth:`register_tangent_slip_provider` registers others. Nothing is
+        measured. Operations that write coordinates either keep the wall on
+        the declared surface by construction (the movers restore sliding nodes
+        onto it) or release the declaration (:meth:`deform`).
+
+        Parameters
+        ----------
+        label : str
+            A boundary name in :attr:`boundaries`.
+
+        Returns
+        -------
+        BoundingSurface
+            The registered surface, of kind ``"radial"`` (``centre``,
+            ``radius``) or ``"plane"`` (``point``, ``normal``), in the mesh's
+            coordinate units.
+
+        Raises
+        ------
+        ValueError
+            If no surface is registered for ``label``, if the registered
+            surface is not analytic, or if it was released because the mesh
+            was deformed. The verdict is the same on every rank.
+        """
+        surface = self.bounding_surfaces.get(str(label))
+        if surface is None:
+            raise ValueError(
+                f"no analytic surface is registered for boundary {str(label)!r} of this "
+                f"mesh; registered: {sorted(self.bounding_surfaces)}")
+        if surface.kind in ("radial", "plane") and not surface.is_free:
+            return surface
+        released_from = getattr(surface, "_prev_kind", None)
+        if released_from in ("radial", "plane"):
+            raise ValueError(
+                f"the {released_from} surface of boundary {str(label)!r} was released: the "
+                f"mesh has been deformed since it was declared, so the boundary may no "
+                f"longer lie on it")
+        raise ValueError(
+            f"boundary {str(label)!r} is registered as {surface.kind!r}, which is not an "
+            f"analytic surface (radial or plane)")
+
     def register_tangent_slip_provider(self, label, surface):
         """Install a :class:`BoundingSurface` object for a boundary ``label``
         (separate from the persisted ``mesh.boundaries`` labelling).
