@@ -8006,6 +8006,33 @@ class Mesh(Stateful, uw_object):
             self._domain_kdtree_version = self._mesh_version
         return self._domain_kdtree
 
+    @uw.collective_operation
+    def _get_domain_boxes(self):
+        """Every rank's vertex bounding box, padded: ``(lo, hi)``, each
+        ``(size, cdim)``, the same on every rank. A point a rank's domain holds
+        is inside its unpadded box; the pad covers a point just outside the
+        mesh that the locator still gives a cell. That slab has a relative part
+        (the face tolerance, ``_EVAL_FACE_TOL``, of a cell) and an absolute
+        one, from the locator's 1e-3 control-point offset: about 1e-5 model
+        units outside a wall, 3e-5 at a corner. So the pad is the larger of
+        four face tolerances of the largest cell radius and an absolute floor
+        of ten face tolerances of that offset (1e-4); without the floor, on
+        cells finer than about 7.5e-4 a point some rank claims fell outside
+        every box and a migrate that deletes lost points deleted it. A point
+        outside all of them is in no rank's domain. A rank with no cells has
+        an empty box (``lo = +inf``). Collective: one small allgather."""
+        import underworld3 as uw
+
+        coords = numpy.asarray(self.dm.getCoordinatesLocal().array).reshape(-1, self.cdim)
+        if coords.size:
+            lo, hi = coords.min(axis=0), coords.max(axis=0)
+        else:
+            lo, hi = numpy.full(self.cdim, numpy.inf), numpy.full(self.cdim, -numpy.inf)
+        pad = max(4.0 * self._EVAL_FACE_TOL * self.get_max_radius(),
+                  10.0 * self._EVAL_FACE_TOL * 1.0e-3)
+        boxes = uw.mpi.comm.allgather((lo - pad, hi + pad))
+        return (numpy.array([b[0] for b in boxes]), numpy.array([b[1] for b in boxes]))
+
     def get_min_radius_old(self) -> float:
         """
         This method returns the global minimum distance from any cell centroid to a face.

@@ -76,6 +76,35 @@ class _ReadOnlyCoordinateSnapshot(np.ndarray):
         raise ValueError(self._GUIDANCE)
 
 
+def _candidate_ranks(boxes, centroids, coords, n):
+    """The first ``n`` ranks a point is offered to, ``(m, n)``, -1 past the end
+    of its list. Rank-local: the same for a point on whichever rank holds it.
+
+    A point's list is the ranks whose inflated domain box
+    (``Mesh._get_domain_boxes``) contains it, nearest domain centroid first:
+    the only ranks whose domain can contain it. A point in no box (outside the
+    mesh by more than a cell) is offered to its nearest centroid only, where it
+    is left, as before. A rank with no cells has an empty box and no finite
+    centroid, so it is never offered a point."""
+    lo, hi = boxes
+    coords = np.asarray(coords, dtype=float).reshape(-1, lo.shape[1])
+    out = np.full((len(coords), n), -1, dtype=np.int64)
+    for s in range(0, len(coords), 4096):
+        X = coords[s:s + 4096]
+        inside = np.all((X[:, None, :] >= lo[None]) & (X[:, None, :] <= hi[None]), axis=2)
+        d = np.linalg.norm(X[:, None, :] - centroids[None], axis=2)
+        nearest = np.argmin(d, axis=1)
+        d = np.where(inside, d, np.inf)
+        order = np.argsort(d, axis=1, kind="stable")[:, :n]
+        ok = np.isfinite(np.take_along_axis(d, order, axis=1))
+        block = np.where(ok, order, -1)
+        none = ~inside.any(axis=1)
+        block[none] = -1
+        block[none, 0] = nearest[none]
+        out[s:s + 4096] = block
+    return out
+
+
 def _coordinate_row_keys(coords):
     """One opaque key per coordinate row, for exact set membership.
 
@@ -1377,7 +1406,12 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
                 if variable is not None:
                     variable._proxy_stale = True
 
+            # On the base variable, which is what mesh.vars holds and the remesh
+            # pass reads (#866); on the wrapper too, for anything holding that.
             self._meshVar._remesh_reinit_callback = _mark_proxy_stale
+            base = getattr(self._meshVar, "_base_var", None)
+            if base is not None:
+                base._remesh_reinit_callback = _mark_proxy_stale
 
     def _update(self):
         """
@@ -4391,21 +4425,29 @@ class Swarm(Stateful, uw_object):
         # Migrate particles between processes (if there are more than one of them)
 
         if uw.mpi.size > 1:
+            # Each unclaimed point is offered, round by round, to the ranks
+            # whose inflated domain box contains it, nearest centroid first
+            # (_candidate_ranks), and stays where it is when its list is
+            # exhausted. No "no progress" exit: a point inside the mesh near a
+            # seam is first offered to its own rank, which claims nothing, and
+            # an exit there stranded it (#1093). The per-point list bounds the
+            # cost instead: a point outside the mesh, near a wall or in a hole,
+            # takes as many rounds as boxes hold it (one or two), and one in no
+            # box takes one, to its nearest domain. No point is ever sent to a
+            # rank with no cells. The rounds stop when no point has a candidate
+            # left, or at the cap.
+            boxes = self.mesh._get_domain_boxes()          # collective, every rank
+            centroids = self.mesh._get_domain_centroids()  # collective, every rank
+            seeking = not_my_points
             for it in range(0, min(max_its, uw.mpi.size)):
 
-                # Send unclaimed points to next processor in line
-
-                swarm_rank_array = self.dm.getField("DMSwarm_rank")
+                swarm_rank_array = self.dm.getField("DMSwarm_rank").reshape(-1)
                 swarm_coord_array = self.dm.getField("DMSwarmPIC_coor").reshape(-1, self.cdim)
 
-                if not_my_points.shape[0] > 0:
-                    dist, rank = mesh_domain_kdtree.query(
-                        swarm_coord_array[not_my_points], k=it + 1, sqr_dists=False
-                    )
-
-                    swarm_rank_array.reshape(-1)[not_my_points] = rank.reshape(
-                        -1, it + 1
-                    )[:, it].flatten()
+                if seeking.shape[0] > 0:
+                    dest = _candidate_ranks(boxes, centroids,
+                                            swarm_coord_array[seeking], it + 1)[:, it]
+                    swarm_rank_array[seeking] = np.where(dest >= 0, dest, uw.mpi.rank)
 
                 self.dm.restoreField("DMSwarm_rank")
                 self.dm.restoreField("DMSwarmPIC_coor")
@@ -4452,36 +4494,19 @@ class Swarm(Stateful, uw_object):
                         [claimed_keys, keys_now[newly_claimed]]
                     )
 
-                self.dm.restoreField("DMSwarmPIC_coor")
-
-                num_points_in_domain = np.count_nonzero(in_or_not == True)
-                num_points_not_in_domain = np.count_nonzero(in_or_not == False)
                 not_my_points = np.where(in_or_not == False)[0]
-
-                unclaimed_points_last_iteration = global_unclaimed_points
-                claimed_points_last_iteration = global_claimed_points
+                # the unclaimed points with a candidate left for the next round
+                if not_my_points.size and it + 1 < min(max_its, uw.mpi.size):
+                    nxt = _candidate_ranks(boxes, centroids,
+                                           swarm_coord_array[not_my_points], it + 2)[:, it + 1]
+                    seeking = not_my_points[nxt >= 0]
+                else:
+                    seeking = not_my_points[:0]
+                self.dm.restoreField("DMSwarmPIC_coor")
 
                 uw.mpi.barrier()
 
-                global_unclaimed_points = int(
-                    uw.utilities.gather_data(
-                        num_points_not_in_domain,
-                        bcast=True,
-                        dtype=int,
-                    ).sum()
-                )
-
-                global_claimed_points = int(
-                    uw.utilities.gather_data(num_points_in_domain, bcast=True, dtype=int).sum()
-                )
-
-                if global_unclaimed_points == 0:
-                    break
-
-                if (
-                    global_unclaimed_points == unclaimed_points_last_iteration
-                    and global_claimed_points == claimed_points_last_iteration
-                ):
+                if uw.mpi.comm.allreduce(int(seeking.size)) == 0:
                     break
 
         # Missing points for deletion if required

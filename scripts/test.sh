@@ -345,6 +345,7 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   batch 4 tests/test_005[1-9]*py tests/test_00[6-7]*py
   batch 4 tests/test_01*py
   batch 4 tests/test_02*py tests/test_03*py
+  batch 4 tests/test_04*py
 
   # Intermediate tests (0500-0799: data structures, transformations, enhanced interfaces)
   # test_06*py was disabled as "potentially problematic" and stayed that way. The
