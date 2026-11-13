@@ -2099,7 +2099,10 @@ class SNES_Stokes(_StressHistoryMixin, _ConstitutiveModelStateMixin, SNES_Stokes
             Advection timestep. Required when stress history is active.
         time : float or Quantity, optional
             Physical evaluation time for expressions using ``mesh.t``. This is
-            distinct from the viscoelastic integration ``timestep``.
+            distinct from the viscoelastic integration ``timestep``. An
+            essential (Dirichlet) condition that reads ``mesh.t`` does not see
+            it: it is evaluated at the model clock
+            (``uw.get_default_model().tracker.time``, #410).
         _force_setup : bool
             Force rebuild of pointwise functions.
         verbose : bool
