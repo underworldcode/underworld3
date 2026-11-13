@@ -9452,12 +9452,14 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                     f"{velocityField.degree}, but degree={degree}, so the pressure "
                     f"created beside it would have degree {degree - 1}. Pass "
                     f"degree={velocityField.degree}, or pass both fields (#844).")
-            if pressureField is not None and pressureField.degree != degree - 1:
+            if pressureField is not None:
+                # The velocity created here would come after the passed pressure on
+                # the mesh, and the solver assumes the velocity is the first of the
+                # pair: the velocity boundary conditions then land on the pressure.
                 raise ValueError(
-                    f"Stokes: pressureField '{pressureField.clean_name}' has degree "
-                    f"{pressureField.degree}, but degree={degree} asks for pressure "
-                    f"of degree {degree - 1}. Pass degree={pressureField.degree + 1}, "
-                    f"or pass both fields (#844).")
+                    f"Stokes: pressureField '{pressureField.clean_name}' was passed "
+                    "without a velocityField. Pass both, with the velocity created "
+                    "first, or neither (#844).")
         if velocityField is None or pressureField is None:
 
             # Note, ensure names are unique for each solver type
