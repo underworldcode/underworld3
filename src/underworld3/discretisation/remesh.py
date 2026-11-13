@@ -562,7 +562,11 @@ def remap_var_set(mesh, vars_, old_X, new_X, old_data, *, verbose=False, raise_o
                 # monotone needs a single-MeshVariable expr; composite /
                 # unsupported vars fall back to plain FE (still transferred).
                 # The refusal depends on the expression alone, so every rank
-                # takes this branch alike.
+                # takes this branch alike. With the limiter off there is no
+                # refusal to fall back from: the error is a failure, and is
+                # agreed below rather than retried on one rank alone.
+                if not REMESH_MONOTONE:
+                    raise
                 val = uw.function.global_evaluate(var.sym, target)
             # Laid out by _data_layout, which a flat reshape is not for a MATRIX
             # or a symmetric tensor. var.data holds non-dimensional values, and
