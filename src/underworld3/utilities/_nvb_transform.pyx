@@ -10,8 +10,12 @@ option resolve to the NVB transform.
 from petsc4py import PETSc as _PETSc   # ensures PetscInitialize has run
 from petsc4py.PETSc cimport DM, PetscDM
 
+cdef extern from "petsc.h":
+    ctypedef int PetscInt
+
 cdef extern int UWNVBTransformRegister()
 cdef extern int UWNVBRefine(PetscDM dm, const char *wantName, PetscDM *rdm)
+cdef extern int UWNVBPointQueueSelfTest(PetscInt capacity, PetscInt burst, PetscInt rounds, PetscInt *returned, PetscInt *mismatches)
 
 cdef int _ierr = UWNVBTransformRegister()
 if _ierr != 0:
@@ -40,3 +44,17 @@ def refine(dm, want_label="adapt"):
     if ierr != 0:
         raise RuntimeError("UWNVBRefine failed with PETSc error %d" % ierr)
     return out
+
+
+def _point_queue_self_test(capacity, burst, rounds):
+    """Exercise the transform's own point queue: starting at ``capacity`` entries,
+    ``rounds`` times enqueue ``burst`` consecutive integers and dequeue half of what
+    is queued, then drain. Returns ``(returned, mismatches)``: how many values came
+    back, and how many of them were not the next value enqueued. See
+    ``UWNVBPointQueueSelfTest`` in ``nvb_transform.c`` (#1140)."""
+    cdef PetscInt returned = 0
+    cdef PetscInt mismatches = 0
+    cdef int ierr = UWNVBPointQueueSelfTest(capacity, burst, rounds, &returned, &mismatches)
+    if ierr != 0:
+        raise RuntimeError("UWNVBPointQueueSelfTest failed with PETSc error %d" % ierr)
+    return int(returned), int(mismatches)

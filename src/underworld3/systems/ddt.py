@@ -267,6 +267,17 @@ def _step_ratio(dt, dt_previous):
     return sympy.nsimplify(abs(current) / abs(previous), rational=True)
 
 
+def _history_shape(psi_fn, vtype):
+    """The ``num_components`` a history store is built with. A MATRIX variable
+    takes its shape from the caller (``MeshVariable(name, mesh, (rows, cols),
+    vtype=MATRIX)``); every other type derives it from the mesh. So a MATRIX
+    history passes the shape of the field it tracks, which was left out and
+    made the store's constructor fail on ``None`` (#995)."""
+    if vtype == uw.VarType.MATRIX:
+        return tuple(sympy.Matrix(psi_fn).shape)
+    return None
+
+
 def _history_units(psi_fn, units=None):
     """The units a history's stores are built with: ``units`` when given (a
     solver knows what its history carries), else those of ``psi_fn``; ``None``
@@ -3047,6 +3058,7 @@ class SemiLagrangian(_DDtBase):
                 uw.discretisation.MeshVariable(
                     f"psi_star_sl_{self.instance_number}_{i}",
                     self.mesh,
+                    _history_shape(psi_fn, vtype),
                     vtype=vtype,
                     degree=self.degree,
                     continuous=self.continuous,
@@ -3074,6 +3086,7 @@ class SemiLagrangian(_DDtBase):
             self.forcing_star = uw.discretisation.MeshVariable(
                 f"forcing_star_sl_{self.instance_number}",
                 self.mesh,
+                _history_shape(psi_fn, vtype),
                 vtype=vtype,
                 degree=self.degree,
                 continuous=self.continuous,
@@ -3136,12 +3149,19 @@ class SemiLagrangian(_DDtBase):
                     verbose=False,
                 )
 
-        elif vtype == uw.VarType.SYM_TENSOR or vtype == uw.VarType.TENSOR:
+        elif vtype in (uw.VarType.SYM_TENSOR, uw.VarType.TENSOR, uw.VarType.MATRIX):
             dim = self.mesh.dim
             if vtype == uw.VarType.SYM_TENSOR:
                 Nc = math.comb(dim + 1, 2)
                 self._psi_star_indep_indices = [
                     (i, j) for i in range(dim) for j in range(i, dim)
+                ]
+            elif vtype == uw.VarType.MATRIX:
+                # every entry of the field's own shape is independent (#995)
+                rows, cols = _history_shape(psi_fn, vtype)
+                Nc = rows * cols
+                self._psi_star_indep_indices = [
+                    (i, j) for i in range(rows) for j in range(cols)
                 ]
             else:
                 Nc = dim * dim

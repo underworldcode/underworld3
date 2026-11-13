@@ -1406,7 +1406,12 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
                 if variable is not None:
                     variable._proxy_stale = True
 
+            # On the base variable, which is what mesh.vars holds and the remesh
+            # pass reads (#866); on the wrapper too, for anything holding that.
             self._meshVar._remesh_reinit_callback = _mark_proxy_stale
+            base = getattr(self._meshVar, "_base_var", None)
+            if base is not None:
+                base._remesh_reinit_callback = _mark_proxy_stale
 
     def _update(self):
         """
@@ -2642,7 +2647,12 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
             )
         else:
             kdt = uw.kdtree.KDTree(landed_X)
-            self.array[:, 0, :] = kdt.rbf_interpolator_local(
+            # The file holds the storage layout (``save`` writes ``self.data``),
+            # one column per stored component, so it goes back into the storage
+            # layout: the raw inverse of the write. ``self.array[:, 0, :]`` is
+            # that layout only for scalars and vectors; a tensor's array is
+            # (N, dim, dim) and a symmetric one stores fewer columns (#984).
+            self.data[...] = kdt.rbf_interpolator_local(
                 self.swarm._particle_coordinates.data, landed_D, nnn=1
             )
 

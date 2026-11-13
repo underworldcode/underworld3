@@ -1,0 +1,219 @@
+"""A move that keeps the topology keeps the custom multigrid transfers, on
+several ranks.
+
+The serial half of the record is tests/test_1176_custom_mg_transfer_after_a_move.py.
+At more than one rank a native refine pair goes to the node-cloud builder and
+a pair of split levels to the partitioned cell-located transfer, so the routes
+here are not those of the serial file. Both are handed a moved level on the
+nodes it was built with, bit for bit, and their transfers after a move are
+those before it entry for entry.
+
+Bit for bit is what the node-cloud builder needs: it is not continuous in its
+nodes. Handed the built nodes to round-off (2e-16) instead, one weight of the
+tetrahedral pair below changed by 1.4e-4 at 2 and 4 ranks and by 1.1e-4 at 8.
+
+The unchanged transfers and the iteration counts were measured on 2026-11-13
+on a 96-thread Linux workstation (Intel Xeon Gold 6240R, MPICH) at 2, 3, 4, 5
+and 8 ranks. The counts are asserted at the rank counts they were measured on.
+Another rank count asserts the transfers only.
+
+The faulted fixture does not get the same multigrid tail at every rank count:
+the adapt keeps two add-on levels at 1 to 6 ranks and one at 7 and 8, because
+it sizes a generation by the smallest of the ranks' own cell-size percentiles.
+With one add-on level the level under the fault is welded, and the finest pair
+is the recorded route (#1091), which reads the moved coordinates and repeats
+its transfer to round-off.
+
+    mpirun -n 2 python -m pytest --with-mpi tests/parallel/test_1176_custom_mg_transfer_after_a_move_parallel.py
+"""
+import numpy as np
+import pytest
+import sympy
+from petsc4py import PETSc
+
+import underworld3 as uw
+from underworld3.utilities import custom_mg, fault_mg
+
+pytestmark = [pytest.mark.mpi(min_size=2), pytest.mark.level_2, pytest.mark.tier_b,
+              pytest.mark.timeout(900)]
+
+TRACE = np.array([[0.3, 0.45], [0.7, 0.55]])
+
+
+def _transfers(solver):
+    """Copies of the hierarchy's transfers as built, coarsest pair first."""
+    return [P.copy() for P in solver._custom_mg["hierarchy"].transfers]
+
+
+def _largest_change(before, after):
+    """The largest row sum of ``|after - before|`` over the pairs."""
+    assert len(after) == len(before)
+    worst = 0.0
+    for P0, P1 in zip(before, after):
+        assert P1.getSize() == P0.getSize()
+        D = P1.copy()
+        D.axpy(-1.0, P0)
+        worst = max(worst, D.norm(PETSc.NormType.INFINITY))
+        D.destroy()
+    return worst
+
+
+def _deform(mesh, amplitude=0.02):
+    c = np.asarray(mesh.X.coords).copy()
+    c[:, 0] += amplitude * np.prod(np.sin(np.pi * c), axis=1)   # zero on the walls
+    mesh.deform(c)
+
+
+def _raise_the_top_wall(mesh):
+    c = np.asarray(mesh.X.coords).copy()
+    c[:, 1] *= 1 + 0.05 * np.sin(np.pi * c[:, 0])
+    mesh.deform(c)
+
+
+def _wall_box():
+    return uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0, 0), maxCoords=(1, 1), cellSize=1 / 4, regular=False,
+        qdegree=2, refinement=2)
+
+
+def _wall_stokes(mesh):
+    x, y = mesh.X
+    s = uw.systems.Stokes(mesh)
+    s.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    s.constitutive_model.Parameters.shear_viscosity_0 = 1
+    for wall in ("Bottom", "Left", "Right"):
+        s.add_dirichlet_bc((0, 0), wall)
+    s.bodyforce = sympy.Matrix([0, sympy.sin(sympy.pi * x)])
+    s.tolerance = 1.0e-6
+    custom_mg.set_custom_fmg(s, list(mesh.multigrid_levels[:-1]), field_id=0)
+    return s
+
+
+def _velocity_iterations(stokes):
+    return stokes.snes.getKSP().getPC().getFieldSplitSubKSP()[0].getIterationNumber()
+
+
+# Velocity iterations at rest and after each of three rises of the top wall,
+# by rank count; a solver built on the moved mesh takes 4 at each of them.
+# With the transfers rebuilt from the moved coordinates the steps take 6, 7
+# and 8 at 5 and 8 ranks.
+WALL_COUNTS = {2: [3, 3, 4, 4], 3: [4, 4, 4, 4], 4: [3, 3, 4, 4],
+               5: [4, 4, 4, 4], 8: [4, 4, 4, 4]}
+
+
+def test_a_moving_wall_keeps_the_transfers_and_the_velocity_iterations():
+    mesh = _wall_box()
+    s = _wall_stokes(mesh)
+    s.solve()
+    before = _transfers(s)
+    counts = [_velocity_iterations(s)]
+    for _ in range(3):
+        _raise_the_top_wall(mesh)
+        s.solve()
+        assert s.snes.getConvergedReason() > 0
+        counts.append(_velocity_iterations(s))
+    assert _largest_change(before, _transfers(s)) == 0
+    if uw.mpi.size in WALL_COUNTS:
+        assert counts == WALL_COUNTS[uw.mpi.size]
+        built_after = _wall_stokes(mesh)
+        built_after.solve()
+        assert _velocity_iterations(built_after) == 4
+
+
+def _fault_stokes(mesh):
+    x, y = mesh.X
+    s = uw.systems.Stokes(mesh)
+    s.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    s.constitutive_model.Parameters.shear_viscosity_0 = 1
+    s.tolerance = 1.0e-6
+    s.petsc_use_pressure_nullspace = True
+    for wall in ("Top", "Bottom", "Left", "Right"):
+        s.add_dirichlet_bc((y - 0.5, 0.0), wall)
+    s.add_fault_bc(0, "Flt")
+    return s
+
+
+def _split_level_mesh():
+    """A fault on an adapt child. Where the adapt keeps two add-on levels the
+    one under the fault is split; where it keeps one, that level is welded."""
+    base = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.1, refinement=1,
+        qdegree=2)
+    pts = np.column_stack([np.linspace(*TRACE[:, 0], 9), np.linspace(*TRACE[:, 1], 9),
+                           np.zeros(9)])
+    guide = uw.meshing.Surface("guide_1176_parallel", base, pts)
+    guide.discretize()
+    child = base.adapt(guide.refinement_metric_function(
+        h_near=0.05 / 4, h_far=0.05, width=0.08, profile="linear"), max_levels=2)
+    return child.add_fault([("Flt", TRACE)])
+
+
+# Velocity iterations at rest and after each of three moves, and those of a
+# solver built on the moved mesh, by rank count, where the level under the
+# fault is split.
+SPLIT_COUNTS = {2: ([6, 7, 7, 7], 7), 3: ([6, 7, 7, 7], 7), 4: ([6, 7, 7, 7], 7),
+                5: ([6, 7, 7, 7], 7)}
+# The same where that level is welded. The finest level then carries a FAC
+# patch at rest and a move drops it (the rule of
+# tests/parallel/test_1152_fac_zone_survives_a_mover_parallel.py), so the
+# count rises with the transfers unchanged.
+WELDED_COUNTS = {8: ([3, 15, 15, 15], 15)}
+
+
+def test_a_split_level_keeps_the_transfers_and_the_velocity_iterations():
+    mesh = _split_level_mesh()
+    split_below = fault_mg.is_split_level(mesh._custom_mg_coarse_meshes[-1])
+    s = _fault_stokes(mesh)
+    s.solve()
+    before = _transfers(s)
+    counts = [max(s._rotated_freeslip_info["vel_its_last"])]
+    for _ in range(3):
+        _deform(mesh)
+        s.solve()
+        assert s.snes.getConvergedReason() > 0
+        counts.append(max(s._rotated_freeslip_info["vel_its_last"]))
+    # Only the finest level moves. Over a split level its pair is cell-located
+    # on the built nodes; over a welded one it is the recorded route.
+    if split_below:
+        assert _largest_change(before, _transfers(s)) == 0
+    else:
+        assert _largest_change(before, _transfers(s)) < 1e-12
+    table = SPLIT_COUNTS if split_below else WELDED_COUNTS
+    if uw.mpi.size in table:
+        moved, built_on_it = table[uw.mpi.size]
+        assert counts == moved
+        built_after = _fault_stokes(mesh)
+        built_after.solve()
+        assert max(built_after._rotated_freeslip_info["vel_its_last"]) == built_on_it
+
+
+# Iterations at rest and after each of two moves, by rank count. The pair
+# rebuilt from the moved coordinates takes as many; the transfers tell the
+# two apart.
+TET_COUNTS = {np_: [3, 3, 3] for np_ in (2, 3, 4, 5, 8)}
+
+
+def test_a_moved_tetrahedral_level_keeps_its_transfers():
+    mesh = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0, 0, 0), maxCoords=(1, 1, 1), cellSize=1 / 3, regular=False,
+        qdegree=2, refinement=1)
+    x, y, z = mesh.X
+    s = uw.systems.Poisson(mesh, degree=2)
+    s.constitutive_model = uw.constitutive_models.DiffusionModel
+    s.constitutive_model.Parameters.diffusivity = 1
+    s.f = sympy.sin(3 * x) * sympy.cos(2 * y)
+    for wall in ("Bottom", "Top", "Left", "Right", "Front", "Back"):
+        s.add_dirichlet_bc(0, wall)
+    s.tolerance = 1.0e-6
+    custom_mg.set_custom_fmg(s, list(mesh.multigrid_levels[:-1]))
+    s.solve()
+    before = _transfers(s)
+    counts = [s.snes.getLinearSolveIterations()]
+    for _ in range(2):
+        _deform(mesh, amplitude=0.03)
+        s.solve()
+        assert s.snes.getConvergedReason() > 0
+        counts.append(s.snes.getLinearSolveIterations())
+    assert _largest_change(before, _transfers(s)) == 0
+    if uw.mpi.size in TET_COUNTS:
+        assert counts == TET_COUNTS[uw.mpi.size]
