@@ -846,7 +846,9 @@ def write_boundary_scalar_field(solver, field, value_by_key, dim):
     rank (a rank may own none of the boundary), so per-node writes would desync the
     callback's collective and deadlock. Shared by the boundary-flux and rotated-free-slip
     (dynamic topography) field hand-offs."""
-    fc = np.asarray(field.coords)
+    # Model units, the frame the recovery's keys are in: field.coords is in metres
+    # in a units model, so no key matched and the topography came back zero (#998).
+    fc = np.asarray(field.coords_nd)
     newdata = np.asarray(field.data).copy()
     for i in range(fc.shape[0]):
         v = value_by_key.get(_key(fc[i], dim))

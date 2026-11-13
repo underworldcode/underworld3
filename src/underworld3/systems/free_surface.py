@@ -24,6 +24,18 @@ from underworld3 import function
 from underworld3.function._function import diff_wrt_field
 from underworld3.coordinates import CoordinateSystemType
 
+
+def _model_time(dt):
+    """A step from a solver's ``estimate_dt`` as a plain number in model time.
+
+    In a units model the advection solvers return a dimensional time; ``float`` of
+    it gave seconds, so an advective limit, when it bound, was a step of about
+    1e10 model times too long (#998).
+    """
+    if getattr(dt, "units", None) is not None:
+        return float(uw.non_dimensionalise(dt))
+    return float(dt)
+
 class FreeSurface:
     r"""Evolve a free surface by exponential relaxation toward stress equilibrium.
 
@@ -444,7 +456,7 @@ class FreeSurface:
         invariant, whereas re-sorting live coordinates by ``x`` could permute neighbours
         near the annulus ``theta = 0, pi`` extremes where ``dx/dtheta -> 0``.
         """
-        return np.ascontiguousarray(self.mesh.X.coords[self._surf_rows])
+        return np.ascontiguousarray(self._mesh_coords_nd()[self._surf_rows])
 
     def _surface_height(self, coords):
         """The coordinate along the topography direction: the last axis on a Cartesian
@@ -503,6 +515,13 @@ class FreeSurface:
             else:
                 solver.add_essential_bc(spec, boundary)
 
+    def _mesh_coords_nd(self):
+        """The mesh's node coordinates in model units: the frame of the DM, of the
+        surface nodes and of ``coords_nd``. ``mesh.X.coords`` is in metres in a
+        units model, and mixing the two frames lost every trace-mass weight in the
+        coordinate-key matching (#998)."""
+        return np.asarray(self.mesh._coords, dtype=np.float64).reshape(-1, self.mesh.cdim)
+
     def _surface_node_coords(self):
         r"""Coordinates of the vertices on ``surface``, from the DMPlex boundary
         stratum (label-based, parallel-correct) — not a radial ``|y-H|`` heuristic.
@@ -558,7 +577,10 @@ class FreeSurface:
         coordinate used to order the ring."""
         if coords.shape[0] == 0:
             return np.empty(0, dtype=int), np.empty(0)
-        tree = uw.kdtree.KDTree(np.ascontiguousarray(field.coords))
+        # Model units throughout (#998); ``mesh.X`` itself stands for the mesh nodes.
+        field_coords = (self._mesh_coords_nd() if field is self.mesh.X
+                        else np.asarray(field.coords_nd))
+        tree = uw.kdtree.KDTree(np.ascontiguousarray(field_coords))
         rows = np.asarray(tree.query(coords, k=1)[1]).flatten()
         order = np.argsort(coords[:, 0])
         return rows[order], coords[order, 0]
@@ -966,8 +988,8 @@ class FreeSurface:
         # displacement is a DIRECT nodal read — never a point evaluation at the
         # field's own nodes (the on-node location class, O(1)-wrong on 3D cell
         # edges, #432). Row identities survive deformation; matched once here.
-        tree = uw.kdtree.KDTree(np.ascontiguousarray(self._carry.coords))
-        dist, rows = tree.query(np.ascontiguousarray(self.mesh.X.coords), k=1)
+        tree = uw.kdtree.KDTree(np.ascontiguousarray(self._carry.coords_nd))
+        dist, rows = tree.query(np.ascontiguousarray(self._mesh_coords_nd()), k=1)
         self._carry_rows_at_mesh_nodes = (
             np.asarray(rows).flatten()
             if float(np.max(dist)) < 1.0e-12 else None)   # exotic geometry: fall back
@@ -1437,13 +1459,13 @@ class FreeSurface:
         semi-Lagrangian solver's ``estimate_dt()``."""
         if self.composition is not None:
             if self._comp_kind == "cls":
-                dt_advect = float(self.composition.estimate_dt(basis="resolution"))
+                dt_advect = _model_time(self.composition.estimate_dt(basis="resolution"))
             elif self._comp_kind == "swarm":
                 dt_advect = self._velocity_cfl()
             elif self._advection == "supg":
-                dt_advect = float(self._comp_adv.estimate_dt(basis="resolution"))
+                dt_advect = _model_time(self._comp_adv.estimate_dt(basis="resolution"))
             else:
-                dt_advect = float(self._comp_adv.estimate_dt())
+                dt_advect = _model_time(self._comp_adv.estimate_dt())
         else:
             dt_advect = self._velocity_cfl()
         dt_advect *= float(advect_scale)
@@ -1607,7 +1629,7 @@ class FreeSurface:
     def _current_shape(self):
         """The surface height anomaly (topography direction), mean-removed — read from
         the deformed mesh geometry, which IS the surface state."""
-        height = self._surface_height(self.mesh.X.coords[self._surf_rows])
+        height = self._surface_height(self._mesh_coords_nd()[self._surf_rows])
         return self._demean(height)
 
     def _surface_normal_velocity(self):
@@ -1822,7 +1844,7 @@ class FreeSurface:
         self._carry_bc.array[...] = 0.0
         self._carry_bc.array[self._carry_bc_rows, 0, 0] = increment
         self._diffuser.solve(zero_init_guess=False)
-        coords = self.mesh.X.coords
+        coords = self._mesh_coords_nd()
         if self._carry_rows_at_mesh_nodes is not None:
             # direct nodal read (see _build_interior_diffuser: the on-node
             # evaluation class is what this avoids)
