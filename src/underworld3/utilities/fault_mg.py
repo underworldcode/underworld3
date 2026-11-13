@@ -285,6 +285,8 @@ def cell_located_transfer_parallel(coarse, fine, degree, continuous,
     every coarse cell, as at a curved boundary — keeps the asker's own clamped
     best. ``coarse_layout`` / ``fine_layout`` are :class:`custom_mg.LevelLayout`.
     """
+    from underworld3.utilities.fault_contact import _collective_raise
+
     m4 = comm.tompi4py()
     cn = np.asarray(coarse._cell_node_indices(degree, continuous))
     fn = np.asarray(fine._cell_node_indices(degree, continuous))
@@ -300,8 +302,11 @@ def cell_located_transfer_parallel(coarse, fine, degree, continuous,
     nb = cn.shape[1]
 
     owner = _fine_cell_of_node(fn, n_f)
-    if (owner < 0).any():
-        raise RuntimeError("fault_mg: a fine node belongs to no cell")
+    # A failure on one rank is raised on every rank, at the next collective
+    # (fault_contact._collective_raise), never alone: a rank-local raise left
+    # the others waiting in the stats allreduce (#874).
+    problem = ("fault_mg: a fine node belongs to no cell"
+               if (owner < 0).any() else None)
     # the fine nodes with at least one owned row (ghost nodes are another rank's)
     mine = np.flatnonzero(((l2g_f >= fstart) & (l2g_f < fend)).any(axis=1))
     fcent = vxy_f[cv_f].mean(axis=1)
@@ -315,10 +320,14 @@ def cell_located_transfer_parallel(coarse, fine, degree, continuous,
     cells = pcell[inside]
     gcols = np.empty((0, nb, ncomp), dtype=np.int64)
     W = np.empty((0, nb))
-    if hit.size:
-        lam = _barycentric(Xf[hit], vxy_c[cv_c[cells]])
-        W = _node_weights(Xf[hit], cells, lam, Xc, cn, vxy_c, cv_c, degree)
-        gcols = l2g_c[cn[cells]]                             # (nh, nb, ncomp)
+    if hit.size and problem is None:
+        try:
+            lam = _barycentric(Xf[hit], vxy_c[cv_c[cells]])
+            W = _node_weights(Xf[hit], cells, lam, Xc, cn, vxy_c, cv_c, degree)
+            gcols = l2g_c[cn[cells]]                         # (nh, nb, ncomp)
+        except (np.linalg.LinAlgError, RuntimeError) as err:
+            problem = f"fault_mg: the cell-located transfer failed: {err}"
+    _collective_raise(problem)
     hit_nodes, hit_W, hit_cols = [hit], [W], [gcols]
 
     # --- misses: ask the other ranks -------------------------------------- #
@@ -350,16 +359,21 @@ def cell_located_transfer_parallel(coarse, fine, degree, continuous,
             qlam = np.full((total, cv_c.shape[1]), -np.inf)
             qin = np.zeros(total, dtype=bool)
         found = np.flatnonzero(qin)
+        Wq = np.zeros((0, nb))
+        colsq = np.zeros((0, nb, ncomp), dtype=np.int64)
+        score = np.zeros(0)
+        answer_problem = None
         if found.size:
-            lamn = _barycentric(Qn[found], vxy_c[cv_c[qcell[found]]])
-            Wq = _node_weights(Qn[found], qcell[found], lamn, Xc, cn,
-                               vxy_c, cv_c, degree)
-            colsq = l2g_c[cn[qcell[found]]]
-            score = qlam[found].min(axis=1)
-        else:
-            Wq = np.zeros((0, nb))
-            colsq = np.zeros((0, nb, ncomp), dtype=np.int64)
-            score = np.zeros(0)
+            try:
+                lamn = _barycentric(Qn[found], vxy_c[cv_c[qcell[found]]])
+                Wq = _node_weights(Qn[found], qcell[found], lamn, Xc, cn,
+                                   vxy_c, cv_c, degree)
+                colsq = l2g_c[cn[qcell[found]]]
+                score = qlam[found].min(axis=1)
+            except (np.linalg.LinAlgError, RuntimeError) as err:
+                answer_problem = f"fault_mg: the cell-located transfer failed: {err}"
+                found = found[:0]
+        _collective_raise(answer_problem)
         # answers travel back to every rank; each keeps those for its own queries
         ans_idx = m4.allgather(found)
         ans_W = m4.allgather(Wq)
@@ -383,17 +397,21 @@ def cell_located_transfer_parallel(coarse, fine, degree, continuous,
             answered[local] = True
         # nobody found it: this rank's own clamped best (if it has coarse cells)
         rest = np.flatnonzero(~answered)
+        rest_problem = None
         if rest.size and cv_c.shape[0]:
-            cells_r = pcell[~inside][rest]
-            lam_r = _barycentric(Xf[miss[rest]], vxy_c[cv_c[cells_r]])
-            best_W[rest] = _node_weights(Xf[miss[rest]], cells_r, lam_r, Xc, cn,
-                                         vxy_c, cv_c, degree)
-            best_cols[rest] = l2g_c[cn[cells_r]]
-            answered[rest] = True
-        if not answered.all():
-            raise RuntimeError(
-                "fault_mg: a fine node could not be located in any coarse cell "
-                "on any rank")
+            try:
+                cells_r = pcell[~inside][rest]
+                lam_r = _barycentric(Xf[miss[rest]], vxy_c[cv_c[cells_r]])
+                best_W[rest] = _node_weights(Xf[miss[rest]], cells_r, lam_r, Xc, cn,
+                                             vxy_c, cv_c, degree)
+                best_cols[rest] = l2g_c[cn[cells_r]]
+                answered[rest] = True
+            except (np.linalg.LinAlgError, RuntimeError) as err:
+                rest_problem = f"fault_mg: the cell-located transfer failed: {err}"
+        if rest_problem is None and not answered.all():
+            rest_problem = ("fault_mg: a fine node could not be located in any "
+                            "coarse cell on any rank")
+        _collective_raise(rest_problem)
         hit_nodes.append(miss)
         hit_W.append(best_W)
         hit_cols.append(best_cols)

@@ -329,8 +329,10 @@ def _resolve_snapping(dm, X, ends, lines, snap_frac, scale, snap_quality=0.5,
     # repeatedly. Measured: a relative 0.5 over six refine-and-snap rounds
     # licenses 0.5**6 of the original, and the worst angle duly fell 15.4 -> 2.3
     # degrees while every individual round looked well behaved.
+    # The winding convention, voted over every rank once (#874).
+    flip = _global_flip(X[np.asarray(cell_verts, dtype=np.int64).reshape(-1, 3)])
     floor = (None if snap_quality is None else
-             np.minimum(snap_quality, np.abs(_cell_quality(X, cell_verts))))
+             np.minimum(snap_quality, np.abs(_cell_quality(X, cell_verts, flip))))
     # Vertices ALREADY on the line — a tip or junction placed by
     # `pull_vertex_onto` — do not move, so they cannot ruin anything and must
     # never be vetoed. Vetoing one would unplace the very point that makes a
@@ -398,7 +400,7 @@ def _resolve_snapping(dm, X, ends, lines, snap_frac, scale, snap_quality=0.5,
         if proposed.any():
             X_try[proposed] = _project_onto_lines(X[proposed], lines)
         fresh = np.zeros(len(X), dtype=bool)
-        quality = _cell_quality(X_try, cell_verts)
+        quality = _cell_quality(X_try, cell_verts, flip)
         ruined = (np.zeros(len(cell_verts), dtype=bool) if floor is None
                   else (quality <= 0.0) | (quality < floor))
         if ruined.any():
@@ -498,7 +500,7 @@ def _minimal_face_vertices(X, cell_verts, point):
     return cell_verts[c][on]
 
 
-def _cell_quality(X, cell_verts):
+def _cell_quality(X, cell_verts, flip=None):
     """Scale-free triangle quality: 1 equilateral, 0 degenerate, <0 inverted.
 
     ``4 sqrt(3) A / sum(l^2)``, signed through the area. The sign matters: an
@@ -511,26 +513,48 @@ def _cell_quality(X, cell_verts):
     P = X[cell_verts]
     e = np.stack([P[:, 2] - P[:, 1], P[:, 0] - P[:, 2], P[:, 1] - P[:, 0]],
                  axis=1)
-    twice_area = _signed_twice_areas(P)
+    twice_area = _signed_twice_areas(P, flip)
     return 2.0 * np.sqrt(3.0) * twice_area / np.maximum(
         (e ** 2).sum(axis=(1, 2)), np.finfo(float).tiny)
 
 
-def _signed_twice_areas(P):
+def _outward_signed(P):
+    """On a surface mesh in three dimensions: each cell's normal against the
+    outward direction (the centroid's, the surface being a sphere about the
+    origin), before any orientation convention is applied."""
+    n = np.cross(P[:, 1] - P[:, 0], P[:, 2] - P[:, 0])
+    c = P.sum(axis=1)
+    return (n * c).sum(axis=1) / np.maximum(np.linalg.norm(c, axis=1), 1e-300)
+
+
+def _global_flip(P):
+    """The winding convention of a surface mesh, voted over EVERY rank's
+    cells (``P`` is this rank's): True when most are wound inward. A
+    rank-local vote let a rank whose cells were mostly inverted flip its own
+    convention and undercount them (#874). COLLECTIVE. ``None`` in two
+    dimensions, where the planar sign needs no convention."""
+    if P.shape[2] == 2:
+        return None
+    signed = _outward_signed(P) if len(P) else np.zeros(0)
+    neg, total = uw.mpi.comm.allreduce(
+        np.array([int((signed < 0.0).sum()), len(signed)]), op=MPI.SUM)
+    return bool(neg > 0.5 * total)
+
+
+def _signed_twice_areas(P, flip=None):
     """Twice the signed area of each triangle ``P[:, 0:3]``: the planar cross
     product in two dimensions; on a surface mesh in three, the cell normal
-    against the outward direction (the centroid's, the surface being a sphere
-    about the origin). A mesh is wound one way throughout, so the convention
-    is read off the majority and an inverted cell is one against it."""
+    against the outward direction. A mesh is wound one way throughout, so the
+    convention is read off the majority and an inverted cell is one against
+    it: the global majority when ``flip`` is given (:func:`_global_flip`, on
+    a collective path), else this array's own (a rank-local caller)."""
     if P.shape[2] == 2:
         return ((P[:, 1, 0] - P[:, 0, 0]) * (P[:, 2, 1] - P[:, 0, 1])
                 - (P[:, 1, 1] - P[:, 0, 1]) * (P[:, 2, 0] - P[:, 0, 0]))
-    n = np.cross(P[:, 1] - P[:, 0], P[:, 2] - P[:, 0])
-    c = P.sum(axis=1)
-    signed = (n * c).sum(axis=1) / np.maximum(np.linalg.norm(c, axis=1), 1e-300)
-    if (signed < 0.0).sum() > 0.5 * len(signed):
-        signed = -signed
-    return signed
+    signed = _outward_signed(P)
+    if flip is None:
+        flip = (signed < 0.0).sum() > 0.5 * len(signed)
+    return -signed if flip else signed
 
 
 def _cell_edge_counts(dm, crossed_edges, on_line_vertices):
@@ -623,7 +647,7 @@ def _label_cut_edges(dm, lines, tol, name, value):
     return marked
 
 
-def cell_areas(dm):
+def cell_areas(dm, global_vote=False):
     """Signed area of every triangle. Negative means the cell is inverted.
 
     A cell's cone holds its edges together with an orientation saying which way
@@ -642,7 +666,9 @@ def cell_areas(dm):
             ring.append(a if o >= 0 else b)
         rings.append(ring[:3])
     P = X[np.asarray(rings, dtype=np.int64)] if rings else np.empty((0, 3, X.shape[1]))
-    return 0.5 * _signed_twice_areas(P)
+    # global_vote is for a caller every rank reaches (it is collective): the
+    # inversion count after a cut. Rank-local callers keep their own vote.
+    return 0.5 * _signed_twice_areas(P, _global_flip(P) if global_vote else None)
 
 
 def min_angles(dm):
@@ -911,7 +937,7 @@ def cut_along_lines(dm, lines, snap_frac=0.10, label=CUT_LABEL, label_value=1,
     # on the partition, so this raise was rank-local at np>1 while its peers went
     # on into `Mesh(cut_dm, ...)` and waited there. Measured: snap_frac=0.49 on a
     # 1/12 box inverts a cell.
-    areas = cell_areas(cut)
+    areas = cell_areas(cut, global_vote=True)
     n_inverted = uw.mpi.comm.allreduce(int((areas <= 0.0).sum()), op=MPI.SUM)
     if n_inverted:
         raise RuntimeError(
