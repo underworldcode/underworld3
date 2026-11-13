@@ -70,6 +70,10 @@ class BoundingSurface:
         self.label = str(label)
         self.kind = kind
         self.is_free = bool(is_free) or kind == "free"
+        # Set by release(): the kind the surface was declared as, and what its
+        # boundary's vertices may have left it by.
+        self._prev_kind = None
+        self.release_reason = None
         # An INTERIOR surface (an embedded interface such as the Internal
         # circle/sphere of the *InternalBoundary meshes) is snapped-to by
         # adapt() so refinement follows its true geometry, but is NOT
@@ -261,6 +265,10 @@ def register_radial_surfaces(mesh, centre, label_radius, interior=()):
     centre = np.asarray(centre, dtype=float).ravel()
     interior = set(interior)
     for lab, r in label_radius.items():
+        # A radius of zero is the centre of a solid disc or ball: the mesh has no
+        # such boundary, and a point is not a wall to slide on.
+        if r == 0.0:
+            continue
         surface = mesh.register_tangent_slip_provider(
             lab, BoundingSurface(mesh, lab, "radial", centre=centre, radius=r,
                                  interior=lab in interior))

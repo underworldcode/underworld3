@@ -70,3 +70,34 @@ def test_a_surface_that_is_not_analytic_is_refused():
         "Upper", BoundingSurface(mesh, "Upper", "facet", reference_facets=segments))
     with pytest.raises(ValueError, match="'Upper' is registered as 'facet'"):
         mesh.analytic_surface("Upper")
+
+
+@pytest.mark.tier_b
+def test_a_boundary_is_named_by_its_label_or_by_its_enum_member():
+    mesh = uw.meshing.Annulus(radiusInner=0.5, radiusOuter=1.0, cellSize=0.2)
+    assert mesh.analytic_surface(mesh.boundaries.Upper) is mesh.analytic_surface("Upper")
+
+
+@pytest.mark.tier_b
+def test_a_solid_disc_declares_no_inner_circle():
+    """A disc has no inner wall: a circle of radius zero is a point, and the mesh
+    holds no ``Lower`` boundary to lie on it."""
+    mesh = uw.meshing.Annulus(radiusInner=0.0, radiusOuter=1.0, cellSize=0.2)
+    assert mesh.analytic_surface("Upper").radius == 1.0
+    with pytest.raises(ValueError, match="no analytic surface is registered for boundary 'Lower'"):
+        mesh.analytic_surface("Lower")
+
+
+@pytest.mark.tier_b
+def test_a_refined_shell_does_not_declare_its_internal_sphere():
+    """Refinement places the new vertices of the embedded surface on the chords
+    of the coarse one (#949 item 3), so the refined mesh must not declare the
+    sphere. The unrefined mesh is on it, and declares it."""
+    shell = dict(radiusOuter=1.0, radiusInternal=0.8, radiusInner=0.5, cellSize=0.3)
+    unrefined = uw.meshing.SphericalShellInternalBoundary(**shell)
+    assert unrefined.analytic_surface("Internal").radius == 0.8
+
+    refined = uw.meshing.SphericalShellInternalBoundary(**shell, refinement=1)
+    with pytest.raises(ValueError, match="'Internal' was released: refinement"):
+        refined.analytic_surface("Internal")
+    assert refined.analytic_surface("Upper").radius == 1.0

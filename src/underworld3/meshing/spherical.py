@@ -833,6 +833,15 @@ def SphericalShellInternalBoundary(
                       "Internal": radiusInternal},
         interior=("Internal",))
 
+    # TODO(BUG): #949 item 3. Refinement places the new vertices of the Internal
+    # surface on the chords of the coarse one (the refinement callback moves only
+    # Upper and Lower), so a refined mesh is not on the sphere declared above.
+    # Until refinement moves them onto it, the declaration is withdrawn.
+    if refinement:
+        new_mesh.bounding_surfaces["Internal"].release(
+            "refinement placed its new vertices on the chords of the coarse surface, "
+            "not on the sphere")
+
     return new_mesh
 
 
