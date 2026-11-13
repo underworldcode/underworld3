@@ -80,7 +80,8 @@ def test_rotated_lid_reproduces_the_component_condition():
 
 
 def _lid_against_a_pinned_wall(left, capsys, lid_normal=(sympy.Rational(3, 5), sympy.Rational(4, 5)),
-                               right=None, clock=None, deprecated_component=None):
+                               right=None, clock=None, deprecated_component=None,
+                               rotated_floor=False, lid_datum=0):
     """Rotated free slip on Top with the given normal, meeting an essential
     condition ``left`` on Left (and ``right`` on Right, else rotated free slip);
     no slip on Bottom, so the only shared nodes are the lid's two ends.
@@ -95,8 +96,11 @@ def _lid_against_a_pinned_wall(left, capsys, lid_normal=(sympy.Rational(3, 5), s
     s.constitutive_model.Parameters.shear_viscosity_0 = 1
     s.bodyforce = sympy.Matrix([[0, sympy.cos(sympy.pi * x)]])
     s.tolerance = 1.0e-9
-    s.add_rotated_freeslip_bc(0, "Top", normal=sympy.Matrix([list(lid_normal)]))
-    s.add_dirichlet_bc((0.0, 0.0), "Bottom")
+    s.add_rotated_freeslip_bc(lid_datum, "Top", normal=sympy.Matrix([list(lid_normal)]))
+    if rotated_floor:
+        s.add_rotated_freeslip_bc(0, "Bottom", normal=sympy.Matrix([[0, -1]]))
+    else:
+        s.add_dirichlet_bc((0.0, 0.0), "Bottom")
     if right is None:
         s.add_rotated_freeslip_bc(0, "Right", normal=sympy.Matrix([[1, 0]]))
     else:
@@ -195,3 +199,53 @@ def test_the_older_components_form_of_an_essential_condition_still_solves(capsys
     with pytest.warns(DeprecationWarning):
         warnings = _lid_against_a_pinned_wall(0.05, capsys, deprecated_component=1)
     assert len(warnings) == 1 and "component of 0.04 along the wall normal" in warnings[0]
+
+
+@pytest.mark.tier_b
+@pytest.mark.parametrize("left, size", [((None, "x"), None), ((None, "z"), "0.8"), (("z", 0.0), "0.6")],
+                         ids=["u_z = x", "u_z = z", "u_x = z"])
+def test_a_pin_that_is_a_bare_coordinate_solves_and_is_read_at_the_node(left, size, capsys):
+    """A value that is one coordinate symbol is evaluated like any other.
+
+    On Left (x = 0) with the lid normal (3/5, 4/5): u_z = x is zero at the corner;
+    u_z = z is 1 there, so n.v = 4/5; u_x = z (simple shear on the side wall) gives 3/5.
+    """
+    def value(mesh):
+        coordinate = dict(x=mesh.X[0], z=mesh.X[1])
+        return sympy.Matrix([[sympy.oo if c is None else coordinate.get(c, c) for c in left]])
+
+    warnings = _lid_against_a_pinned_wall(value, capsys)
+    if size is None:
+        assert warnings == []
+    else:
+        assert len(warnings) == 1 and f"component of {size} along the wall normal" in warnings[0]
+
+
+@pytest.mark.tier_b
+def test_a_value_that_cannot_be_evaluated_is_reported_and_does_not_stop_the_solve(monkeypatch, capsys):
+    """The check runs on the ranks that hold a shared node, ahead of a collective
+    report: a failure inside it must become the "could not be evaluated" warning,
+    never an exception on some ranks."""
+    from underworld3.utilities import rotated_bc
+
+    def cannot_evaluate(solver, value, x):
+        raise TypeError("no value here")
+
+    monkeypatch.setattr(rotated_bc, "_value_at_point", cannot_evaluate)
+    warnings = _lid_against_a_pinned_wall((None, 0.05), capsys)
+    assert len(warnings) == 1 and "could not be evaluated" in warnings[0]
+
+
+@pytest.mark.tier_b
+def test_the_size_reported_for_a_wall_is_the_largest_over_its_shared_nodes(capsys):
+    """With rotated free slip on the floor too, Left meets two rotated walls:
+    0.04 at the lid's end and 0.05 at the floor's."""
+    warnings = _lid_against_a_pinned_wall((None, 0.05), capsys, rotated_floor=True)
+    assert len(warnings) == 1 and "component of 0.05 along the wall normal" in warnings[0]
+
+
+@pytest.mark.tier_b
+def test_a_node_with_a_prescribed_wall_normal_datum_keeps_its_own_warning(capsys):
+    """A datum wall meeting a pin is the partial-datum case, reported separately."""
+    warnings = _lid_against_a_pinned_wall((None, 0.05), capsys, lid_datum=0.1)
+    assert warnings == []
