@@ -7296,10 +7296,16 @@ class SNES_Scalar(SolverBaseClass):
         debug_name : str, optional
             Name prefix for debug output files.
         time : float or Quantity, optional
-            Physical time for this solve. Passed as ``petsc_t`` to all
-            pointwise functions. Expressions using ``mesh.t`` evaluate at
-            this time. Non-dimensionalised when scaling is active.
-            Default: None (petsc_t unchanged).
+            Physical time for this solve. Passed as ``petsc_t`` to the
+            pointwise residual and Jacobian functions, where expressions
+            using ``mesh.t`` evaluate at this time. Non-dimensionalised when
+            scaling is active. Default: None (petsc_t unchanged).
+
+            An essential (Dirichlet) condition that reads ``mesh.t`` does not
+            see this value: it is evaluated at the model clock
+            (``uw.get_default_model().tracker.time``). With ``time=2`` and
+            the clock at 0, a wall prescribed as ``mesh.t`` holds 0 (#410).
+            Set the clock for a time-dependent essential condition.
         divergence_retries : int, default=0
             If SNES reports DIVERGED after the solve, re-call it with warm
             start up to this many times. A single retry rescues most VEP
@@ -13007,6 +13013,11 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             pointwise residual and Jacobian functions. Expressions using
             ``mesh.t`` will evaluate at this time. Non-dimensionalised
             automatically when scaling is active. Default: None (petsc_t=0).
+
+            An essential (Dirichlet) condition that reads ``mesh.t`` does not
+            see this value: it is evaluated at the model clock
+            (``uw.get_default_model().tracker.time``, #410). Set the clock
+            for a time-dependent essential condition.
         divergence_retries : int, default=0
             If the final SNES solve reports DIVERGED, re-call it with warm
             start up to this many times. A single retry rescues most VEP
