@@ -323,7 +323,7 @@ if analytical:
     # TODO: Consider uw.synchronised_array_update() for multi-variable assignment
     def get_ana_soln(_var, _r_int, _soln_above, _soln_below):
         """Get analytical solution into mesh variables."""
-        r = uw.function.evalf(r_uw, _var.coords)
+        r = uw.function.evaluate(r_uw, _var.coords, rbf=True).squeeze()
         for i, coord in enumerate(_var.coords):
             if r[i] > _r_int:
                 _var.data[i] = _soln_above(coord)
@@ -537,7 +537,7 @@ if analytical:
     # TODO: Consider uw.synchronised_array_update() for multi-variable assignment
     def get_error(_var_err, _var_uw, _r_int, _soln_above, _soln_below):
         """Get error in numerical solution."""
-        r = uw.function.evalf(r_uw, _var_err.coords)
+        r = uw.function.evaluate(r_uw, _var_err.coords, rbf=True).squeeze()
         for i, coord in enumerate(_var_err.coords):
             if r[i] > _r_int:
                 _var_err.data[i] = _var_uw.data[i] - _soln_above(coord)

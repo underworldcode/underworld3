@@ -141,9 +141,9 @@ def plot_stream(title,showFig=False):
     dim = 2
     coords = pvmesh.points[:, 0:dim]
     vector_values = np.zeros_like(pvmesh.points)
-    vector_values[:, 0:dim] = uw.function.evalf(v.sym, coords)
+    vector_values[:, 0:dim] = uw.function.evaluate(v.sym, coords, rbf=True).squeeze()
     pvmesh.point_data["V"] = vector_values
-    pvmesh.point_data["P"] = uw.function.evalf(p.sym, coords)
+    pvmesh.point_data["P"] = uw.function.evaluate(p.sym, coords, rbf=True).squeeze()
     
     skip = 1
     points = np.zeros((mesh._centroids[::skip, 0].shape[0], 3))
@@ -623,8 +623,8 @@ class FreeSurfaceProcessor_Annulus(object):
             coords = self.mesh.X.coords[self.top]
             x = coords[:,0]
             y = coords[:,-1]
-            vx = uw.function.evalf(self.v.sym[0], coords)
-            vy = uw.function.evalf(self.v.sym[1], coords)
+            vx = uw.function.evaluate(self.v.sym[0], coords, rbf=True).squeeze()
+            vy = uw.function.evaluate(self.v.sym[1], coords, rbf=True).squeeze()
             
             # Advect top surface
             x2 = x + vx * self._dt

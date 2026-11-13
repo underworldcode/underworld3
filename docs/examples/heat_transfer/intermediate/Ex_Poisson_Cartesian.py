@@ -169,8 +169,8 @@ For this configuration, the solution is a linear function: phi = 1 - y
 """
 
 # %%
-mesh_numerical_soln = uw.function.evalf(poisson.u.fn, mesh.X.coords)
-mesh_analytic_soln = uw.function.evalf(1.0 - mesh.N.y, mesh.X.coords)
+mesh_numerical_soln = uw.function.evaluate(poisson.u.fn, mesh.X.coords, rbf=True).squeeze()
+mesh_analytic_soln = uw.function.evaluate(1.0 - mesh.N.y, mesh.X.coords, rbf=True).squeeze()
 
 max_error = np.abs(mesh_analytic_soln - mesh_numerical_soln).max()
 print(f"Maximum error: {max_error:.2e}")

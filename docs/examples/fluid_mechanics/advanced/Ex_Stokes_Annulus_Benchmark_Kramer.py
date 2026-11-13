@@ -306,7 +306,7 @@ if analytical:
     # TODO: Consider uw.synchronised_array_update() for multi-variable assignment
     def get_ana_soln(_var, _r_int, _soln_above, _soln_below):
         """Get analytical solution into mesh variables."""
-        r = uw.function.evalf(r_uw, _var.coords)
+        r = uw.function.evaluate(r_uw, _var.coords, rbf=True).squeeze()
         for i, coord in enumerate(_var.coords):
             if r[i] > _r_int:
                 _var.data[i] = _soln_above(coord)
@@ -502,7 +502,7 @@ if analytical:
     # TODO: Consider uw.synchronised_array_update() for multi-variable assignment
     def get_error(_var_err, _var_uw, _r_int, _soln_above, _soln_below):
         """Get error in numerical solution."""
-        r = uw.function.evalf(r_uw, _var_err.coords)
+        r = uw.function.evaluate(r_uw, _var_err.coords, rbf=True).squeeze()
         for i, coord in enumerate(_var_err.coords):
             if r[i] > _r_int:
                 _var_err.data[i] = _var_uw.data[i] - _soln_above(coord)
@@ -689,13 +689,13 @@ mesh.petsc_save_checkpoint(
 
 # %%
 # Get boundary indices
-lower_indx = uw.discretisation.petsc_discretisation.petsc_dm_find_labeled_points_local(mesh.dm, 'Lower')
-upper_indx = uw.discretisation.petsc_discretisation.petsc_dm_find_labeled_points_local(mesh.dm, 'Upper')
+lower_indx = uw.discretisation.petsc_dm_find_labeled_points_local(mesh.dm, 'Lower')
+upper_indx = uw.discretisation.petsc_dm_find_labeled_points_local(mesh.dm, 'Upper')
 
 # Get theta from x, y
-lower_theta = uw.function.evalf(th_uw, mesh.X.coords[lower_indx])
+lower_theta = uw.function.evaluate(th_uw, mesh.X.coords[lower_indx], rbf=True).squeeze()
 lower_theta[lower_theta < 0] += 2 * np.pi
-upper_theta = uw.function.evalf(th_uw, mesh.X.coords[upper_indx])
+upper_theta = uw.function.evaluate(th_uw, mesh.X.coords[upper_indx], rbf=True).squeeze()
 upper_theta[upper_theta < 0] += 2 * np.pi
 
 # %%
@@ -703,7 +703,7 @@ upper_theta[upper_theta < 0] += 2 * np.pi
 if analytical:
     def get_ana_soln_2(_var, _coords, _r_int, _soln_above, _soln_below):
         """Get analytical solution at given coordinates."""
-        r = uw.function.evalf(r_uw, _coords)
+        r = uw.function.evaluate(r_uw, _coords, rbf=True).squeeze()
         for i, coord in enumerate(_coords):
             if r[i] > _r_int:
                 _var[i] = _soln_above(coord)
@@ -719,8 +719,8 @@ if analytical:
     # Pressure analytical and numerical
     get_ana_soln_2(p_ana_upper, mesh.X.coords[upper_indx], r_int, soln_above.pressure_cartesian, soln_below.pressure_cartesian)
     get_ana_soln_2(p_ana_lower, mesh.X.coords[lower_indx], r_int, soln_above.pressure_cartesian, soln_below.pressure_cartesian)
-    p_uw_lower[:, 0] = uw.function.evalf(p_uw.sym, mesh.X.coords[lower_indx])
-    p_uw_upper[:, 0] = uw.function.evalf(p_uw.sym, mesh.X.coords[upper_indx])
+    p_uw_lower[:, 0] = uw.function.evaluate(p_uw.sym, mesh.X.coords[lower_indx], rbf=True).squeeze()
+    p_uw_upper[:, 0] = uw.function.evaluate(p_uw.sym, mesh.X.coords[upper_indx], rbf=True).squeeze()
 
     # Velocity arrays
     v_ana_lower = np.zeros_like(mesh.X.coords[lower_indx])
@@ -731,8 +731,8 @@ if analytical:
     # Velocity analytical and numerical
     get_ana_soln_2(v_ana_upper, mesh.X.coords[upper_indx], r_int, soln_above.velocity_cartesian, soln_below.velocity_cartesian)
     get_ana_soln_2(v_ana_lower, mesh.X.coords[lower_indx], r_int, soln_above.velocity_cartesian, soln_below.velocity_cartesian)
-    v_uw_lower = uw.function.evalf(v_uw.sym, mesh.X.coords[lower_indx])
-    v_uw_upper = uw.function.evalf(v_uw.sym, mesh.X.coords[upper_indx])
+    v_uw_lower = uw.function.evaluate(v_uw.sym, mesh.X.coords[lower_indx], rbf=True).squeeze()
+    v_uw_upper = uw.function.evaluate(v_uw.sym, mesh.X.coords[upper_indx], rbf=True).squeeze()
 
 # Sort arrays for plotting
 sort_lower = lower_theta.argsort()

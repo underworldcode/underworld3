@@ -295,7 +295,7 @@ while step < nsteps:
         print(f"Step: {str(step).rjust(3)}, time: {time:6.5f}")
 
     # UW3 profile
-    t1 = uw.function.evalf(adv_diff.u.sym[0], sample_points)
+    t1 = uw.function.evaluate(adv_diff.u.sym[0], sample_points, rbf=True).squeeze()
 
     if uw.mpi.size == 1 and step % 10 == 0:
         plt.figure()

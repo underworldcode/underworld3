@@ -284,7 +284,7 @@ init_t = (
 adv_diff.add_dirichlet_bc(0.0, "Upper")
 
 with meshball.access(t_0, t_soln):
-    t_0.data[...] = uw.function.evalf(init_t, t_0.coords).reshape(-1, 1)
+    t_0.data[...] = uw.function.evaluate(init_t, t_0.coords, rbf=True).squeeze().reshape(-1, 1)
     t_soln.data[...] = t_0.data[...]
 
 # %% [markdown]
@@ -301,7 +301,7 @@ if params.uw_restart_step != 0:
 
 # %%
 with meshball.access(r_mesh):
-    r_mesh.X.coords[:, 0] = uw.function.evalf(r, meshball.data)
+    r_mesh.X.coords[:, 0] = uw.function.evaluate(r, meshball.data, rbf=True).squeeze()
 
 # %% [markdown]
 """

@@ -124,7 +124,7 @@ class boundaries(Enum):
     Upper = 2
     Centre = 10
 
-meshball = uw.meshing.Mesh(
+meshball = uw.discretisation.Mesh(
     dmplex,
     boundaries = boundaries,
     coordinate_system_type=uw.coordinates.CoordinateSystemType.CYLINDRICAL2D_NATIVE,

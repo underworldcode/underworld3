@@ -175,8 +175,8 @@ fault_norm.data[mask] = surf2d_3.point_data["Normals"][closest_points[mask]]
 import underworld3.visualisation as vis
 
 pv_mesh = vis.mesh_to_pv_mesh(mesh)
-pv_mesh.point_data["norm"] = uw.function.evalf(fault_norm.sym, pv_mesh.points)
-pv_mesh.point_data["dist"] = uw.function.evalf(fault_dist.sym, pv_mesh.points)
+pv_mesh.point_data["norm"] = uw.function.evaluate(fault_norm.sym, pv_mesh.points, rbf=True).squeeze()
+pv_mesh.point_data["dist"] = uw.function.evaluate(fault_dist.sym, pv_mesh.points, rbf=True).squeeze()
 
 pv_mesh_clipped = pv_mesh.clip(normal="y", origin=(0,0.5,0))
 
@@ -266,24 +266,24 @@ nodal_strain_rate_inv2.solve()
 import underworld3.visualisation as vis
 
 pv_mesh = vis.mesh_to_pv_mesh(mesh)
-pv_mesh.point_data["norm"] = uw.function.evalf(fault_norm.sym, pv_mesh.points)
-pv_mesh.point_data["D"] = uw.function.evalf(fault_dist.sym, pv_mesh.points)
-pv_mesh.point_data["V"] = uw.function.evalf(v_soln.sym, pv_mesh.points)
-pv_mesh.point_data["Edot"] = uw.function.evalf(strain_rate_inv2.sym, pv_mesh.points)
+pv_mesh.point_data["norm"] = uw.function.evaluate(fault_norm.sym, pv_mesh.points, rbf=True).squeeze()
+pv_mesh.point_data["D"] = uw.function.evaluate(fault_dist.sym, pv_mesh.points, rbf=True).squeeze()
+pv_mesh.point_data["V"] = uw.function.evaluate(v_soln.sym, pv_mesh.points, rbf=True).squeeze()
+pv_mesh.point_data["Edot"] = uw.function.evaluate(strain_rate_inv2.sym, pv_mesh.points, rbf=True).squeeze()
 
 pv_mesh_clip = pv_mesh.clip(normal="y", origin=(0, 0.5, 0))
 
-surf2d.point_data["Edot"] = uw.function.evalf(strain_rate_inv2.sym, surf2d.points)
-surf2d.point_data["V"] = uw.function.evalf(v_soln.sym, surf2d.points)
+surf2d.point_data["Edot"] = uw.function.evaluate(strain_rate_inv2.sym, surf2d.points, rbf=True).squeeze()
+surf2d.point_data["V"] = uw.function.evaluate(v_soln.sym, surf2d.points, rbf=True).squeeze()
 
-surf2d_1.point_data["Edot"] = uw.function.evalf(strain_rate_inv2.sym, surf2d_1.points)
-surf2d_1.point_data["V"] = uw.function.evalf(v_soln.sym, surf2d_1.points)
+surf2d_1.point_data["Edot"] = uw.function.evaluate(strain_rate_inv2.sym, surf2d_1.points, rbf=True).squeeze()
+surf2d_1.point_data["V"] = uw.function.evaluate(v_soln.sym, surf2d_1.points, rbf=True).squeeze()
 
-surf2d_2.point_data["Edot"] = uw.function.evalf(strain_rate_inv2.sym, surf2d_2.points)
-surf2d_2.point_data["V"] = uw.function.evalf(v_soln.sym, surf2d_2.points)
+surf2d_2.point_data["Edot"] = uw.function.evaluate(strain_rate_inv2.sym, surf2d_2.points, rbf=True).squeeze()
+surf2d_2.point_data["V"] = uw.function.evaluate(v_soln.sym, surf2d_2.points, rbf=True).squeeze()
 
-surf2d_3.point_data["Edot"] = uw.function.evalf(strain_rate_inv2.sym, surf2d_3.points)
-surf2d_3.point_data["V"] = uw.function.evalf(v_soln.sym, surf2d_3.points)
+surf2d_3.point_data["Edot"] = uw.function.evaluate(strain_rate_inv2.sym, surf2d_3.points, rbf=True).squeeze()
+surf2d_3.point_data["V"] = uw.function.evaluate(v_soln.sym, surf2d_3.points, rbf=True).squeeze()
 
 
 

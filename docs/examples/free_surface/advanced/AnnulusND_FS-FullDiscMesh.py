@@ -101,14 +101,14 @@ viscosity_fn = sympy.Piecewise(
 
 # %%
 # TODO: Consider uw.synchronised_array_update() for multi-variable assignment
-R0.data[:,0] = uw.function.evalf(r, R0.coords)
-R0c.data[:,0] = uw.function.evalf(r, R0c.coords)
-D.data[:,0] = uw.function.evalf((r-r_i)/(r_o-r_i), D.coords)
+R0.data[:,0] = uw.function.evaluate(r, R0.coords, rbf=True).squeeze()
+R0c.data[:,0] = uw.function.evaluate(r, R0c.coords, rbf=True).squeeze()
+D.data[:,0] = uw.function.evaluate((r-r_i)/(r_o-r_i), D.coords, rbf=True).squeeze()
 Mc.data[:,0] = (D.data[:,0] <= 1) * (D.data[:,0] >= 0)
 
 
 gauss = sympy.exp(-100*(D.sym[0]-0.5)**2)
-T.data[:,0] = uw.function.evalf( gauss * (sympy.sin(5 * th)**3 + 0.1 * sympy.sin(3*th)**3) * Mc.sym[0], T.coords  )
+T.data[:,0] = uw.function.evaluate( gauss * (sympy.sin(5 * th)**3 + 0.1 * sympy.sin(3*th)**3) * Mc.sym[0], T.coords, rbf=True  ).squeeze()
 
 
 
@@ -150,7 +150,7 @@ g_solver.solve()
 # %%
 ## Now deform the mesh using this smooth field
 
-displacement = uw.function.evalf(Vr.sym * mesh.CoordinateSystem.unit_e_0 , mesh.X.coords)
+displacement = uw.function.evaluate(Vr.sym * mesh.CoordinateSystem.unit_e_0 , mesh.X.coords, rbf=True).squeeze()
 mesh._deform_mesh(mesh.X.coords + displacement)
 
 
@@ -385,7 +385,7 @@ delta_t.sym = stokes.estimate_dt() / 3
 ## Relaxation loop
 
 gauss = sympy.exp(-50*(D.sym[0]-0.5)**2)
-T.data[:,0] = uw.function.evalf( gauss * (sympy.sin(5 * th)**3 + 0.1 * sympy.sin(3*th))**3 * Mc.sym[0], T.coords  )
+T.data[:,0] = uw.function.evaluate( gauss * (sympy.sin(5 * th)**3 + 0.1 * sympy.sin(3*th))**3 * Mc.sym[0], T.coords, rbf=True  ).squeeze()
 
 
 for step in range(0,10):
@@ -398,7 +398,7 @@ for step in range(0,10):
     g_solver.solve()
 
     delta_t.sym = stokes.estimate_dt() / 3
-    displacement = delta_t.sym * uw.function.evalf(Vr.sym * mesh.CoordinateSystem.unit_e_0, mesh.X.coords)
+    displacement = delta_t.sym * uw.function.evaluate(Vr.sym * mesh.CoordinateSystem.unit_e_0, mesh.X.coords, rbf=True).squeeze()
 
     print(f"ts: {ts} / Displacement - Amplitude: {np.abs(displacement).max()}")
 

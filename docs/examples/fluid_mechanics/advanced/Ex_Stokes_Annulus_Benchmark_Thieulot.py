@@ -280,11 +280,11 @@ if analytical:
             v_r.subs({r: r_uw, theta: th_uw}),
             v_theta.subs({r: r_uw, theta: th_uw})
         ])
-        p_ana.data[:, 0] = uw.function.evalf(p.subs({r: r_uw, theta: th_uw}), p_ana.coords)
-        rho_ana.data[:, 0] = uw.function.evalf(rho.subs({r: r_uw, theta: th_uw}), rho_ana.coords)
+        p_ana.data[:, 0] = uw.function.evaluate(p.subs({r: r_uw, theta: th_uw}), p_ana.coords, rbf=True).squeeze()
+        rho_ana.data[:, 0] = uw.function.evaluate(rho.subs({r: r_uw, theta: th_uw}), rho_ana.coords, rbf=True).squeeze()
 
-    v_ana.data[:, 0] = uw.function.evalf(v_ana_expr[0], v_ana.coords)
-    v_ana.data[:, 1] = uw.function.evalf(v_ana_expr[1], v_ana.coords)
+    v_ana.data[:, 0] = uw.function.evaluate(v_ana_expr[0], v_ana.coords, rbf=True).squeeze()
+    v_ana.data[:, 1] = uw.function.evaluate(v_ana_expr[1], v_ana.coords, rbf=True).squeeze()
 
 # %% [markdown]
 """
@@ -607,13 +607,13 @@ The following sections compare analytical and numerical solutions on boundaries.
 
 # %%
 # Get boundary indices
-lower_indx = uw.discretisation.petsc_discretisation.petsc_dm_find_labeled_points_local(mesh.dm, 'Lower')
-upper_indx = uw.discretisation.petsc_discretisation.petsc_dm_find_labeled_points_local(mesh.dm, 'Upper')
+lower_indx = uw.discretisation.petsc_dm_find_labeled_points_local(mesh.dm, 'Lower')
+upper_indx = uw.discretisation.petsc_dm_find_labeled_points_local(mesh.dm, 'Upper')
 
 # Get theta from x, y
-lower_theta = uw.function.evalf(th_uw, mesh.X.coords[lower_indx])
+lower_theta = uw.function.evaluate(th_uw, mesh.X.coords[lower_indx], rbf=True).squeeze()
 lower_theta[lower_theta < 0] += 2 * np.pi
-upper_theta = uw.function.evalf(th_uw, mesh.X.coords[upper_indx])
+upper_theta = uw.function.evaluate(th_uw, mesh.X.coords[upper_indx], rbf=True).squeeze()
 upper_theta[upper_theta < 0] += 2 * np.pi
 
 # %%
@@ -629,10 +629,10 @@ if analytical:
         p_ana_lower[:, 0] = 0
         p_ana_upper[:, 0] = 0
     else:
-        p_ana_lower[:, 0] = uw.function.evalf(p.subs({r: r_uw, theta: th_uw}), mesh.X.coords[lower_indx])
-        p_ana_upper[:, 0] = uw.function.evalf(p.subs({r: r_uw, theta: th_uw}), mesh.X.coords[upper_indx])
-    p_uw_lower[:, 0] = uw.function.evalf(p_uw.sym, mesh.X.coords[lower_indx])
-    p_uw_upper[:, 0] = uw.function.evalf(p_uw.sym, mesh.X.coords[upper_indx])
+        p_ana_lower[:, 0] = uw.function.evaluate(p.subs({r: r_uw, theta: th_uw}), mesh.X.coords[lower_indx], rbf=True).squeeze()
+        p_ana_upper[:, 0] = uw.function.evaluate(p.subs({r: r_uw, theta: th_uw}), mesh.X.coords[upper_indx], rbf=True).squeeze()
+    p_uw_lower[:, 0] = uw.function.evaluate(p_uw.sym, mesh.X.coords[lower_indx], rbf=True).squeeze()
+    p_uw_upper[:, 0] = uw.function.evaluate(p_uw.sym, mesh.X.coords[upper_indx], rbf=True).squeeze()
 
     # Velocity arrays
     v_ana_lower = np.zeros_like(mesh.X.coords[lower_indx])
@@ -640,12 +640,12 @@ if analytical:
     v_uw_lower = np.zeros_like(mesh.X.coords[lower_indx])
     v_uw_upper = np.zeros_like(mesh.X.coords[upper_indx])
 
-    v_ana_lower[:, 0] = uw.function.evalf(v_ana_expr[0], mesh.X.coords[lower_indx])
-    v_ana_lower[:, 1] = uw.function.evalf(v_ana_expr[1], mesh.X.coords[lower_indx])
-    v_ana_upper[:, 0] = uw.function.evalf(v_ana_expr[0], mesh.X.coords[upper_indx])
-    v_ana_upper[:, 1] = uw.function.evalf(v_ana_expr[1], mesh.X.coords[upper_indx])
-    v_uw_lower = uw.function.evalf(v_uw.sym, mesh.X.coords[lower_indx])
-    v_uw_upper = uw.function.evalf(v_uw.sym, mesh.X.coords[upper_indx])
+    v_ana_lower[:, 0] = uw.function.evaluate(v_ana_expr[0], mesh.X.coords[lower_indx], rbf=True).squeeze()
+    v_ana_lower[:, 1] = uw.function.evaluate(v_ana_expr[1], mesh.X.coords[lower_indx], rbf=True).squeeze()
+    v_ana_upper[:, 0] = uw.function.evaluate(v_ana_expr[0], mesh.X.coords[upper_indx], rbf=True).squeeze()
+    v_ana_upper[:, 1] = uw.function.evaluate(v_ana_expr[1], mesh.X.coords[upper_indx], rbf=True).squeeze()
+    v_uw_lower = uw.function.evaluate(v_uw.sym, mesh.X.coords[lower_indx], rbf=True).squeeze()
+    v_uw_upper = uw.function.evaluate(v_uw.sym, mesh.X.coords[upper_indx], rbf=True).squeeze()
 
 # Sort arrays for plotting
 sort_lower = lower_theta.argsort()

@@ -192,7 +192,7 @@ adv_diff.add_dirichlet_bc(0.0, "Right")
 """
 
 # %%
-T.data[:, 0] = uw.function.evalf(Ts0, T.coords)
+T.data[:, 0] = uw.function.evaluate(Ts0, T.coords, rbf=True).squeeze()
 
 # %% [markdown]
 """

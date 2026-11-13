@@ -255,7 +255,7 @@ mat.data[...] = 0
 mat.data[mat.coords[:, 0] + fluctuation < x0] = 1
 
 # Initialize swarm material
-material.data[:, 0] = uw.function.evalf(mat.sym, swarm._particle_coordinates.data)
+material.data[:, 0] = uw.function.evaluate(mat.sym, swarm._particle_coordinates.data, rbf=True).squeeze()
 
 # %% [markdown]
 """

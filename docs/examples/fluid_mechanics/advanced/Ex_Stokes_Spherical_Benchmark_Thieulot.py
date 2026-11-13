@@ -371,11 +371,11 @@ phi_uw = sp.Piecewise(
 # %%
 if analytical:
     # TODO: Consider uw.synchronised_array_update() for multi-variable assignment
-    p_ana.data[:, 0] = uw.function.evalf(p.subs({r: r_uw, theta: th_uw, phi: phi_uw}), p_ana.coords)
-    rho_ana.data[:, 0] = uw.function.evalf(rho.subs({r: r_uw, theta: th_uw, phi: phi_uw}), rho_ana.coords)
-    v_ana.data[:, 0] = uw.function.evalf(v_x.subs({r: r_uw, theta: th_uw, phi: phi_uw}), v_ana.coords)
-    v_ana.data[:, 1] = uw.function.evalf(v_y.subs({r: r_uw, theta: th_uw, phi: phi_uw}), v_ana.coords)
-    v_ana.data[:, 2] = uw.function.evalf(v_z.subs({r: r_uw, theta: th_uw, phi: phi_uw}), v_ana.coords)
+    p_ana.data[:, 0] = uw.function.evaluate(p.subs({r: r_uw, theta: th_uw, phi: phi_uw}), p_ana.coords, rbf=True).squeeze()
+    rho_ana.data[:, 0] = uw.function.evaluate(rho.subs({r: r_uw, theta: th_uw, phi: phi_uw}), rho_ana.coords, rbf=True).squeeze()
+    v_ana.data[:, 0] = uw.function.evaluate(v_x.subs({r: r_uw, theta: th_uw, phi: phi_uw}), v_ana.coords, rbf=True).squeeze()
+    v_ana.data[:, 1] = uw.function.evaluate(v_y.subs({r: r_uw, theta: th_uw, phi: phi_uw}), v_ana.coords, rbf=True).squeeze()
+    v_ana.data[:, 2] = uw.function.evaluate(v_z.subs({r: r_uw, theta: th_uw, phi: phi_uw}), v_ana.coords, rbf=True).squeeze()
 
 # %% [markdown]
 """

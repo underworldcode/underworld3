@@ -224,7 +224,7 @@ expt_name = f"Cylinder_NS_rho_{navier_stokes.rho}_{int(params.uw_resolution)}"
 
 # %%
 navier_stokes.delta_t_physical = params.uw_dt
-navier_stokes.solve(timestep=params.uw_dt, verbose=False, evalf=True, order=1)
+navier_stokes.solve(timestep=params.uw_dt, verbose=False, order=1)
 
 uw.pprint(f"Estimated dt: {navier_stokes.estimate_dt()}")
 
@@ -408,7 +408,7 @@ navier_stokes.delta_t_physical = params.uw_dt
 delta_t = params.uw_dt
 
 for step in range(0, int(params.uw_max_steps) + 1):
-    navier_stokes.solve(timestep=delta_t, zero_init_guess=False, evalf=True)
+    navier_stokes.solve(timestep=delta_t, zero_init_guess=False)
     passive_swarm.advection(v_soln.sym, delta_t, order=2, corrector=False, evalf=False)
 
     nodal_vorticity_from_v.solve()

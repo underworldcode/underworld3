@@ -192,8 +192,8 @@ for step in range(0, 50):
 
 
 
-mesh_numerical_soln = uw.function.evalf(poisson.u.fn, mesh.X.coords)
-mesh_analytic_soln = uw.function.evalf(1.0 - mesh.N.y, mesh.X.coords)
+mesh_numerical_soln = uw.function.evaluate(poisson.u.fn, mesh.X.coords, rbf=True).squeeze()
+mesh_analytic_soln = uw.function.evaluate(1.0 - mesh.N.y, mesh.X.coords, rbf=True).squeeze()
 if not np.allclose(mesh_analytic_soln, mesh_numerical_soln, rtol=0.0001):
     print("Unexpected values encountered.")
 

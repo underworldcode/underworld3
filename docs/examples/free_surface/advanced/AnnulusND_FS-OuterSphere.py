@@ -69,11 +69,11 @@ layer_fn = sympy.Piecewise(
     (0, True)
 )
 
-M.data[:,0] = uw.function.evalf(layer_fn, M.coords)
+M.data[:,0] = uw.function.evaluate(layer_fn, M.coords, rbf=True).squeeze()
 
-R0.data[:,0] = uw.function.evalf(r, R0.coords)
+R0.data[:,0] = uw.function.evaluate(r, R0.coords, rbf=True).squeeze()
 
-R0c.data[:,0] = uw.function.evalf(r, R0c.coords)
+R0c.data[:,0] = uw.function.evaluate(r, R0c.coords, rbf=True).squeeze()
 
 
 
@@ -99,7 +99,7 @@ diffuser.solve()
 # %%
 ## Now deform the mesh using this smooth field
 
-displacement = uw.function.evalf(Vr.sym * mesh.CoordinateSystem.unit_e_0 , mesh.X.coords)
+displacement = uw.function.evaluate(Vr.sym * mesh.CoordinateSystem.unit_e_0 , mesh.X.coords, rbf=True).squeeze()
 mesh._deform_mesh(mesh.X.coords + displacement)
 
 
@@ -231,7 +231,7 @@ for step in range(0,100):
     diffuser.solve(zero_init_guess=False)
     
     # delta_t.value = stokes.estimate_dt()
-    displacement = delta_t.value * uw.function.evalf(Vr.sym * mesh.CoordinateSystem.unit_e_0 , mesh.X.coords)
+    displacement = delta_t.value * uw.function.evaluate(Vr.sym * mesh.CoordinateSystem.unit_e_0 , mesh.X.coords, rbf=True).squeeze()
 
     print(f"Displacement - Amplitude: {np.abs(displacement).max()}")
 

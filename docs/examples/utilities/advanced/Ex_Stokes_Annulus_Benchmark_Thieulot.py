@@ -104,7 +104,7 @@ if plot_ana:
 if plot_ana:
     with mesh_ana.access(v_ana, p_ana, rho_ana):
         # velocities
-        r = uw.function.evalf(r_ana, v_ana.coords)
+        r = uw.function.evaluate(r_ana, v_ana.coords, rbf=True).squeeze()
         for i, coord in enumerate(v_ana.coords):
             if r[i]>r_int:
                 v_ana.data[i] = solution_above.velocity_cartesian(coord)
@@ -113,7 +113,7 @@ if plot_ana:
         
         
         # pressure 
-        r = uw.function.evalf(r_ana, p_ana.coords)
+        r = uw.function.evaluate(r_ana, p_ana.coords, rbf=True).squeeze()
         for i, coord in enumerate(p_ana.coords):
             if r[i]>r_int:
                 p_ana.data[i] = solution_above.pressure_cartesian(coord)
@@ -121,7 +121,7 @@ if plot_ana:
                 p_ana.data[i] = solution_below.pressure_cartesian(coord)
     
         # density
-        r = uw.function.evalf(r_ana, rho_ana.coords)
+        r = uw.function.evaluate(r_ana, rho_ana.coords, rbf=True).squeeze()
         for i, coord in enumerate(rho_ana.coords):
             if r[i]>r_int:
                 rho_ana.data[i] = solution_above.radial_stress_cartesian(coord)
@@ -263,7 +263,7 @@ stokes.solve()
 
 with mesh_uw.access(v_uw, p_uw, v_err, p_err):
         # velocities
-        r = uw.function.evalf(r_uw, v_err.coords)
+        r = uw.function.evaluate(r_uw, v_err.coords, rbf=True).squeeze()
         for i, coord in enumerate(v_err.coords):
             if r[i]>r_int:
                 v_err.data[i] = v_uw.data[i] - solution_above.velocity_cartesian(coord)
@@ -272,7 +272,7 @@ with mesh_uw.access(v_uw, p_uw, v_err, p_err):
         
         
         # pressure 
-        r = uw.function.evalf(r_uw, p_err.coords)
+        r = uw.function.evaluate(r_uw, p_err.coords, rbf=True).squeeze()
         for i, coord in enumerate(p_err.coords):
             if r[i]>r_int:
                 p_err.data[i] = p_uw.data[i] - solution_above.pressure_cartesian(coord)
@@ -347,7 +347,7 @@ if uw.mpi.size == 1:
     pl.show(cpos="xy")
 
 # pressure error (L2 norm)
-p_err.stats()[5]/p_ana.stats()[5]
+p_err.stats()['norm2']/p_ana.stats()['norm2']
 
 mesh_uw.dm.view()
 

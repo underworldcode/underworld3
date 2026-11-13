@@ -95,7 +95,7 @@ minY, maxY = 0.0, 10.0
 minZ, maxZ = 0.0, 2.0
 
 # creating mesh from plex
-mesh = uw.meshing.Mesh(medit_plex, boundaries=boundaries_3D, boundary_normals=boundary_normals_3D)
+mesh = uw.discretisation.Mesh(medit_plex, boundaries=boundaries_3D, boundary_normals=boundary_normals_3D)
 mesh.dm.view()
 
 # +
