@@ -3046,9 +3046,9 @@ class SolverBaseClass(uw_object):
         # value term fn_f tested against mu, and the flux term fn_F tested
         # against grad(mu). Reading fn_f alone missed a Nitsche condition's
         # symmetric term: a datum imposed by Nitsche then had the wrong sign
-        # (#1143). The continuity-row term fn_p of a Stokes Nitsche condition
-        # is not assembled by the forward operator yet (#1072), so it has no
-        # part here; when it is, it is tested against the pressure adjoint lam.
+        # (#1143). A Stokes Nitsche condition's continuity-row term fn_p
+        # (assembled on the pressure field, #1072) is tested against the
+        # pressure adjoint lam.
         import sympy
         mu_sym = mu.sym
         comps = getattr(mu, "num_components", 1)
@@ -3073,6 +3073,19 @@ class SolverBaseClass(uw_object):
                     integrand = sum(dF[c, k] * grad_mu[c, k]
                                     for c in range(grad_mu.shape[0]) for k in range(grad_mu.shape[1]))
                     total += integral(self.mesh, integrand, bc.boundary)
+            cont = getattr(bc, "fn_p", None)
+            if cont is not None:
+                dp = diff_wrt_field(self._peel_except(sympy.Matrix(cont), wrt), wrt)
+                if not dp.is_zero_matrix:
+                    # Decided from the condition and the arguments alone, the
+                    # same on every rank.
+                    if lam is None:
+                        raise ValueError(
+                            f"sensitivity: {wrt} enters the continuity-row term of the "
+                            f"Nitsche condition on {bc.boundary!r}, which is tested against "
+                            "the pressure adjoint: pass lam=, the pressure part of the "
+                            "adjoint_solve target.")
+                    total += integral(self.mesh, list(dp)[0] * lam.sym[0], bc.boundary)
         return total
 
     def _constraint_mechanisms(self):
