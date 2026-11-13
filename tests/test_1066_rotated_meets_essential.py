@@ -77,3 +77,47 @@ def test_rotated_lid_reproduces_the_component_condition():
         u, _c = _solve(lid)
         rel = np.linalg.norm(u - reference) / np.linalg.norm(reference)
         assert rel < 1.0e-7, f"{lid} lid differs from the direct reference by {rel:.2e}"
+
+
+def _tilted_lid_against_a_pinned_wall(left, monkeypatch, capsys):
+    """Rotated free slip on Top with the normal (3/5, 4/5), meeting an essential
+    condition ``left`` on Left. Returns what the solve printed."""
+    from underworld3.utilities import rotated_bc
+
+    # the warning is given once per process: let each test see it afresh
+    monkeypatch.setattr(rotated_bc, "_NONZERO_PIN_WARNED", [False], raising=False)
+    mesh = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.25, qdegree=3)
+    x, _z = mesh.X
+    v = uw.discretisation.MeshVariable("Upin", mesh, mesh.dim, degree=2)
+    p = uw.discretisation.MeshVariable("Ppin", mesh, 1, degree=1)
+    s = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
+    s.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    s.constitutive_model.Parameters.shear_viscosity_0 = 1
+    s.bodyforce = sympy.Matrix([[0, sympy.cos(sympy.pi * x)]])
+    s.tolerance = 1.0e-9
+    s.add_rotated_freeslip_bc(0, "Top", normal=sympy.Matrix([[sympy.Rational(3, 5), sympy.Rational(4, 5)]]))
+    s.add_rotated_freeslip_bc(0, "Bottom", normal=sympy.Matrix([[0, -1]]))
+    s.add_rotated_freeslip_bc(0, "Right", normal=sympy.Matrix([[1, 0]]))
+    s.add_dirichlet_bc(left, "Left")
+    capsys.readouterr()
+    s.solve()
+    return capsys.readouterr().out
+
+
+@pytest.mark.tier_b
+def test_a_nonzero_pin_at_a_rotated_corner_is_reported(monkeypatch, capsys):
+    """The corner's reduced constraint holds the pinned components at zero (#939).
+
+    With u_z = 1/20 pinned on Left, the wall-normal velocity at the Top-Left corner
+    comes out as 4/5 x 1/20 = 0.04 where the rotated wall asks for zero. Until the
+    affine reduction is implemented the solve must say so.
+    """
+    out = _tilted_lid_against_a_pinned_wall((None, 0.05), monkeypatch, capsys)
+    assert "nonzero essential value" in out and "Left" in out
+
+
+@pytest.mark.tier_b
+def test_a_zero_pin_at_a_rotated_corner_is_silent(monkeypatch, capsys):
+    out = _tilted_lid_against_a_pinned_wall((None, 0.0), monkeypatch, capsys)
+    assert "nonzero essential value" not in out
