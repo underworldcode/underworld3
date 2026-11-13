@@ -217,9 +217,10 @@ partition, the mesh size or the unit system changes.
 - **Identity is topological.** A vertex, facet, fault side or owning rank is identified
   by its mesh point, its label or its point-SF ownership, NEVER by its coordinates. Where
   a choice must be the same at every rank count, say so in the code. A DMPlex point
-  number depends on the partition, so a partition-independent tie-break needs a
-  partition-independent key, for example coordinate order over a candidate set that is
-  the same on every rank.
+  number, local or global, depends on the partition, so a partition-independent
+  tie-break needs a partition-independent key. Once topology has fixed the candidates,
+  and they are the same on every rank, ordering them by their coordinates is such a
+  key: the coordinates rank the candidates, they do not identify them.
 - **Properties are declared and maintained, not re-measured.** An operation that writes
   coordinates either preserves a declared property by construction or releases it, and
   says which. A mover that keeps boundary nodes on their wall is the example: it keeps
