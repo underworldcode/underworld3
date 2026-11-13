@@ -1,0 +1,79 @@
+{
+  "source": "GWB v1.1.0 cookbook: cookbooks/simple_subduction_2d_cartesian/simple_subduction_2d_cartesian.wb",
+  "gwb_version": "v1.1.0",
+  "domain_km": [
+    8000,
+    1600
+  ],
+  "finest_cells": [
+    160,
+    80
+  ],
+  "temperature_dofs": 13041,
+  "swarm_particles": 115200,
+  "material_counts": {
+    "Mantle": 106911,
+    "Incoming plate": 4050,
+    "Descending slab": 1246,
+    "Overriding plate": 2993
+  },
+  "weak_particles": 139,
+  "interface_width_km": 40.0,
+  "interface_depth_limit_km": 200.0,
+  "interface_arc_length_km": 410.7932503187131,
+  "temperature_preservation_max_error_K": 0.0,
+  "tag_preservation_max_error": 0.0,
+  "material_mask_mismatches": 0,
+  "bulk_viscosities_Pa_s": [
+    1e+21,
+    5e+21,
+    1e+22,
+    5e+21
+  ],
+  "weak_viscosity_Pa_s": 1e+20,
+  "slab_density_anomaly_kg_m3": 50.0,
+  "cases": {
+    "coupled": {
+      "converged": true,
+      "ksp_reason": 2,
+      "residual": 3.566210252909031e-08,
+      "velocity_pc": "custom-FMG",
+      "velocity_pc_type": "mg",
+      "boundary": {
+        "left_normal": 0.0,
+        "right_normal": 0.0,
+        "top_normal": 0.0,
+        "bottom_speed": 0.0
+      },
+      "maximum_speed_cm_year": 21.703075154200526,
+      "strain": {
+        "band_rms_per_s": 1.1838822187578157e-14,
+        "collar_rms_per_s": 1.143837421699292e-14,
+        "band_nodes": 60,
+        "collar_nodes": 161
+      }
+    },
+    "weak_interface": {
+      "converged": true,
+      "ksp_reason": 2,
+      "residual": 9.168680415211777e-09,
+      "velocity_pc": "custom-FMG",
+      "velocity_pc_type": "mg",
+      "boundary": {
+        "left_normal": 0.0,
+        "right_normal": 0.0,
+        "top_normal": 0.0,
+        "bottom_speed": 0.0
+      },
+      "maximum_speed_cm_year": 24.620700104571053,
+      "strain": {
+        "band_rms_per_s": 8.949959669656826e-14,
+        "collar_rms_per_s": 1.6578840683338422e-14,
+        "band_nodes": 60,
+        "collar_nodes": 161
+      }
+    }
+  },
+  "relative_velocity_field_change": 0.33536497614508193,
+  "scope": "Instantaneous numerical proof of concept, not converged or calibrated subduction"
+}
