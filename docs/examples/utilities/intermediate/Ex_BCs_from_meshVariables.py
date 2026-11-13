@@ -110,7 +110,7 @@ with pygmsh.occ.Geometry() as geom:
 
 import meshio
 
-mesh = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.0, cellSize=0.1)
+mesh = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.1, cellSize=0.1, qdegree=6)
 
 mesh.dm.view()
 
@@ -124,13 +124,13 @@ if PETSc.Comm.size == 1:
     import pyvista as pv
     import underworld3.visualisation as vis
 
-    pvmesh = vis.mesh_to_pv_mesh(meshbox)
+    pvmesh = vis.mesh_to_pv_mesh(mesh)
 
     clipped_stack = pvmesh.clip(
         origin=(0.0, 0.0, 0.0), normal=(-1, -1, 0), invert=False
     )
 
-    pl = pv.Plotter()
+    pl = pv.Plotter(off_screen=True)
 
     # pl.add_mesh(pvmesh,'Blue', 'wireframe' )
     pl.add_mesh(
@@ -150,7 +150,7 @@ poisson = uw.systems.Poisson(
 )
 
 poisson.constitutive_model = uw.constitutive_models.DiffusionModel
-poisson.k = k
+poisson.constitutive_model.Parameters.diffusivity = k
 poisson.f = 0.0
 
 bcs_var = uw.discretisation.MeshVariable("bcs", mesh, 1)
@@ -161,10 +161,10 @@ import sympy
 abs_r = sympy.sqrt(mesh.rvec.dot(mesh.rvec))
 bc = sympy.cos(2.0 * mesh.N.y)
 
-bcs_var.data[:, 0] = uw.function.evaluate(bc, bcs_var.coords)
+bcs_var.data[:, 0] = uw.function.evaluate(bc, bcs_var.coords).reshape(-1)
 
-poisson.add_dirichlet_bc(bcs_var.sym[0], "Upper", components=0)
-poisson.add_dirichlet_bc(-1.0, "Centre", components=0)
+poisson.add_dirichlet_bc(sympy.Matrix([bcs_var.sym[0]]), "Upper")
+poisson.add_dirichlet_bc(sympy.Matrix([-1.0]), "Lower")
 # -
 
 poisson.petsc_options.getAll()
@@ -174,6 +174,22 @@ poisson.petsc_options.getAll()
 # -
 
 poisson.solve()
+
+# Verify that the numerical solution is finite and nonconstant.
+solution = np.asarray(t_soln.data[:, 0])
+
+if not np.all(np.isfinite(solution)):
+    raise RuntimeError("Poisson solution contains nonfinite values")
+
+if np.ptp(solution) < 1.0e-8:
+    raise RuntimeError("Poisson solution is unexpectedly constant")
+
+print(
+    "Poisson validation:",
+    f"minimum={solution.min():.6f}",
+    f"maximum={solution.max():.6f}",
+    f"degrees_of_freedom={solution.size}",
+)
 
 # +
 # check the mesh if in a notebook / serial
@@ -185,11 +201,11 @@ if uw.mpi.size == 1:
 
     pvmesh = vis.mesh_to_pv_mesh(mesh)
 
-    pvmesh.point_data["T"] = uw.function.evaluate(t_soln.fn, mesh.X.coords)
+    pvmesh.point_data["T"] = uw.function.evaluate(t_soln.fn, mesh.X.coords).reshape(-1)
 
     # clipped_stack = pvmesh.clip(origin=(0.001,0.0,0.0), normal=(1, 0, 0), invert=False)
 
-    pl = pv.Plotter()
+    pl = pv.Plotter(off_screen=True)
 
     # pl.add_mesh(pvmesh,'Blue', 'wireframe' )
     pl.add_mesh(
