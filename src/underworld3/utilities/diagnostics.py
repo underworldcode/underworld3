@@ -239,14 +239,14 @@ def check_petsc_version() -> DiagnosticResult:
         version = PETSc.Sys.getVersion()
         version_str = f"{version[0]}.{version[1]}.{version[2]}"
 
-        # Check minimum version
-        if version[0] < 3 or (version[0] == 3 and version[1] < 21):
+        # the releases petsc_compat.h builds against
+        if (version[0], version[1]) != (3, 25):
             return DiagnosticResult(
                 name="PETSc Version",
                 status=Status.WARNING,
-                message=f"PETSc {version_str} may be too old",
-                details="Underworld3 requires PETSc >= 3.21",
-                fix_hint="Update PETSc: pixi install or conda install petsc>=3.21"
+                message=f"PETSc {version_str} is not a release Underworld3 builds against",
+                details="Underworld3 requires PETSc 3.25.x",
+                fix_hint="Install PETSc 3.25: pixi install or conda install 'petsc>=3.25,<3.26'"
             )
 
         return DiagnosticResult(

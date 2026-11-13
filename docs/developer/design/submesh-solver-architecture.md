@@ -74,16 +74,21 @@ extraction is collective, including ranks with no local faces.
 Independent child repartitioning requires migrating the parent--child mapping;
 it is not provided by coordinate-coincidence injection.
 
-**A solve runs on a child that leaves a rank without cells.** A preserved
-partition leaves a rank with no cells of the child whenever its share of the
-parent lies outside the region. Scalar and Stokes solves both run on such a
-child, and on any mesh whose partition leaves a rank without cells. A Stokes
-solver has kernels for the Jacobian and for the matrix its preconditioner is
-built from, and PETSc 3.25.3 assembles the two in one pass that skips an
-assembly of the Jacobian on a rank without cells (`DMPlexComputeJacobianByKey`;
-#962). The solver's local Jacobian routine therefore hands PETSc one matrix and
-one set of kernels to a call (`UW_DMPlexSNESComputeJacobianFEM` in
-`petsc_compat.h`), which costs a second sweep over the cells for each Jacobian.
+**A Stokes solve is not refused on a child that leaves a rank without cells.**
+A preserved partition leaves a rank with no cells of the child whenever its
+share of the parent lies outside the region. A Stokes solver has kernels for
+the Jacobian and for the matrix its preconditioner is built from, and PETSc
+3.25 assembles the two in one pass that skips an assembly of the Jacobian on a
+rank without cells (`DMPlexComputeJacobianByKey`; #962). The solver's local
+Jacobian routine therefore hands PETSc one matrix and one set of kernels to a
+call (`UW_DMPlexSNESComputeJacobianFEM` in `petsc_compat.h`), which costs a
+second sweep over the cells for each Jacobian. It is a workaround, to be removed
+when PETSc assembles alike on every rank, and the header stops the build on a
+PETSc release it has not been verified against.
+`tests/parallel/test_0786_stokes_rank_without_cells_parallel.py` runs a scalar
+and a Stokes solve on such a child, and a Stokes solve on two small meshes
+whose partition leaves a rank without cells. A constrained solve and a
+multigrid hierarchy with such a rank have no test.
 
 The subdomain and resolution-level examples solve the **same** annulus +
 radial-buoyancy Stokes problem so those two flavours are directly

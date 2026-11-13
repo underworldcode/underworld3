@@ -213,9 +213,10 @@ one campaign and is the error to recognise.
   [Multigrid preconditioning](../../advanced/multigrid-preconditioning.md).
 - The base should still give every rank a cell. It is partitioned before it is
   refined and every level keeps that partition, so a rank the base leaves empty
-  holds no cells at any level. The solve runs, on fewer ranks than it was given:
+  holds no cells at any level and does none of the work:
   `Annulus(cellSize=0.8, refinement=2)` on 8 ranks has cells per rank
-  [48, 48, 0, 64, 0, 64, 64, 64].
+  [48, 48, 0, 64, 0, 64, 64, 64]. A Stokes solve is no longer refused on such a
+  mesh (#962), but no test runs a multigrid hierarchy with an empty rank.
 - The augmented-Lagrangian penalty at $\gamma = 1$ shortens the pressure Schur
   loop once the velocity preconditioner is healthy (22 to 17 iterations, warm
   solve ahead of GAMG outright); $\gamma = 10$ over-stiffens the velocity block
