@@ -52,6 +52,13 @@ def test_new_variables_on_a_fixed_mesh_leave_no_growing_deferred_list():
                                              cellSize=1 / 16, qdegree=2)
     held = []
     counts = []
+    # Handles a user may hold across the rebuilds: the DM before them, and the
+    # first variable's vector before the second variable replaces it. The
+    # cleanup must leave both usable (#492): an eager destroy would zero them.
+    first = uw.discretisation.MeshVariable("G1164_first", mesh, 1, degree=2)
+    first.array[...] = 3.0
+    old_dm = mesh.dm
+    old_vec = first.vec
     for k in range(12):
         held.append(uw.discretisation.MeshVariable(f"G1164_{k}", mesh, 1, degree=2))
         held[-1].array[...] = float(k)
@@ -68,6 +75,11 @@ def test_new_variables_on_a_fixed_mesh_leave_no_growing_deferred_list():
         local = float(np.abs(values - k).max()) if values.size else 0.0
         assert uw.mpi.comm.allreduce(local, op=uw.MPI.MAX) == 0.0
     _poisson_solves_on(mesh, held[-1])
+
+    assert old_dm.handle != 0 and old_dm.getChart()[1] > 0
+    assert old_vec.handle != 0 and old_vec.getLocalSize() >= 0
+    assert uw.mpi.comm.allreduce(float(abs(np.asarray(first.array) - 3.0).max())
+                                 if np.asarray(first.array).size else 0.0, op=uw.MPI.MAX) == 0.0
 
 
 def _poisson_solves_on(mesh, T):

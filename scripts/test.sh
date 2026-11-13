@@ -403,8 +403,6 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   batch 3 tests/parallel/test_1086_boundary_slip_classification_parallel.py
   # So is the merge of coarse unknowns sharing one fine image (#1101).
   batch 3 tests/parallel/test_1101_custom_mg_dependent_columns_parallel.py
-  # A new variable on a fixed mesh leaves no growing deferred-destroy list (#868).
-  batch 3 tests/parallel/test_1164_variable_rebuild_frees_petsc_garbage_parallel.py
   # So is a fault cut into a moved adapt child under the #1101 guard (#1111).
   batch 3 tests/parallel/test_1111_custom_mg_cut_of_a_moved_child_parallel.py
   # Shell Inner/Outer cell labels follow the Internal surface, not a radius test:

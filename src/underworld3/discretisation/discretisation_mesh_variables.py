@@ -2422,10 +2422,14 @@ class _BaseMeshVariable(Stateful, uw_object):
             # deferred-destroy list, which only a collective cleanup empties; a
             # run on one fixed mesh that keeps adding variables never reached
             # one (#868). Every rank rebuilds here, so the call is collective.
-            # Only wrappers Python has already collected are destroyed, so a
-            # handle a user still holds is untouched (#492).
-            from underworld3.mpi import _free_petsc_garbage
-            _free_petsc_garbage(dm_new.getComm())
+            # It destroys only wrappers already collected, so a handle a user
+            # still holds is untouched (#492). No Python gc.collect(): the
+            # released objects are freed by reference count as they are
+            # dropped, and a collection on every new variable cost ~90 ms
+            # each, serially too. In serial nothing is deferred.
+            comm = dm_new.getComm()
+            if comm.getSize() > 1:
+                PETSc.garbage_cleanup(comm)
         else:
             # First field - normal fast path
             self.field_id = self.mesh.dm.getNumFields()
