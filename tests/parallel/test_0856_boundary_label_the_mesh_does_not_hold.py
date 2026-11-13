@@ -122,3 +122,76 @@ def test_a_dm_without_the_consolidated_label_has_no_boundary_stratum():
     if bare.hasLabel("UW_Boundaries"):
         bare.removeLabel("UW_Boundaries")
     assert _boundary_stratum_is(bare, mesh, "Upper") is None
+
+
+def _disc_stokes(mesh):
+    velocity = uw.discretisation.MeshVariable("U", mesh, mesh.dim, degree=2)
+    pressure = uw.discretisation.MeshVariable("P", mesh, 1, degree=1)
+    stokes = uw.systems.Stokes(mesh, velocityField=velocity, pressureField=pressure)
+    stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    stokes.constitutive_model.Parameters.shear_viscosity_0 = 1
+    return stokes
+
+
+def test_the_rotated_wall_rows_of_a_label_the_mesh_does_not_hold_are_empty():
+    from underworld3.utilities.rotated_bc import _wall_vertex_rows
+
+    mesh = _disc()
+    assert _wall_vertex_rows(mesh.dm, "Lower").size == 0
+    assert _global_sum(_wall_vertex_rows(mesh.dm, "Upper").size) > 0
+
+
+def test_rotated_free_slip_on_a_wall_the_mesh_does_not_hold_is_refused():
+    """A constraint asked for on a wall that does not exist is refused where it
+    is asked for, naming the wall and the labels the mesh does hold."""
+    mesh = _disc()
+    stokes = _disc_stokes(mesh)
+    stokes.add_rotated_freeslip_bc(0, "Upper")
+    with pytest.raises(ValueError, match=r"'Lower'.*Upper"):
+        stokes.add_rotated_freeslip_bc(0, "Lower")
+    # The refused condition was not recorded.
+    assert [name for name, _ in stokes._rotated_freeslip_bcs] == ["Upper"]
+
+
+def test_an_inactive_region_label_the_mesh_does_not_hold_is_refused():
+    mesh = _disc()
+    stokes = _disc_stokes(mesh)
+    stokes.add_dirichlet_bc((0, 0), "Upper")
+    stokes.set_active_region("no_such_region", 1)
+    with pytest.raises(ValueError, match="'no_such_region' not found"):
+        stokes.solve()
+
+
+def test_default_pinning_warns_when_the_mesh_holds_none_of_its_named_walls():
+    """A DM that has lost its per-boundary labels would be smoothed with no
+    wall pinned. The default list says so, naming the walls."""
+    from underworld3.meshing.smoothing.graph import _pinned_labels_or_default
+
+    mesh = _disc()
+    mesh.dm.removeLabel("Upper")
+    if uw.mpi.rank == 0:
+        with pytest.warns(UserWarning, match="Upper"):
+            assert _pinned_labels_or_default(mesh, None) == ()
+    else:
+        assert _pinned_labels_or_default(mesh, None) == ()
+
+
+def test_a_named_pinned_label_the_mesh_does_not_hold_warns():
+    from underworld3.meshing.smoothing.graph import _pinned_labels_or_default
+
+    mesh = _disc()
+    if uw.mpi.rank == 0:
+        with pytest.warns(UserWarning, match="Uper"):
+            labels = _pinned_labels_or_default(mesh, ["Uper"])
+    else:
+        labels = _pinned_labels_or_default(mesh, ["Uper"])
+    assert labels == ("Uper",)
+
+
+def test_the_solid_disc_default_pinning_does_not_warn():
+    import warnings
+    from underworld3.meshing.smoothing.graph import _pinned_labels_or_default
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        assert _pinned_labels_or_default(_disc(), None) == ("Upper",)
