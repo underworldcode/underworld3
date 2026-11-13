@@ -4913,22 +4913,24 @@ class SolverBaseClass(uw_object):
             self.snes.destroy()
             self.snes = None
 
+        # The cached field index sets (Stokes specific but safe to check here)
+        # describe the section of the DM being replaced. They go whether or not
+        # that DM is still here: ``_reset()`` drops the DM and leaves them.
+        if hasattr(self, "_pressure_is") and self._pressure_is is not None:
+            self._pressure_is.destroy()
+            self._pressure_is = None
+        if hasattr(self, "_velocity_is") and self._velocity_is is not None:
+            self._velocity_is.destroy()
+            self._velocity_is = None
+
+        if getattr(self, "_multiplier_is", None):
+            for mis in self._multiplier_is.values():
+                mis.destroy()
+            self._multiplier_is = {}
+
         if self.dm is not None:
             if verbose and uw.mpi.rank == 0:
                 print(f"Destroy solver DM hierarchy", flush=True)
-
-            # Clean up field decomposition cache (Stokes specific but safe to check here)
-            if hasattr(self, "_pressure_is") and self._pressure_is is not None:
-                self._pressure_is.destroy()
-                self._pressure_is = None
-            if hasattr(self, "_velocity_is") and self._velocity_is is not None:
-                self._velocity_is.destroy()
-                self._velocity_is = None
-
-            if getattr(self, "_multiplier_is", None):
-                for mis in self._multiplier_is.values():
-                    mis.destroy()
-                self._multiplier_is = {}
 
             if hasattr(self, "_subdict") and self._subdict:
                 for name, (is_set, subdm) in self._subdict.items():

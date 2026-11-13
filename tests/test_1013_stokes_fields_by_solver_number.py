@@ -12,6 +12,12 @@ second. Three places took one for the other:
   called before the first solve, split the residual into fields by the
   variables' mesh positions.
 
+The two residual routines now split a vector with the index sets the solve
+keeps. Those describe one DM's section, and ``_reset()``, which drops the DM,
+left them behind: a solver that was used, reset and then given constraint
+multipliers copied its solution back with the old sets, and the velocity came
+back wrong with no error.
+
 Power: every case runs for three creation orders and asserts the positions it
 relies on. With the pressure first, the velocity's walls must not be read as
 pressure conditions (a refusal of a sound solve, with the nullspace or with a
@@ -45,6 +51,7 @@ SPEED_CONSTRAINED = 6.8786717972e-02
 # zero the residual is the body force's: its norm over the velocity entries.
 VELOCITY_ENTRIES, PRESSURE_ENTRIES = 162, 25
 BODY_FORCE_RESIDUAL = 9.3750784657e-02
+FIRST_MOMENT = 2.0 / np.pi**2
 
 
 def _stokes(order, solver_class=uw.systems.Stokes):
@@ -121,9 +128,7 @@ def test_the_record_names_the_pressure_condition(order):
 def test_a_constrained_solve_keeps_its_velocity_wall(order):
     """A constraint multiplier brings the guard in with no pressure nullspace asked for."""
     stokes, v = _stokes(order, uw.systems.Stokes_Constrained)
-    stokes.add_essential_bc((0.0, 0.0), "Bottom")
-    stokes.add_constraint_bc(0.0, "Left", normal=sympy.Matrix([[-1.0, 0.0]]))
-    stokes.add_constraint_bc(0.0, "Right", normal=sympy.Matrix([[1.0, 0.0]]))
+    _no_flow_through_the_sides(stokes)
     stokes.solve()
 
     assert stokes.snes.getConvergedReason() > 0
@@ -134,12 +139,17 @@ def test_a_constrained_solve_keeps_its_velocity_wall(order):
 @pytest.mark.tier_b
 @pytest.mark.parametrize("order", ORDERS, ids="-".join)
 def test_the_volume_residual_before_a_solve_is_split_by_solver_field(order):
-    stokes, _v = _closed_walls(order, pressure_on_top=False)
+    stokes, v = _closed_walls(order, pressure_on_top=False)
     rows = stokes.compute_volume_residual_fields()
 
     assert (rows["velocity"].size, rows["pressure"].size) == (VELOCITY_ENTRIES, PRESSURE_ENTRIES)
     momentum = float(np.linalg.norm(rows["velocity"]))
     assert abs(momentum - BODY_FORCE_RESIDUAL) <= 1.0e-6 * BODY_FORCE_RESIDUAL
+    # each row sits at its variable's own node: the load is (0, cos(pi x)), and
+    # the first moment in x of cos(pi x) over the box is -2/pi^2
+    at_nodes = rows["velocity"].reshape(-1, 2)
+    assert float(np.abs(at_nodes[:, 0]).max()) == 0.0
+    assert abs(float(at_nodes[:, 1] @ v.coords[:, 0]) - FIRST_MOMENT) <= 1.0e-6 * FIRST_MOMENT
     # no velocity, so nothing in the continuity rows
     assert float(np.abs(rows["pressure"]).max()) == 0.0
 
@@ -164,3 +174,53 @@ def test_the_boundary_residual_before_a_solve_is_split_by_solver_field(order):
     assert (rows["velocity"].size, rows["pressure"].size) == (VELOCITY_ENTRIES, PRESSURE_ENTRIES)
     assert float(np.abs(rows["velocity"]).max()) == 0.0
     assert abs(float(rows["pressure"].sum()) + 1.0 / 6.0) < 1.0e-12
+
+
+def _no_flow_through_the_sides(stokes):
+    stokes.add_essential_bc((0.0, 0.0), "Bottom")
+    stokes.add_constraint_bc(0.0, "Left", normal=sympy.Matrix([[-1.0, 0.0]]))
+    stokes.add_constraint_bc(0.0, "Right", normal=sympy.Matrix([[1.0, 0.0]]))
+
+
+@pytest.mark.tier_b
+@pytest.mark.parametrize("order", ORDERS, ids="-".join)
+def test_the_multiplier_rows_before_a_solve_are_split_by_solver_field(order):
+    """A multiplier's rows sum to the flow out through its wall.
+
+    The velocity (y, 0) is held exactly by the elements. Its flow out through
+    Left is -1/2 and through Right 1/2; the first moments in y are -1/3 and 1/3.
+    """
+    stokes, v = _stokes(order, uw.systems.Stokes_Constrained)
+    _no_flow_through_the_sides(stokes)
+    v.array[:, 0, 0] = v.coords[:, 1]
+    v.array[:, 0, 1] = 0.0
+    rows = stokes.compute_volume_residual_fields()
+
+    assert (rows["velocity"].size, rows["pressure"].size) == (VELOCITY_ENTRIES, PRESSURE_ENTRIES)
+    for constraint, outward in zip(stokes._block_constraint_bcs, (-1.0, 1.0)):
+        multiplier = constraint.lam
+        at_nodes = rows[multiplier._solver_field_name]
+        assert at_nodes.size == multiplier.coords.shape[0]
+        assert abs(float(at_nodes.sum()) - outward / 2.0) < 1.0e-12
+        assert abs(float(at_nodes @ multiplier.coords[:, 1]) - outward / 3.0) < 1.0e-12
+
+
+@pytest.mark.tier_b
+@pytest.mark.parametrize("first_use", ("a residual before any solve", "a solve"))
+def test_constraints_added_after_a_reset_get_their_own_index_sets(first_use):
+    """``_reset()`` is private, and three of the examples call it between solves."""
+    stokes, v = _stokes(("v", "p"), uw.systems.Stokes_Constrained)
+    stokes.add_essential_bc((0.0, 0.0), "Bottom")
+    stokes.add_essential_bc((0.0, 0.0), "Top")
+    if first_use == "a solve":
+        stokes.solve()
+        v.array[...] = 0.0
+    else:
+        stokes.compute_volume_residual_fields()
+
+    stokes._reset()
+    _no_flow_through_the_sides(stokes)
+    stokes.solve(zero_init_guess=True)
+
+    assert stokes.snes.getConvergedReason() > 0
+    assert abs(_largest_speed(v) - SPEED_CONSTRAINED) <= 1.0e-6 * SPEED_CONSTRAINED
