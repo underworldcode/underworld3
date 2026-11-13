@@ -370,9 +370,9 @@ def _nested_prolongation_local(coarse_dm, fine_dm):
         # ONE coarse cell: there the coarse P1 field is linear, so the averaged
         # row is the embedding whichever such pair is taken, and a true parent
         # edge always lies in one coarse cell. In 3-D a cascade vertex often has
-        # two or three matching pairs, and the first found used to be taken even
-        # when its rows were in two different cells (#449). Read from the
-        # coarse mesh's connectivity; no tolerance.
+        # two or three matching pairs, some of them with rows in two different
+        # cells, which are skipped (#449). Read from the coarse mesh's
+        # connectivity; no tolerance.
         ccS, ccE = coarse_dm.getHeightStratum(0)
         cells_of = [set() for _ in range(cvE - cvS)]
         for c in range(ccS, ccE):
@@ -431,10 +431,9 @@ def _nested_prolongation_local(coarse_dm, fine_dm):
 
 def nested_prolongation(engine, coarse_map, fine_map, n_coarse, vS_fine,
                         n_fine):
-    # The 3-D wrong rows of #449 came from the DM-inference route
-    # (_nested_prolongation_local's round 2, now restricted to pairs whose rows
-    # lie in one coarse cell). This route reads the engine's own edge-to-midpoint
-    # record and measured no wrong rows (W1, #449).
+    # This route reads the engine's own edge-to-midpoint record, so each fine
+    # vertex's parents are known, not inferred (compare
+    # _nested_prolongation_local, which infers them in round 2; #449).
     """Exact P1 prolongation for ONE bisection generation, in DM numbering.
 
     A bisection generation adds exactly one kind of vertex: the midpoint of a

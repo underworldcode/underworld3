@@ -2,7 +2,8 @@
 
 ``nvb._nested_prolongation_local`` resolves a fine vertex the first round
 cannot (one not at a coarse vertex or edge midpoint) as the average of two
-resolved fine neighbours whose midpoint it is. In 3-D a vertex inside the
+resolved fine neighbours whose midpoint it is, taking only a pair whose two
+rows lie in one coarse cell. In 3-D a vertex inside the
 closure cascade usually has two or three such pairs, and the first one found
 was sometimes not its parents: their rows lie in two different coarse cells,
 and the row taken (often 1/2, 1/2 on two coarse vertices joined by no coarse
@@ -10,8 +11,8 @@ edge) is wrong by O(1) on a random field, while still reproducing every
 linear field exactly. A pair is now accepted only if its two rows' supports
 lie in one coarse cell, where the averaged row is the embedding whichever such
 pair is taken. On the four passes this test runs, development has 0, 0, 1 and 7
-wrong rows on Linux (MPICH; gmsh as pinned there) and 0, 0, 1 and 4 on macOS
-(W1); with the condition, none.
+wrong rows on Linux (MPICH; gmsh as pinned there) and 0, 0, 1 and 4 on macOS;
+with the condition, none.
 
 The fixture: a unit cube at cellSize 0.5 refined once, then native bisection
 passes marking the cells whose centroid is within 0.2 of z = 0.5. Each pass is

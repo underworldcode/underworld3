@@ -36,7 +36,8 @@ import pytest
 import scipy.sparse as sp
 import underworld3 as uw
 
-pytestmark = [pytest.mark.level_1, pytest.mark.tier_a]
+# The level is per case: the slow 3-D every-pass case is level_2, the rest level_1.
+pytestmark = [pytest.mark.tier_a]
 
 
 def _metric(centroids):
@@ -127,7 +128,10 @@ def _adapted(dim, cell_size, max_levels=2, ratio=2.0):
 # 3-D at a coarsening ratio of 1.2: each pass is a kept level, so a wrong round-2
 # pair is not hidden inside one cell of the next kept level (#449: with the
 # one-cell condition removed it has 6 of 44 wrong rows; the 2.0 case none).
-CASES = [(2, 0.2, 2, 2.0), (3, 0.4, 2, 2.0), (2, 0.3, 4, 4.0), (3, 0.4, 2, 1.2)]
+CASES = [pytest.param(2, 0.2, 2, 2.0, marks=pytest.mark.level_1),
+         pytest.param(3, 0.4, 2, 2.0, marks=pytest.mark.level_1),
+         pytest.param(2, 0.3, 4, 4.0, marks=pytest.mark.level_1),
+         pytest.param(3, 0.4, 2, 1.2, marks=pytest.mark.level_2)]   # slow: 3 to 11 min
 CASE_IDS = ["2d", "3d", "2d-composed", "3d-every-pass"]
 
 
@@ -174,8 +178,9 @@ def _embedding_report(dim, cell_size, max_levels, ratio):
     Returns ``(on_support, interior)``: lists of ``(pass, row, exact)`` for rows
     whose fine vertex lies on a coarse vertex or edge, and for rows whose fine
     vertex lies strictly inside a coarse cell. They are reported separately
-    because in 3-D only the second kind is broken, and lumping them together
-    loses the guarantee on the first — which is the majority.
+    because in 3-D only the second kind can come from round 2's inference
+    (#449), and lumping them together loses the guarantee on the first — which
+    is the majority.
     """
     child = _adapted(dim, cell_size, max_levels, ratio)
     Ps = child._adapt_prolongation
@@ -256,8 +261,8 @@ def test_reproduces_an_arbitrary_coarse_field(dim, cell_size, max_levels, ratio)
     In 3-D a vertex the closure cascade places strictly inside a coarse tet
     used to take the first pair of resolved neighbours whose midpoint it is,
     which was sometimes not its parents (#449, worst error 1.19). Every
-    dimension now asserts exactness; test_0449 checks the same rows on a mesh
-    that does not depend on which gmsh built it.
+    dimension now asserts exactness; test_0449 checks the same rows on four
+    native bisection passes of a box, every pass a level.
     """
     _on_support, interior = _embedding_report(dim, cell_size, max_levels, ratio)
     wrong = [(k, r) for k, r, exact in interior if not exact]
@@ -322,6 +327,7 @@ def test_transfer_is_sparser_than_point_location(dim, cell_size, max_levels, rat
             f"point-location density; the recorded transfer should be sparser")
 
 
+@pytest.mark.level_1
 def test_mg_actually_uses_the_recorded_transfer_for_degree_one():
     """Guard against silently reverting to point location.
 
@@ -369,6 +375,7 @@ def test_mg_actually_uses_the_recorded_transfer_for_degree_one():
     assert err < 1e-9
 
 
+@pytest.mark.level_1
 def test_higher_degree_still_uses_the_geometric_builder():
     """The recorded relation is vertex-level, so P2 must NOT use it (its edge
     DOFs are not described by the vertex parentage). #425 stage 2."""
