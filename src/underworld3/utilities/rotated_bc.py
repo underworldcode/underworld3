@@ -555,10 +555,18 @@ def build_rotation(solver, boundaries, datum_specs=None):
     # these, not against the merged frame of a node where walls meet (#968)
     given_dofs = {}
     datum_nodes = []                             # (global row, point, boundary name, normal sign)
+    pinned_value_conflicts = []
     for q, nrms in node_normals.items():
         lo = lsec.getFieldOffset(q, _VELOCITY_FIELD)
         grows = [int(l2g.apply([lo + c])[0]) for c in range(dim)]
         free = [c for c in range(dim) if grows[c] >= 0]
+        # components an essential condition holds (read from the section, so a
+        # ghost copy of the node gives the same answer as its owner)
+        pinned = [int(c) for c in lsec.getFieldConstraintIndices(q, _VELOCITY_FIELD)]
+        if pinned and q not in node_dspec:
+            conflict = _pinned_value_along_normal(solver, dm, q, pinned, nrms)
+            if conflict is not None:
+                pinned_value_conflicts.append(conflict)
         if not free:                             # every component pinned already
             continue
         if len(free) < dim:
@@ -582,9 +590,6 @@ def build_rotation(solver, boundaries, datum_specs=None):
                 # Preserve the previous behaviour rather than impose the wrong datum.
                 _warn_once_partial_datum()
                 continue
-            pinned = [c for c in range(dim) if grows[c] < 0]
-            for wall in _walls_pinning_nonzero(solver, dm, q, pinned):
-                _warn_once_nonzero_pin(wall)
             Mf = np.array(nrms, dtype=float)[:, free]
             scale = float(np.linalg.norm(np.array(nrms, dtype=float)))
             if float(np.linalg.norm(Mf)) <= 1e-12 * max(scale, 1.0):
@@ -627,6 +632,8 @@ def build_rotation(solver, boundaries, datum_specs=None):
             nn = M.sum(axis=0); nn = nn / (np.linalg.norm(nn) + 1e-30)
             sgn = 1.0 if float(np.dot(Vt[0], nn)) >= 0.0 else -1.0
             datum_nodes.append((grows[0], q, node_dspec[q], sgn))
+
+    _report_pinned_values_along_normals(solver, pinned_value_conflicts)
 
     # Split-fault contact: one orthogonal 2·dim block per coincident DOF pair,
     # transforming (v⁺, v⁻) to mean/jump components in the fault (n̂,t̂) frame —
@@ -753,37 +760,105 @@ def build_rotation(solver, boundaries, datum_specs=None):
     return Q, Qt, sorted(set(normal_rows)), datum_map
 
 
-_NONZERO_PIN_WARNED = [False]
+def _essential_value(bc, component, dim):
+    """What an essential condition prescribes on velocity ``component``: its
+    expression, or ``None`` where it leaves that component free."""
+    components = list(range(dim)) if bc.components is None else [int(c) for c in bc.components]
+    if component not in components:
+        return None
+    # one entry per field component, or (the older components= form) one per
+    # listed component
+    value = bc.fn[component] if len(bc.fn) == dim else bc.fn[components.index(component)]
+    return None if value in (sympy.oo, -sympy.oo) else value
 
 
-def _walls_pinning_nonzero(solver, dm, point, pinned):
-    """Names of the essential walls that hold ``point`` and prescribe, on one of
-    its ``pinned`` velocity components, a value not known to be zero."""
+def _value_at_point(solver, value, x):
+    """``value`` at the coordinates ``x`` as a float, or ``None`` where it cannot be
+    known without evaluating a field (constants, coordinates and the model clock
+    are known here; a mesh variable is not)."""
+    from underworld3.function.expressions import unwrap
+    expr = sympy.sympify(unwrap(sympy.sympify(value), keep_constants=False, return_self=False))
+    # A stored condition carries each coordinate as the mesh.X symbol or as the
+    # base scalar of mesh.N, which compare equal; replace whichever object the
+    # expression itself holds.
+    axes = list(zip(solver.mesh.X, solver.mesh.N.base_scalars()))
+    at_x = {symbol: float(x[i]) for symbol in expr.free_symbols
+            for i, names in enumerate(axes) if symbol in names}
+    expr = expr.xreplace(at_x)
+    return float(expr) if expr.is_number else None
+
+
+def _pinned_value_along_normal(solver, dm, point, pinned, normals):
+    """How far an essential value at ``point`` breaks the rotated wall's condition.
+
+    The reduced constraint at a node shared with an essential condition holds the
+    ``pinned`` components at zero, so the wall-normal velocity there comes out as
+    n_P . g_P: the pinned part of the normal against the prescribed value (#939).
+    Returns ``(walls, size, known)``: the essential walls whose values contribute,
+    the largest |n_P . g_P| over the node's normals, and whether every value could
+    be evaluated here. ``None`` when nothing contributes.
+    """
+    dim = len(normals[0])
+    values = {}
     walls = []
+    known = True
+    x = None
     for bc in solver.essential_bcs:
         if bc.f_id != _VELOCITY_FIELD or not dm.hasLabel(bc.boundary):
             continue
         if dm.getLabel(bc.boundary).getValue(point) < 0:
             continue
-        if any(c in pinned and sympy.sympify(bc.fn[c]).is_zero is not True
-               for c in bc.components):
-            walls.append(bc.boundary)
-    return walls
+        for c in pinned:
+            value = _essential_value(bc, c, dim)
+            if value is None or not any(float(n[c]) != 0.0 for n in normals):
+                continue
+            if x is None:
+                csec = dm.getCoordinateSection()
+                cvec = np.asarray(dm.getCoordinatesLocal().array).reshape(-1, dim)
+                v0, v1 = dm.getDepthStratum(0)
+                x = _point_coord(dm, dim, cvec, csec, v0, v1, point)
+            number = _value_at_point(solver, value, x)
+            if number is None:
+                known = False
+            elif number == 0.0:
+                continue
+            else:
+                values[c] = number
+            if bc.boundary not in walls:
+                walls.append(bc.boundary)
+    if not walls:
+        return None
+    size = max(abs(sum(float(n[c]) * g for c, g in values.items())) for n in normals)
+    # a normal that is axis-aligned up to round-off against a pinned value: nothing
+    # to report (the product is round-off of the value, not a broken condition)
+    if known and size <= 1.0e-12 * max((abs(g) for g in values.values()), default=0.0):
+        return None
+    return walls, size, known
 
 
-def _warn_once_nonzero_pin(wall):
-    """The reduced constraint at a node shared with an essential BC holds the pinned
-    components at zero. Where the essential value is not zero the wall-normal
-    velocity there is not the one asked for (#939). Say so once rather than
-    silently."""
-    if not _NONZERO_PIN_WARNED[0]:
-        _NONZERO_PIN_WARNED[0] = True
-        print(f"[rotated_bc] WARNING: a rotated wall shares a node with the essential BC "
-              f"on {wall!r}, which prescribes a nonzero essential value there; the "
-              f"wall-normal constraint at that node is reduced as if the value were "
-              f"zero (the affine reduction against the pinned components is not "
-              f"implemented), so v.n at the node is not the prescribed one. Other "
-              f"nodes are unaffected.")
+def _report_pinned_values_along_normals(solver, conflicts):
+    """Say, once per solver and essential wall, that a rotated wall's condition is
+    not met at a node it shares with that wall. COLLECTIVE: every rank calls it,
+    with its own (possibly empty) list."""
+    largest = {}
+    for rank_conflicts in mpi.comm.allgather(conflicts):
+        for walls, size, known in rank_conflicts:
+            for wall in walls:
+                seen_size, seen_known = largest.get(wall, (0.0, True))
+                largest[wall] = (max(seen_size, size), seen_known and known)
+    reported = solver.__dict__.setdefault("_rotated_pinned_value_walls_reported", set())
+    for wall in sorted(set(largest) - reported):
+        reported.add(wall)
+        size, known = largest[wall]
+        found = (f"has a component of {size:.3g} along the wall normal" if known else
+                 "could not be evaluated at the node and may have a component along "
+                 "the wall normal")
+        mpi.pprint(f"[rotated_bc] WARNING: a rotated wall shares a node with the essential "
+                   f"BC on {wall!r}, whose prescribed value there {found}. The wall-normal "
+                   f"constraint at such a node is reduced as if the essential value were "
+                   f"zero (the affine reduction against the pinned components is not "
+                   f"implemented), so v.n there is not the prescribed one. Other nodes "
+                   f"are unaffected.")
 
 
 _PARTIAL_DATUM_WARNED = [False]
@@ -1295,12 +1370,14 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
         * ``"rnorm_history"`` — the residual norm at each pass of the loop, the
           final measuring pass included;
         * ``"line_search_alpha"`` — the step length taken for each increment: 1 for
-          a full step, the backtracked fraction, or 0 where a step-norm exit left
-          the increment unapplied;
+          a full step, the backtracked fraction, or 0 where the increment was
+          not applied (a step-norm exit, or a line search that stalled);
         * ``"vel_its_last"``, ``"pres_its_last"`` — per increment, the iteration
           counts of the velocity and pressure sub-solves at their last
-          application in that increment. Both are empty when a warm start
-          converges at iteration 0, because no increment was solved;
+          application in that increment; ``None`` entries on the direct and
+          vector routes, which have no such sub-solves. Both lists are empty
+          when no increment was solved: a warm start that converges at
+          iteration 0, or a cold start with zero residual and no datum;
         * ``"continuation_switched"`` — whether the Picard→Newton tangent switch fired;
         * ``"continuation_switch_iteration"`` — the iteration it fired at (``None``
           if it did not);
