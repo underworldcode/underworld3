@@ -3152,7 +3152,8 @@ def _validity_and_orientation_gates(new, comm):
 
 
 def place_sheet(dm, points, triangles, label=CUT_LABEL, label_value=1,
-                clearance=0.6, verbose=False, *, setback=0.0, size=None):
+                clearance=0.6, verbose=False, *, setback=0.0, size=None,
+                split_faults_are_interior=False):
     """Embed a triangulated sheet in a 3-D mesh by placing its points.
 
     The 3-D form of :func:`place_along_lines`: the sheet's points become mesh
@@ -3222,6 +3223,11 @@ def place_sheet(dm, points, triangles, label=CUT_LABEL, label_value=1,
         Planar sheets only, and not with an outcropping sheet (the trace
         chain must stay on the boundary complex verbatim); the rim's
         corner geometry is preserved exactly.
+    split_faults_are_interior : bool, keyword-only
+        The mesh carries faults already split into it. Their two sides
+        are left out of the boundary the sheet is clipped against
+        (:func:`_leave_out_split_faults`); the carve still treats them
+        as walls. The same on every rank.
 
     Returns
     -------
@@ -3263,6 +3269,13 @@ def place_sheet(dm, points, triangles, label=CUT_LABEL, label_value=1,
     # The boundary complex is gathered identically everywhere and the clip
     # is deterministic from it, so every rank computes the same sheet.
     dom_verts, dom_tris = _domain_boundary_facets(dm)
+    slit_verts = None
+    if split_faults_are_interior:
+        # The two sides of a fault already split into the mesh are not
+        # domain boundary: a clip that took the slit for a wall refused the
+        # next sheet wherever it was (#1099).
+        dom_verts, dom_tris, slit_verts = _leave_out_split_faults(
+            dom_verts, dom_tris)
     setback = float(setback)
     if setback < 0.0:
         raise ValueError("setback must be non-negative")
@@ -3373,7 +3386,7 @@ def place_sheet(dm, points, triangles, label=CUT_LABEL, label_value=1,
                                                            dom_tris)
                 deletable, near, _regions = _outcrop_frame_3d(
                     X, on_wall, dom_verts, dom_tris, dom_region,
-                    sheet_pts, chain_edges)
+                    sheet_pts, chain_edges, slit_verts=slit_verts)
             extra_victims = np.zeros(len(X), dtype=bool)
             for _attempt in range(_SHEET_FILL_ATTEMPTS):
                 victims, drop_ids, shell, cap_faces = _carve_cavity_3d(
@@ -3725,6 +3738,9 @@ def _domain_boundary_facets(dm):
     because a shared vertex's coordinates are copies of the same bytes on
     every rank. COLLECTIVE.
 
+    The two sides of a fault already split into the mesh have support 1 as
+    well, and are in the complex (:func:`_leave_out_split_faults`).
+
     Returns ``(verts, facets)``: coordinates ``(nv, dim)`` and vertex-index
     facets ``(nf, dim)`` — edges in 2-D, triangles in 3-D.
     """
@@ -3747,7 +3763,32 @@ def _domain_boundary_facets(dm):
     stack = np.concatenate(pieces)
     verts, inverse = np.unique(stack.reshape(-1, dim), axis=0,
                                return_inverse=True)
-    return verts, inverse.reshape(-1, dim).astype(np.int64)
+    facets = inverse.reshape(-1, dim).astype(np.int64)
+    return verts, facets
+
+
+def _leave_out_split_faults(verts, facets):
+    """The complex of :func:`_domain_boundary_facets` without the two sides
+    of the faults already split into the mesh: ``(verts, facets, slit_verts)``,
+    the last the coordinates of the vertices that were on those sides only.
+
+    The two sides of a split fault coincide, so the stitched complex holds each
+    of their facets twice, and a facet held twice is dropped. That needs the
+    two sides coincident to the last bit, as the split leaves them; sides that
+    have since moved apart are kept, and read as walls. It is for a mesh that
+    carries a split fault: any other pair of coincident boundary facets (a
+    crack made by the mesh generator) would be dropped the same way.
+    """
+    dim = facets.shape[1]
+    _keys, which, count = np.unique(np.sort(facets, axis=1), axis=0,
+                                    return_inverse=True, return_counts=True)
+    facets = facets[count[which.ravel()] == 1]
+    if not len(facets):
+        raise RuntimeError("the mesh has no domain boundary facet")
+    used, renumbered = np.unique(facets, return_inverse=True)
+    slit = np.setdiff1d(np.arange(len(verts)), used)
+    return (verts[used], renumbered.reshape(-1, dim).astype(np.int64),
+            verts[slit])
 
 
 def _domain_loops_2d(dm):
@@ -4706,7 +4747,7 @@ def _boundary_walls(dom_verts, dom_tris, region):
 
 
 def _outcrop_frame_3d(X, on_wall, dom_verts, dom_tris, region,
-                      skin_xyz, band_facets, tol=1e-9):
+                      skin_xyz, band_facets, tol=1e-9, slit_verts=None):
     """Which mesh boundary vertices a 3-D outcrop may DELETE, and which
     count as boundary contact NEAR the outcrop.
 
@@ -4737,6 +4778,12 @@ def _outcrop_frame_3d(X, on_wall, dom_verts, dom_tris, region,
     mesh's own bytes, so a mesh vertex's regions are read off the facets
     incident to its coordinate, not off a distance.
 
+    ``slit_verts`` are the vertices the complex no longer holds because
+    they are on the two sides of a fault already split into the mesh
+    (:func:`_leave_out_split_faults`). They are still in ``on_wall``; they
+    are on no region, so they are neither deletable nor near the outcrop.
+    Any other wall vertex missing from the complex is an error.
+
     Returns ``(deletable, near_touched, touched)`` — masks over the mesh
     vertices, and the set of touched region ids.
     """
@@ -4752,6 +4799,8 @@ def _outcrop_frame_3d(X, on_wall, dom_verts, dom_tris, region,
     touched_walls = {wall_of[r] for r in touched}
 
     row_of = {tuple(v): i for i, v in enumerate(dom_verts)}
+    on_slit = (set() if slit_verts is None
+               else {tuple(v) for v in slit_verts})
     regions_at = {}
     crease_dirs = {}
     edge_first = {}
@@ -4777,6 +4826,8 @@ def _outcrop_frame_3d(X, on_wall, dom_verts, dom_tris, region,
     near_touched = np.zeros(len(X), dtype=bool)
     for i in np.flatnonzero(on_wall):
         dv = row_of.get(tuple(X[i]))
+        if dv is None and tuple(X[i]) in on_slit:
+            continue
         if dv is None:
             raise RuntimeError(
                 "a domain-wall vertex is missing from the gathered "
@@ -9370,9 +9421,7 @@ def place_fault_ribbon_2d(base_mesh, traces, width, *, margin_rings=2,
         band_all |= mesh.cells_labelled(band_label, band_value + k)
     adopt_hierarchy(mesh, host, fac_zone=band_all)
     if split:
-        # ONE network call — cut all, then split all (chained add_fault
-        # calls do not compose: each split re-derives the pairing records
-        # and drops the earlier fault's).
+        # ONE network call — cut all, then split all.
         # Under the seam ligament the spines are already the mesh's edges
         # and the ligament is deliberately uncut: label, do not cut.
         # Under the conforming seam the spines cross it and are split
