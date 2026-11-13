@@ -231,15 +231,60 @@ def _fine_cell_of_node(fn, n_nodes):
     return owner
 
 
+def as_built_nodes(mesh, degree, continuous):
+    """Where the nodes of ``mesh`` at ``degree`` sat when the mesh was made:
+    ``(n_nodes, cdim)`` in the rows of ``mesh._get_coords_for_basis``, or
+    ``None`` when the mesh stands where it was made. Collective.
+
+    A move that keeps the topology keeps every node's place in its cell, so
+    the nodes are read on the vertices the mesh was made with
+    (``Mesh._transfer_vertices``: the as-built ones, or those a relax of the
+    mesh where it was made left) by the interpolation that gives the mesh its
+    nodes where it stands. That is the same operator on the same vertex
+    coordinates as before the move, and the nodes come back bit for bit, at
+    any degree and for a discontinuous space as well. The transfer between
+    the mesh and the level under it is built there
+    (``CustomMGHierarchy.build``), and is then the transfer the pair had
+    before the move. The node-cloud builder needs the nodes to the bit: a
+    node on a face of its triangulation is read in either neighbour, so a
+    change in the last digit can change the row.
+
+    Whether the mesh has moved is read off its coordinates, on every rank at
+    once (``Mesh._moved_off_transfer_geometry``). Coordinates that were
+    written and put back (``ephemeral_coords``, a restore, a deform back to
+    rest) are those the mesh was made with, and the mesh is read on them as
+    one that was never touched.
+
+    Only the record of the mesh's own moves is read. A mesh made on a moved one
+    (a cut, a placement) was built on the moved geometry: a fault cut into it
+    lies on the trace there, as it does on the split level under it, and
+    taking the mesh back through its host's move (``_addon_reference``, which
+    serves the parent lookup) would part the two slits. A quadrilateral or
+    hexahedral mesh answers ``None`` moved or not: the transfers of such a
+    level follow its coordinates. So does a periodic mesh, which keeps no
+    record (#1091)."""
+    if (not mesh._moved_since_built or not mesh.isSimplex
+            or not mesh._moved_off_transfer_geometry()):
+        return None
+    return np.asarray(mesh._get_coords_for_basis(
+        degree, continuous, vertices=mesh._transfer_vertices))
+
+
 # --------------------------------------------------------------------------- #
 #  Serial transfer
 # --------------------------------------------------------------------------- #
 def cell_located_prolongation(coarse, fine, degree, continuous=True,
-                              coarse_coords=None, fine_coords=None):
+                              coarse_coords=None, fine_coords=None,
+                              fine_vertices=None):
     """Side-aware, cell-located node prolongation ``(n_fine_nodes, n_coarse_nodes)``
     as scipy CSR (serial). Exact for nested pairs; on non-nested pairs it
     reproduces the located coarse cell's polynomial, with the evaluation point
-    clamped into the cell."""
+    clamped into the cell.
+
+    ``fine_vertices`` are the fine level's vertices where they are not the
+    DM's: a moved level is located on the geometry it was made in
+    (``Mesh._transfer_vertices``), and ``fine_coords`` are then its nodes on
+    that geometry (:func:`as_built_nodes`)."""
     cn = np.asarray(coarse._cell_node_indices(degree, continuous))
     fn = np.asarray(fine._cell_node_indices(degree, continuous))
     Xc = (np.asarray(coarse_coords) if coarse_coords is not None
@@ -248,6 +293,8 @@ def cell_located_prolongation(coarse, fine, degree, continuous=True,
           else np.asarray(fine._get_coords_for_basis(degree, continuous)))
     vxy_c, cv_c = _cell_vertex_table(coarse)
     vxy_f, cv_f = _cell_vertex_table(fine)
+    if fine_vertices is not None:
+        vxy_f = fine_vertices
     owner = _fine_cell_of_node(fn, Xf.shape[0])
     if (owner < 0).any():
         raise RuntimeError("fault_mg: a fine node belongs to no cell")
@@ -272,7 +319,7 @@ def cell_located_prolongation(coarse, fine, degree, continuous=True,
 # --------------------------------------------------------------------------- #
 def cell_located_transfer_parallel(coarse, fine, degree, continuous,
                                    coarse_coords, fine_coords, coarse_layout,
-                                   fine_layout, ncomp, comm):
+                                   fine_layout, ncomp, comm, fine_vertices=None):
     """The same transfer as :func:`cell_located_prolongation`, reduced->reduced,
     as an MPIAIJ matrix.
 
@@ -284,6 +331,9 @@ def cell_located_transfer_parallel(coarse, fine, degree, continuous,
     largest minimum barycentric coordinate). A query nobody finds — a node outside
     every coarse cell, as at a curved boundary — keeps the asker's own clamped
     best. ``coarse_layout`` / ``fine_layout`` are :class:`custom_mg.LevelLayout`.
+    ``fine_vertices`` and ``fine_coords`` are a moved level's vertices and
+    nodes on the geometry it was made in, as in
+    :func:`cell_located_prolongation`.
     """
     m4 = comm.tompi4py()
     cn = np.asarray(coarse._cell_node_indices(degree, continuous))
@@ -292,6 +342,8 @@ def cell_located_transfer_parallel(coarse, fine, degree, continuous,
     Xf = np.asarray(fine_coords)
     vxy_c, cv_c = _cell_vertex_table(coarse)
     vxy_f, cv_f = _cell_vertex_table(fine)
+    if fine_vertices is not None:
+        vxy_f = fine_vertices
     l2g_c = np.asarray(coarse_layout.l2g, dtype=np.int64).reshape(-1, ncomp)
     l2g_f = np.asarray(fine_layout.l2g, dtype=np.int64).reshape(-1, ncomp)
     fstart, fend = fine_layout.rstart, fine_layout.rend

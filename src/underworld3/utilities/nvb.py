@@ -261,18 +261,18 @@ def _on_every_rank(dm, ok):
     return bool(dm.getComm().tompi4py().allreduce(bool(ok), op=MPI.LAND))
 
 
-def nested_prolongation_from_dms(coarse_dm, fine_dm):
+def nested_prolongation_from_dms(coarse_dm, fine_dm, fine_vertices=None):
     """The exact P1 prolongation of one bisection pass, or ``None`` when some rank
     cannot recover it. COLLECTIVE: every rank gets the same verdict, so the callers'
     fallbacks, which are collective, are taken on all ranks or none (#961). See
     :func:`_nested_prolongation_local`."""
-    transfer = _nested_prolongation_local(coarse_dm, fine_dm)
+    transfer = _nested_prolongation_local(coarse_dm, fine_dm, fine_vertices)
     if not _on_every_rank(fine_dm, transfer is not None):
         return None
     return transfer
 
 
-def _nested_prolongation_local(coarse_dm, fine_dm):
+def _nested_prolongation_local(coarse_dm, fine_dm, fine_vertices=None):
     """Recover a refinement pass's exact P1 prolongation from the two DMs.
 
     Every fine vertex of a bisection pass is an **inherited** coarse vertex or
@@ -301,7 +301,9 @@ def _nested_prolongation_local(coarse_dm, fine_dm):
     NB this reads coordinates only to *identify* points, so it must be called
     while they are still pristine (before any snap or relaxation). The
     dependency-free endpoint is to take the relation straight from the
-    refinement transform instead; see #425.
+    refinement transform instead; see #425. A fine level that has moved since
+    is identified by ``fine_vertices``, the vertex coordinates it was made
+    with, one row per vertex in point order (``Mesh._transfer_vertices``).
     """
     cvS, cvE = coarse_dm.getDepthStratum(0)
     ceS, ceE = coarse_dm.getDepthStratum(1)
@@ -314,6 +316,8 @@ def _nested_prolongation_local(coarse_dm, fine_dm):
         coarse_dm.getCoordinatesLocal().array.reshape(-1, cdim))
     fxyz = np.ascontiguousarray(
         fine_dm.getCoordinatesLocal().array.reshape(-1, cdim))
+    if fine_vertices is not None:
+        fxyz = np.ascontiguousarray(fine_vertices)
 
     edges = [(c[0] - cvS, c[1] - cvS)
              for e in range(ceS, ceE)

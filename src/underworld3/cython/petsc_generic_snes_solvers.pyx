@@ -7296,10 +7296,15 @@ class SNES_Scalar(SolverBaseClass):
         debug_name : str, optional
             Name prefix for debug output files.
         time : float or Quantity, optional
-            Physical time for this solve. Passed as ``petsc_t`` to all
-            pointwise functions. Expressions using ``mesh.t`` evaluate at
-            this time. Non-dimensionalised when scaling is active.
+            Physical time for this solve, set as PETSc's time (``petsc_t``) on
+            the solver's DM. Non-dimensionalised when scaling is active.
             Default: None (petsc_t unchanged).
+
+            Expressions written with ``mesh.t`` do not follow this value.
+            ``mesh.t`` carries the model clock
+            (``uw.get_default_model().tracker.time``), in source terms and
+            in essential (Dirichlet) conditions alike: with ``time=2`` and
+            the clock at 0 they evaluate at 0 (#410). Set the clock.
         divergence_retries : int, default=0
             If SNES reports DIVERGED after the solve, re-call it with warm
             start up to this many times. A single retry rescues most VEP
@@ -9642,7 +9647,10 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
           (boundary traction projected onto constraint direction)
         - Symmetry: :math:`-\theta \mu` adjoint consistency term
         - Pressure: :math:`p \, (\mathbf{n} \cdot \mathbf{d}) \, \mathbf{d}` on velocity
-          and :math:`(\mathbf{n} \cdot \mathbf{d})(\mathbf{u} \cdot \mathbf{d} - g)` on pressure
+          and :math:`-(\mathbf{n} \cdot \mathbf{d})(\mathbf{u} \cdot \mathbf{d} - g)` on pressure.
+          The volume terms are :math:`-p \, \nabla \cdot \mathbf{v}` in the momentum
+          rows and :math:`+q \, \nabla \cdot \mathbf{u}` in the continuity rows, and
+          the two wall terms are in the same relation.
 
         Parameters
         ----------
@@ -9847,10 +9855,14 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                     )
             fn_F = sympy.Matrix(f1_components).as_immutable()
 
-        # fn_p: pressure boundary residual
-        # Enforces continuity: (n.d)(u.d - g) on boundary
+        # fn_p: continuity-row boundary residual, -(n.d)(u.d - g).
+        # Its sign pairs it with the pressure flux in f0 as the volume terms are
+        # paired (-p div(v) in the momentum rows, +q div(u) in the continuity
+        # rows). For free slip (d = n, g = 0) the continuity residual summed
+        # over the pressure unknowns is then the flux through the other walls,
+        # whatever the velocity.
         # Vanishes when constraint direction is purely tangential
-        fn_p = sympy.Matrix([n_dot_d * constraint]).as_immutable()
+        fn_p = sympy.Matrix([-n_dot_d * constraint]).as_immutable()
 
         # Apply mask for one-sided internal boundary application
         if mask is not None:
@@ -11346,7 +11358,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                     fns_bd_jacobian += [bc.fns["up_G2"], bc.fns["up_G3"]]
 
                 # Pressure boundary residual and Jacobians (pu, pp blocks)
-                # Nitsche BCs provide fn_p (pressure boundary residual = u.n - g);
+                # Nitsche BCs provide fn_p (continuity-row boundary residual, g - u.n);
                 # standard natural BCs have fn_p = None → zeros.
                 if hasattr(bc, 'fn_p') and bc.fn_p is not None:
                     bd_PF0 = sympy.Array(bc.fn_p).reshape(1)
@@ -11576,7 +11588,11 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         cdef PetscInt ind=1
         cdef PetscInt [::1] comps_view  # for numpy memory view
+        cdef PetscInt [::1] continuity_comps_view
         cdef DM cdm = self.dm
+
+        # natural-bc index -> the boundary entry that carries its continuity-row term
+        self._continuity_row_boundary_ids = {}
 
         for index,bc in enumerate(self.natural_bcs):
 
@@ -11612,6 +11628,27 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
 
             self.natural_bcs[index] = self.natural_bcs[index]._replace(PETScID=bc, boundary_label_val=value)
+
+            # A Nitsche condition has a term in the continuity rows as well. PETSc
+            # integrates a boundary entry only for the field it is registered
+            # with, so that term needs an entry of its own on the pressure field
+            # (`_block_constraint_bcs` are registered once per field for the
+            # same reason).
+            if getattr(self.natural_bcs[index], "fn_p", None) is not None:
+                continuity_comps = np.array([0], dtype=PETSc.IntType)
+                continuity_comps_view = continuity_comps
+                self._continuity_row_boundary_ids[index] = PetscDSAddBoundary_UW(cdm.dm,
+                                bc_type,
+                                str(boundary + "_continuity").encode('utf8'),
+                                str("UW_Boundaries").encode('utf8'),
+                                1,  # pressure field: continuity-row term + pu Jacobian
+                                continuity_comps.shape[0],
+                                <const PetscInt *> &continuity_comps_view[0],
+                                <void (*)() noexcept>NULL,
+                                NULL,
+                                1,
+                                <const PetscInt *> &ind,
+                                NULL, )
 
 
         # Lagrange-multiplier constraint boundaries (block-constrained Stokes).
@@ -12009,10 +12046,14 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         cdef DMLabel c_label
 
-        for bc in self.natural_bcs:
+        for index, bc in enumerate(self.natural_bcs):
 
             boundary = bc.boundary
             boundary_id = bc.PETScID
+            # the entry on the pressure field, where the condition has one:
+            # PETSc integrates the continuity-row residual and the pu block
+            # from that entry only
+            continuity_boundary_id = self._continuity_row_boundary_ids.get(index, boundary_id)
 
             value = self.mesh.boundaries[bc.boundary].value
             bc_label = self.dm.getLabel("UW_Boundaries")
@@ -12043,9 +12084,9 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                                     NULL,
                                     )
 
-                # Pressure boundary residual (Nitsche: f0_p = u.n - g)
+                # Pressure boundary residual (Nitsche: f0_p = g - u.n)
                 if "p_f0" in bc.fns:
-                    UW_PetscDSSetBdResidual(ds.ds, c_label.dmlabel, label_val, boundary_id,
+                    UW_PetscDSSetBdResidual(ds.ds, c_label.dmlabel, label_val, continuity_boundary_id,
                                     1, 0,
                                     ext.fns_bd_residual[i_bd_res[bc.fns["p_f0"]]],
                                     NULL)
@@ -12086,7 +12127,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                                     NULL, NULL)
 
                 # Pressure-velocity boundary Jacobian (pu block)
-                UW_PetscDSSetBdJacobian(ds.ds, c_label.dmlabel, label_val, boundary_id,
+                UW_PetscDSSetBdJacobian(ds.ds, c_label.dmlabel, label_val, continuity_boundary_id,
                                 1, 0, 0,
                                 ext.fns_bd_jacobian[i_bd_jac[bc.fns["pu_G0"]]],
                                 ext.fns_bd_jacobian[i_bd_jac[bc.fns["pu_G1"]]],
@@ -12130,7 +12171,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                                     ext.fns_bd_jacobian[i_bd_jac[bc.fns["up_G1"]]],
                                     NULL, NULL)
 
-                UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, boundary_id,
+                UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, continuity_boundary_id,
                                 1, 0, 0,
                                 ext.fns_bd_jacobian[i_bd_jac[bc.fns["pu_G0"]]],
                                 ext.fns_bd_jacobian[i_bd_jac[bc.fns["pu_G1"]]],
@@ -12202,8 +12243,10 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             print(f"=============", flush=True)
 
             print(f"Weak form(s) (Natural Boundaries)", flush=True)
-            for boundary in self.natural_bcs:
+            for index, boundary in enumerate(self.natural_bcs):
                 UW_PetscDSViewBdWF(ds.ds, boundary.PETScID)
+                if index in self._continuity_row_boundary_ids:
+                    UW_PetscDSViewBdWF(ds.ds, self._continuity_row_boundary_ids[index])
 
 
         # self.dm.setUp()
@@ -12473,11 +12516,12 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         This is a low-level diagnostic hook for weak-boundary-condition
         debugging. It assembles PETSc's boundary residual terms registered on
-        ``boundary`` through ``DMPlexComputeBdResidualSingle``. For Nitsche
-        free slip, this includes the full registered weak boundary residual,
-        not only the scalar penalty term. The returned arrays are local to each
-        rank and have the same flat layout as the corresponding MeshVariable
-        PETSc vector.
+        ``boundary`` through ``DMPlexComputeBdResidualSingle``, for the rows
+        of one field. For a Nitsche condition ``residual_field_id=0`` gives
+        every momentum-row term, not only the scalar penalty term, and
+        ``residual_field_id=1`` gives the continuity-row term. The returned
+        arrays are local to each rank and have the same flat layout as the
+        corresponding MeshVariable PETSc vector.
         """
         cdef DM _time_dm_boundary_residual
         cdef DM dm
@@ -12492,9 +12536,15 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         self._build(verbose, False, None)
 
         boundary_bc = None
-        for bc in self.natural_bcs:
-            if bc.boundary == boundary and bc.f_id == residual_field_id:
-                boundary_bc = bc
+        weak_form_id = None
+        for index, bc in enumerate(self.natural_bcs):
+            if bc.boundary != boundary:
+                continue
+            if bc.f_id == residual_field_id:
+                boundary_bc, weak_form_id = bc, bc.PETScID
+                break
+            if residual_field_id == 1 and index in self._continuity_row_boundary_ids:
+                boundary_bc, weak_form_id = bc, self._continuity_row_boundary_ids[index]
                 break
         if boundary_bc is None:
             raise ValueError(
@@ -12540,7 +12590,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                                                residual_time, NULL, NULL, NULL))
             CHKERRQ(DMGetDS(dm.dm, &ds))
             CHKERRQ(UW_PetscDSGetBoundaryWeakForm(
-                ds, <PetscInt>boundary_bc.PETScID, &wf,
+                ds, <PetscInt>weak_form_id, &wf,
             ))
 
             c_label = self.dm.getLabel("UW_Boundaries")
@@ -13038,10 +13088,14 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         _force_setup : bool, default=False
             Force rebuild of the solver even if already set up.
         time : float or Quantity, optional
-            Physical time for this solve. Passed as ``petsc_t`` to all
-            pointwise residual and Jacobian functions. Expressions using
-            ``mesh.t`` will evaluate at this time. Non-dimensionalised
-            automatically when scaling is active. Default: None (petsc_t=0).
+            Physical time for this solve, set as PETSc's time (``petsc_t``) on
+            the solver's DM. Non-dimensionalised automatically when scaling
+            is active. Default: None (petsc_t=0).
+
+            Expressions written with ``mesh.t`` do not follow this value.
+            ``mesh.t`` carries the model clock
+            (``uw.get_default_model().tracker.time``), in source terms and
+            in essential (Dirichlet) conditions alike (#410). Set the clock.
         divergence_retries : int, default=0
             If the final SNES solve reports DIVERGED, re-call it with warm
             start up to this many times. A single retry rescues most VEP
