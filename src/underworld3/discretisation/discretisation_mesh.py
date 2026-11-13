@@ -587,6 +587,15 @@ def _mesh_coords_update_callback(array, change_context):
         # would mask the original exception (round-2 review).
         raise
 
+    # This write reached the mesh without mesh.deform (which a mesh that carries no
+    # variables yet allows). It may have moved a boundary off the surface declared
+    # for it, so it releases the declarations as deform does.
+    if not (getattr(mesh, "_in_remesh_transfer", False)
+            or getattr(mesh, "_coord_mutation_depth", 0) > 0):
+        mesh._release_bounding_surfaces(
+            "the mesh coordinates were written directly since it was declared, so the "
+            "boundary may no longer lie on it")
+
     # Increment mesh version to notify registered swarms of coordinate changes
     with mesh._mesh_update_lock:
         mesh._mesh_version += 1
@@ -670,8 +679,9 @@ def _apply_refinement_callback(dm, refinement_callback):
     the cells between them inside out: on a concave wall, a snapped midpoint can overtake
     an interior vertex that is not snapped (#946). Of each cell the callback inverted,
     the vertex it moved furthest goes back where refinement placed it, until no cell is
-    inverted. Returns the number put back, over all ranks: those vertices are not where
-    the callback meant them to be.
+    inverted. Returns the number put back, over all ranks, and this rank's mask of them
+    (indexed like the DM's vertices): those vertices are not where the callback meant
+    them to be.
 
     In parallel the copies of one vertex can disagree after the callback. A callback
     finds the vertices it moves through the labels a rank holds, and a rank can hold a
@@ -703,8 +713,9 @@ def _apply_refinement_callback(dm, refinement_callback):
                            f"{broken} vertices.")
 
     total = 0
+    vs, ve = dm.getDepthStratum(0)
+    put_back = numpy.zeros(ve - vs, dtype=bool)
     if dim == cdim:
-        vs, ve = dm.getDepthStratum(0)
         cs, ce = dm.getHeightStratum(0)
         rows = section_offsets(dm.getCoordinateSection(), numpy.arange(vs, ve)) // cdim
         cells = closure_points(dm, numpy.arange(cs, ce), 0)
@@ -731,10 +742,26 @@ def _apply_refinement_callback(dm, refinement_callback):
             held |= culprits
         _, total = _flag_on_every_sharer(dm, held)
         moved_to = numpy.where(held[:, None], refined, moved_to)
+        put_back = held[rows]
 
     coordinates.array[...] = moved_to.ravel()
     dm.setCoordinatesLocal(coordinates)
-    return total
+    return total, put_back
+
+
+def _labels_holding_vertices(dm, vertices):
+    """Names of the DM's labels that hold, on any rank, one of the flagged
+    ``vertices`` (a mask indexed like the DM's vertices). A label holds a vertex
+    if it tags the vertex or a facet the vertex belongs to. Collective: every
+    rank gets the same names."""
+    from mpi4py import MPI
+    from underworld3.meshing.smoothing.graph import _pinned_mask
+
+    names = sorted(name for name in (dm.getLabelName(i) for i in range(dm.getNumLabels()))
+                   if name not in ("depth", "celltype"))
+    local = [bool(numpy.any(_pinned_mask(dm, (name,)) & vertices)) for name in names]
+    anywhere = dm.comm.tompi4py().allreduce(numpy.array(local, dtype=int), op=MPI.MAX)
+    return {name for name, held in zip(names, numpy.atleast_1d(anywhere)) if held}
 
 
 def _sum_over_sharers(dm, values):
@@ -1666,8 +1693,17 @@ class Mesh(Stateful, uw_object):
         # first left, so it holds back again every vertex that needs it: its sum is
         # the number left off the callback's surface, over the hierarchy.
         if callable(refinement_callback):
-            held = sum(_apply_refinement_callback(dm, refinement_callback)
-                       for dm in self.dm_hierarchy)
+            held = 0
+            # The boundaries those vertices belong to are not on the surface the
+            # callback moves them to: a constructor that registers such a
+            # boundary's surface afterwards has it released (bounding_surface).
+            left_off_surface = set()
+            for dm in self.dm_hierarchy:
+                count, put_back = _apply_refinement_callback(dm, refinement_callback)
+                held += count
+                if count:
+                    left_off_surface |= _labels_holding_vertices(dm, put_back)
+            self._refinement_left_off_surface = frozenset(left_off_surface)
             if held:
                 with uw.selective_ranks(0) as selected:
                     if selected:
@@ -4385,13 +4421,25 @@ class Mesh(Stateful, uw_object):
             return surface
         released_from = getattr(surface, "_prev_kind", None)
         if released_from in ("radial", "plane"):
+            reason = getattr(surface, "release_reason", None) or (
+                "the boundary may no longer lie on it")
             raise ValueError(
-                f"the {released_from} surface of boundary {str(label)!r} was released: the "
-                f"mesh has been deformed since it was declared, so the boundary may no "
-                f"longer lie on it")
+                f"the {released_from} surface of boundary {str(label)!r} was released: "
+                f"{reason}")
         raise ValueError(
             f"boundary {str(label)!r} is registered as {surface.kind!r}, which is not an "
             f"analytic surface (radial or plane)")
+
+    def _release_bounding_surfaces(self, reason, labels=None):
+        """Release the analytic (``radial`` / ``plane``) surfaces registered for
+        ``labels``, or all of them: an operation is about to write, or has
+        written, coordinates without keeping those boundaries on their declared
+        surfaces. Called with the same arguments on every rank."""
+        for label, surface in self.bounding_surfaces.items():
+            if labels is not None and label not in labels:
+                continue
+            if surface.kind in ("radial", "plane"):
+                surface.release(reason)
 
     def register_tangent_slip_provider(self, label, surface):
         """Install a :class:`BoundingSurface` object for a boundary ``label``
@@ -4539,6 +4587,13 @@ class Mesh(Stateful, uw_object):
         is_bnd = shared_mask(_pinned_mask(dm, all_labels))
 
         slip_labels, free_labels = self._resolve_slip_spec(slip_spec)
+        # A free label is slid and not restored, so it is no longer declared to
+        # lie on its analytic surface. Released here, where the projector is
+        # built: the request is the same on every rank, while which rank slides a
+        # vertex of the label, and whether a mover keeps a trial step, is not.
+        self._release_bounding_surfaces(
+            "it was slid as a free surface, without restoring its vertices onto it",
+            labels=free_labels)
         # Per-label vertex masks (closure of each label's tagged facets). The
         # rank's own masks pick its reference facets below; the shared ones
         # classify the vertices.
@@ -4947,9 +5002,9 @@ class Mesh(Stateful, uw_object):
         # reason — a rigid `radial`/`plane` surface would keep restoring to the old shape.
         self._geometry_deformed = True
         self._bnd_restore_cache = None
-        for _surf in getattr(self, "_bounding_surfaces", {}).values():
-            if getattr(_surf, "kind", None) in ("radial", "plane") and hasattr(_surf, "release"):
-                _surf.release()
+        self._release_bounding_surfaces(
+            "the mesh has been deformed since it was declared, so the boundary may no "
+            "longer lie on it")
 
         def _do_move():
             self._deform_mesh(_nc)

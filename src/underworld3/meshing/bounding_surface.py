@@ -210,11 +210,19 @@ class BoundingSurface:
         return coords
 
     # -- state transition ----------------------------------------------------
-    def release(self):
+    def release(self, reason=None):
         """Flip a rigid (``radial``/``plane``) surface to ``free``: subsequent
         :meth:`restore` follows the live discrete surface instead of the analytic
-        target. Records the previous kind on ``self._prev_kind``."""
-        self._prev_kind = self.kind
+        target. Records the previous kind on ``self._prev_kind``.
+
+        A released surface is no longer the mesh's declaration that the boundary
+        is that circle, sphere or plane (``mesh.analytic_surface`` refuses it).
+        ``reason`` says, for that refusal, what the boundary's vertices may have
+        left it by. Releasing a surface that is already released changes nothing.
+        """
+        if self.kind != "free":
+            self._prev_kind = self.kind
+            self.release_reason = reason
         self.kind = "free"
         self.is_free = True
         return self
@@ -230,6 +238,18 @@ class BoundingSurface:
 
 
 # -- constructor-side registration helpers ---------------------------------
+def _release_if_refinement_left_it(mesh, surface):
+    """A constructor registers its walls after the mesh, and its refinement
+    hierarchy, are built. Where the refinement callback had to leave vertices of
+    a boundary where refinement placed them (moving them onto the surface would
+    have turned cells inside out), the boundary is not on the surface being
+    registered, so its declaration is released at once."""
+    if surface.label in getattr(mesh, "_refinement_left_off_surface", ()):
+        surface.release(
+            "refinement left some of its vertices where the refinement callback could "
+            "not move them onto the surface without turning a cell inside out")
+
+
 def register_radial_surfaces(mesh, centre, label_radius, interior=()):
     """Register ``radial`` surfaces: ``label_radius = {label_name: radius}``.
 
@@ -241,9 +261,10 @@ def register_radial_surfaces(mesh, centre, label_radius, interior=()):
     centre = np.asarray(centre, dtype=float).ravel()
     interior = set(interior)
     for lab, r in label_radius.items():
-        mesh.register_tangent_slip_provider(
+        surface = mesh.register_tangent_slip_provider(
             lab, BoundingSurface(mesh, lab, "radial", centre=centre, radius=r,
                                  interior=lab in interior))
+        _release_if_refinement_left_it(mesh, surface)
 
 
 def register_plane_surfaces(mesh, label_plane):
@@ -251,8 +272,9 @@ def register_plane_surfaces(mesh, label_plane):
 
     Called by box constructors for axis-aligned (or general) faces."""
     for lab, (p, n) in label_plane.items():
-        mesh.register_tangent_slip_provider(
+        surface = mesh.register_tangent_slip_provider(
             lab, BoundingSurface(mesh, lab, "plane", point=p, normal=n))
+        _release_if_refinement_left_it(mesh, surface)
 
 
 def register_box_face_surfaces(mesh, minCoords, maxCoords):
