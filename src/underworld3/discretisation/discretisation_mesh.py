@@ -7827,6 +7827,9 @@ class Mesh(Stateful, uw_object):
     # exactly one rank (verified: 360/360, owners==1), and the migration routes
     # it to that owner.
     _EVAL_FACE_TOL = 1.0e-2
+    # Containment to rounding, relative like _EVAL_FACE_TOL. A point some local
+    # cell contains to this tolerance is evaluated in that cell (#1115).
+    _EVAL_CONTAIN_TOL = 1.0e-10
 
     def _robust_owning_cells(self, coords: numpy.ndarray) -> numpy.ndarray:
         """Per-point owning cell for parallel evaluation (coords in model units).
@@ -7851,14 +7854,30 @@ class Mesh(Stateful, uw_object):
         one with the nearest centroid — see the tie-break note on
         :meth:`_get_closest_local_cells_internal` for what that changed and
         why it is visible only to discontinuous fields.
+
+        Two passes (#1115). A point that a local cell contains to rounding
+        (``_EVAL_CONTAIN_TOL``) gets that cell. Only a point no local cell
+        contains is given the face tolerance. With the face tolerance alone, a
+        point just inside one cell, within 1e-2 of a face it shares, could come
+        back in the neighbour: the evaluator then clamped it onto the shared
+        face, an error of about |grad f| times its distance from the face,
+        even for a field the element represents exactly. The set of points a
+        rank claims is unchanged; only which of its cells evaluates them.
         """
         coords = numpy.asarray(coords)
         if coords.shape[0] == 0:
             return numpy.array([], dtype=numpy.int64)
-        return numpy.asarray(
-            self._get_closest_local_cells_internal(coords, tol=self._EVAL_FACE_TOL),
+        cells = numpy.asarray(
+            self._get_closest_local_cells_internal(coords, tol=self._EVAL_CONTAIN_TOL),
             dtype=numpy.int64,
         )
+        lost = numpy.flatnonzero(cells < 0)
+        if lost.shape[0] > 0:
+            cells[lost] = numpy.asarray(
+                self._get_closest_local_cells_internal(coords[lost], tol=self._EVAL_FACE_TOL),
+                dtype=numpy.int64,
+            )
+        return cells
 
     def _audit_cell_face_geometry(self):
         """Measure the two quantities that bound the cell-wall estimator's
