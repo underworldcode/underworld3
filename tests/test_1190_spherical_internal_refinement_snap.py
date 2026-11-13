@@ -9,8 +9,8 @@ chords of the coarse one; the refinement callback moves the new vertices of
 Contracts, on every level of the refinement hierarchy:
 
 - every vertex of each of the three surfaces lies on its sphere, to 64 machine
-  epsilon relative to the radius (on development 3279cf92, before the callback moved
-  ``Internal``: 2.9e-02 off at refinement 1 on Linux, a 96-thread Linux
+  epsilon relative to the radius (on the base, 41521d4f, before the callback moved
+  ``Internal``: 2.9e-02 off at refinement 1, on a 96-thread Linux
   workstation, 2026-11-14);
 - the mesh declares the ``Internal`` sphere: ``analytic_surface("Internal")``
   returns radius ``radiusInternal``;
@@ -18,7 +18,9 @@ Contracts, on every level of the refinement hierarchy:
   fill the volume between the ``Lower`` and ``Internal`` polyhedra, and ``Outer``
   the volume between ``Internal`` and ``Upper``. A cell turned inside out by the
   snap would overlap its neighbours and the sum of cell volumes would exceed the
-  volume between the surfaces.
+  volume between the surfaces. Measured with the snap: 2.2e-16 relative at most
+  (refinement 1 and 2, Linux, 2026-11-14); a mutant that pushes one interior vertex
+  through the Internal sphere after the callback gives 3.2e-03.
 """
 import numpy as np
 import pytest
@@ -99,5 +101,5 @@ def test_the_regions_fill_the_space_between_their_surfaces(refined_shell):
     for region, value, expected in (("Inner", 101, internal - lower),
                                     ("Outer", 102, upper - internal)):
         filled = _region_volume(dm, region, value)
-        assert abs(filled - expected) <= 1.0e3 * ON_SURFACE * expected, (
+        assert abs(filled - expected) <= ON_SURFACE * expected, (
             f"{region}: cells fill {filled!r}, the surfaces enclose {expected!r}")
