@@ -121,3 +121,19 @@ def test_full_length_values_still_prescribe_what_they_say(conds, components):
     on = np.abs(X[:, 0]) < 1e-9
     away = np.asarray(X[on, 1]) > 1e-9
     assert np.abs(u_y[away] - 0.05).max() < 1e-12
+
+
+@pytest.mark.tier_b
+def test_a_short_value_naming_only_component_zero_is_still_accepted():
+    """The one short form that worked before stays accepted: the value's single
+    entry is component 0's own slot, so u_x on Left is what was asked."""
+    mesh, v, stokes = _stokes()
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        stokes.add_dirichlet_bc(0.03, "Left", 0)
+    stokes.add_dirichlet_bc((0.0, 0.0), "Bottom")
+    stokes.solve()
+    assert stokes.snes.getConvergedReason() > 0
+    X = np.asarray(v.coords)
+    on = (np.abs(X[:, 0]) < 1e-9) & (X[:, 1] > 1e-9)
+    assert np.abs(np.asarray(v.array)[on, 0, 0] - 0.03).max() < 1e-12
