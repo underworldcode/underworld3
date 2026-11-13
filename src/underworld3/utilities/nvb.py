@@ -289,7 +289,9 @@ def _nested_prolongation_local(coarse_dm, fine_dm):
     1. a fine vertex equal to a coarse vertex is inherited (weight 1); one equal
        to a coarse edge midpoint gets 1/2, 1/2;
     2. any still-unresolved vertex equal to the average of two ALREADY-RESOLVED
-       fine neighbours takes the average of their weights;
+       fine neighbours whose rows lie in ONE coarse cell takes the average of
+       their weights (#449: a pair whose rows lie in two cells is not its
+       parents, and is skipped);
     3. repeat until nothing new resolves.
 
     Weights compose exactly, so the result is the true FE embedding at any
@@ -429,15 +431,10 @@ def _nested_prolongation_local(coarse_dm, fine_dm):
 
 def nested_prolongation(engine, coarse_map, fine_map, n_coarse, vS_fine,
                         n_fine):
-    # TODO(BUG): in 3-D this is NOT the coarse P1 embedding for vertices a
-    # closure cascade places strictly INSIDE a coarse tet. Measured 2026-08-02:
-    # transfer against a barycentric reference, worst |P.u - P1(x)| = 1.19 on a
-    # cellSize=0.4 unit cube, per GENERATION (no composition involved). 2-D is
-    # exact (1.9e-15). It went unnoticed because the test's reference was
-    # edge-based — a single bisection puts vertices on coarse EDGES, and the
-    # interior ones were skipped by its coverage rule rather than checked. The
-    # 3-D case of test_0753::test_reproduces_an_arbitrary_coarse_field is
-    # xfailed against this.
+    # The 3-D wrong rows of #449 came from the DM-inference route
+    # (_nested_prolongation_local's round 2, now restricted to pairs whose rows
+    # lie in one coarse cell). This route reads the engine's own edge-to-midpoint
+    # record and measured no wrong rows (W1, #449).
     """Exact P1 prolongation for ONE bisection generation, in DM numbering.
 
     A bisection generation adds exactly one kind of vertex: the midpoint of a

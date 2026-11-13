@@ -9,8 +9,9 @@ and the row taken (often 1/2, 1/2 on two coarse vertices joined by no coarse
 edge) is wrong by O(1) on a random field, while still reproducing every
 linear field exactly. A pair is now accepted only if its two rows' supports
 lie in one coarse cell, where the averaged row is the embedding whichever such
-pair is taken. W1 measured 1, 4 and 9 wrong rows on passes 2 to 4 of this
-fixture.
+pair is taken. On the four passes this test runs, development has 0, 0, 1 and 7
+wrong rows on Linux (MPICH; gmsh as pinned there) and 0, 0, 1 and 4 on macOS
+(W1); with the condition, none.
 
 The fixture: a unit cube at cellSize 0.5 refined once, then native bisection
 passes marking the cells whose centroid is within 0.2 of z = 0.5. Each pass is
@@ -27,7 +28,7 @@ import underworld3 as uw
 from underworld3.utilities import nvb
 from underworld3.utilities._nvb_transform import refine
 
-pytestmark = [pytest.mark.level_2, pytest.mark.tier_b, pytest.mark.timeout(600)]
+pytestmark = [pytest.mark.level_2, pytest.mark.timeout(600)]
 
 PASSES = 4
 
@@ -77,6 +78,7 @@ def _marked(dm):
     return dm
 
 
+@pytest.mark.tier_b
 @pytest.mark.skipif(uw.mpi.size > 1, reason="serial: the rows are compared on one rank")
 def test_every_row_is_the_coarse_embedding():
     mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0, 0.0, 0.0), maxCoords=(1.0, 1.0, 1.0),

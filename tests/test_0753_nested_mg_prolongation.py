@@ -28,7 +28,7 @@ vertex rather than "the ~64 % that lie on an edge" — but that 64 % belongs to 
 and 100 % of fine vertices on a coarse edge. The edge reference already covered
 everything that ran, and it catches something barycentric position cannot — a
 PHANTOM parent edge, two coarse vertices straddling the fine vertex without
-spanning any coarse edge. That is the 3-D defect, and a symmetric wrong pair also
+spanning any coarse edge. That was the 3-D defect (#449), and a symmetric wrong pair also
 reproduces linear fields exactly, so the linear test is blind to it too.
 """
 import numpy as np
@@ -91,7 +91,7 @@ def _coarse_support_of(cx, edges, x, tol=1e-9):
     composes, every fine vertex lies on a coarse edge, and the barycentric check
     is strictly weaker there because it cannot tell a correct parent edge from a
     PHANTOM one — two coarse vertices that straddle the fine vertex without
-    spanning any coarse edge. That is exactly the 3-D defect, and it is why both
+    spanning any coarse edge. That was exactly the 3-D defect (#449), and it is why both
     references are kept.
     """
     d = np.linalg.norm(cx - x, axis=1)
@@ -123,9 +123,12 @@ def _adapted(dim, cell_size, max_levels=2, ratio=2.0):
 # multigrid level, max 3 nonzeros per row. Without it the docstring's claim
 # about composition is not exercised anywhere that runs: in the standard 2-D
 # case nothing composes (one transfer, max 2 per row, every fine vertex on a
-# coarse edge) and the only composing case was the 3-D one, which is xfailed.
-CASES = [(2, 0.2, 2, 2.0), (3, 0.4, 2, 2.0), (2, 0.3, 4, 4.0)]
-CASE_IDS = ["2d", "3d", "2d-composed"]
+# coarse edge) and the only composing case was the 3-D one. The fourth case is
+# 3-D at a coarsening ratio of 1.2: each pass is a kept level, so a wrong round-2
+# pair is not hidden inside one cell of the next kept level (#449: with the
+# one-cell condition removed it has 6 of 44 wrong rows; the 2.0 case none).
+CASES = [(2, 0.2, 2, 2.0), (3, 0.4, 2, 2.0), (2, 0.3, 4, 4.0), (3, 0.4, 2, 1.2)]
+CASE_IDS = ["2d", "3d", "2d-composed", "3d-every-pass"]
 
 
 def _levels(child):
@@ -219,8 +222,8 @@ def test_a_fine_vertex_on_a_coarse_edge_depends_only_on_that_edge(
     alone cannot see the failure this catches: a PHANTOM parent edge, whose two
     endpoints straddle the fine vertex symmetrically without spanning any coarse
     edge, reproduces the position and reproduces linear fields exactly while
-    being the wrong parentage. That is the 3-D defect, characterised: fine vertex
-    1780 carries the row ``{484: 0.5, 798: 0.5}`` while its true barycentric
+    being the wrong parentage. That was the 3-D defect (#449), characterised: fine vertex
+    1780 carried the row ``{484: 0.5, 798: 0.5}`` while its true barycentric
     position is ``(0, 0.25, 0.5, 0.25)``.
 
     Holds in EVERY case including 3-D, where it is the guarantee on the majority
@@ -270,7 +273,7 @@ def test_reproduces_a_linear_field_exactly(dim, cell_size, max_levels, ratio):
     failure here localises the problem to the arithmetic rather than the
     parentage.
 
-    Provably BLIND to the 3-D defect above, which is why it cannot be the only
+    Provably BLIND to the 3-D defect above (#449), which is why it cannot be the only
     embedding check: a symmetric wrong pair of parents reproduces a linear field
     exactly. Kept for localisation, not for coverage.
     """
