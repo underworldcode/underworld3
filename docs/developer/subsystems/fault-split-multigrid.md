@@ -297,7 +297,11 @@ moved fault: re-refine the base from it and register the new levels
 (`set_custom_fmg`). Registering the old coarse levels again does not bring it
 back. On a level with a `fac_zone` registered the rows of the zone stay in the
 patch across the move and are cut into blocks again from the moved coordinates;
-a split level then loses only the structural rows of its fault.
+a split level then loses only the structural rows of its fault. The rows are
+those of the cells the mask named at registration. Where a mover holds the zone
+field in space the band moves off those cells, and registering again with the
+zone recomputed puts the patch back on it (counts in the
+[fault-multigrid guide](../guides/fault-multigrid.md)).
 
 This is a mode for movers. A change of topology (an adapt, a remesh, a fault
 placed or moved) makes a new mesh, whose as-built geometry is its own, and its
