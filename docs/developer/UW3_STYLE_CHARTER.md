@@ -207,3 +207,32 @@ Examples:
   PETSc options) — not `argparse`, not ad-hoc `sys.argv` handling, not a config dict at
   the top of the file. A session script is a model a reader should be able to run and
   read; the founding rule applies to it in full.
+
+## 12. Identity, Geometry and Tolerances
+
+Coordinates are values, not names. A 2026-11 survey found 41 coordinate-keyed sites and
+49 absolute tolerances in the library, and each one can give a different answer when the
+partition, the mesh size or the unit system changes.
+
+- **Identity is topological.** A vertex, facet, fault side or owning rank is identified
+  by its mesh point, its label or its point-SF ownership, NEVER by its coordinates. Where
+  a choice must be the same at every rank count, say so in the code. A DMPlex point
+  number depends on the partition, so a partition-independent tie-break needs a
+  partition-independent key, for example coordinate order over a candidate set that is
+  the same on every rank.
+- **Properties are declared and maintained, not re-measured.** An operation that writes
+  coordinates either preserves a declared property by construction or releases it, and
+  says which. A mover that keeps boundary nodes on their wall is the example: it keeps
+  them there, or it says it has let them go. It does not leave the next caller to find
+  out by measuring.
+- **Geometric search is only for points that are not mesh entities.** It starts from
+  connectivity where a start cell is known, and it tests containment in the cell's
+  reference coordinates, with relative tolerances.
+- **Any tolerance that remains is named in one place**, with a comment saying what it
+  bounds and what it scales with. NEVER an absolute number in model units.
+
+**The exception.** Reconstructing from saved data whose topology or numbering does not
+match the live mesh, such as a reload on a different partition, may match by
+coordinates, because nothing else is available. The tolerance is then scaled by the
+mesh (its cell size or extent) and stated, and the match refuses rather than guesses
+when a point has no partner, or more than one.
