@@ -89,15 +89,14 @@ def test_a_solid_disc_declares_no_inner_circle():
 
 
 @pytest.mark.tier_b
-def test_a_refined_shell_does_not_declare_its_internal_sphere():
-    """Refinement places the new vertices of the embedded surface on the chords
-    of the coarse one (#949 item 3), so the refined mesh must not declare the
-    sphere. The unrefined mesh is on it, and declares it."""
+def test_a_refined_shell_declares_its_internal_sphere():
+    """The refinement callback moves the new vertices of the embedded surface onto
+    its sphere, as it does for the walls (#949 item 3), so the refined mesh
+    declares that sphere as the unrefined one does."""
     shell = dict(radiusOuter=1.0, radiusInternal=0.8, radiusInner=0.5, cellSize=0.3)
     unrefined = uw.meshing.SphericalShellInternalBoundary(**shell)
     assert unrefined.analytic_surface("Internal").radius == 0.8
 
     refined = uw.meshing.SphericalShellInternalBoundary(**shell, refinement=1)
-    with pytest.raises(ValueError, match="'Internal' was released: refinement"):
-        refined.analytic_surface("Internal")
+    assert refined.analytic_surface("Internal").radius == 0.8
     assert refined.analytic_surface("Upper").radius == 1.0
