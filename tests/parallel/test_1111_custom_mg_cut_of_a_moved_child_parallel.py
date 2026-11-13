@@ -61,3 +61,8 @@ def test_a_cut_of_a_moved_child_solves(axis, amplitude):
     its = max(s._rotated_freeslip_info["vel_its_last"])
     if (axis, amplitude) == (1, 0.002):
         assert its == 6, its
+    # the merge is reported as a build note, never as a preconditioner fallback
+    assert "custom_mg.dependent_columns" not in s.pc_fallbacks
+    merged = s.solve_report.config.get("multigrid_hierarchy")
+    if amplitude >= 0.005:
+        assert merged is not None and sum(merged["merged_coarse_unknowns"].values()) > 0, merged

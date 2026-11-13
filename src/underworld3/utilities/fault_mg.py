@@ -1147,24 +1147,21 @@ def _fold_rows(T, fold, comm):
 
 
 def record_repairs(solver, repairs):
-    """Record the #1101 merges of one install in ``solver.pc_fallbacks`` (the
-    warning is printed once per Python session; the record is per install).
-    ``repairs`` is the ``(level, unknowns)`` list the transfer builders filled;
-    the same on every rank. The count of installs that needed it is kept on
-    the solver, so a run's report shows how often it fired."""
-    if not repairs:
-        return
-    solver._mg_dependent_column_installs = getattr(
-        solver, "_mg_dependent_column_installs", 0) + 1
-    levels = ", ".join(f"coarse level {l}: {n}" for l, n in sorted(repairs))
-    solver._record_pc_fallback(
-        "custom_mg.dependent_columns",
-        requested="the coarse levels as built",
-        installed="the coarse levels with coarse unknowns that share one sole "
-                  "fine image merged into one (#1101)",
-        reason="unavailable",
-        detail=f"{levels} unknown(s) merged; the level pair is not nested. Needed on "
-               f"{solver._mg_dependent_column_installs} install(s) of this solver.")
+    """Record what one install's #1101 merges did, on the solver.
+
+    Not a preconditioner fallback: the merge is an exact change of basis, and
+    the hierarchy requested is the one installed. ``solver.solve_report``
+    reports it under ``config["multigrid_hierarchy"]`` (the merged unknowns by
+    coarse level for the latest install, and how many installs of this solver
+    merged any). An install with nothing to merge clears the per-level counts.
+    The warning is printed once per Python session; this is per install.
+    ``repairs`` is the ``(level, unknowns)`` list the transfer builders filled,
+    the same on every rank."""
+    previous = getattr(solver, "_mg_merged_coarse_unknowns", None) or {}
+    installs = previous.get("installs_with_merges", 0) + (1 if repairs else 0)
+    solver._mg_merged_coarse_unknowns = {
+        "levels": {int(level): int(n) for level, n in sorted(repairs)},
+        "installs_with_merges": installs}
 
 
 def restrict_unreached(Ps, comm, repairs=None):
