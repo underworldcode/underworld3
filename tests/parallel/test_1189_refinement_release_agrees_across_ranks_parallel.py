@@ -1,11 +1,14 @@
-"""Every rank gives the same verdict on a wall refinement left off its surface.
+"""A declared wall gives one answer on every rank, and on every copy of a vertex.
 
-On this cubed sphere the refinement callback would invert cells at a few vertices
-of the inner wall, which stay where refinement placed them (#949), so the mesh
-releases the sphere it would have declared for ``Lower``. The held-back vertices
-sit in one corner of the mesh: a rank whose partition holds none of them must
-release the wall all the same, or a method reading ``mesh.analytic_surface`` would
-proceed on that rank and refuse on another.
+Refinement: on this cubed sphere the refinement callback would invert cells at a
+few vertices of the inner wall, which stay where refinement placed them (#949), so
+the mesh releases the sphere it would have declared for ``Lower``. The held-back
+vertices sit in one corner of the mesh: a rank whose partition holds none of them
+must release the wall all the same, or a method reading ``mesh.analytic_surface``
+would proceed on that rank and refuse on another.
+
+Slip: ``project_to_slip_surface`` returns every local copy of a wall vertex on the
+wall, the copies a rank holds of another rank's vertices included.
 """
 import warnings
 
@@ -14,7 +17,7 @@ import pytest
 from mpi4py import MPI
 
 import underworld3 as uw
-from underworld3.meshing.smoothing.graph import _pinned_mask
+from underworld3.meshing.smoothing.graph import _pinned_mask, _reduce_over_sharing_ranks
 
 pytestmark = [pytest.mark.level_1, pytest.mark.tier_b,
               pytest.mark.timeout(300, method="thread"),
@@ -55,3 +58,25 @@ def test_a_wall_held_back_on_one_rank_is_released_on_every_rank():
         # rank of four holds none. scripts/test.sh runs this file at four ranks too.
         pytest.skip(f"every one of the {uw.mpi.size} ranks holds a held-back vertex, so "
                     "this rank count does not show a rank learning of it from another")
+
+
+def test_slip_projection_puts_every_local_copy_of_a_wall_vertex_on_the_wall():
+    """The vertices are displaced by a field of position, the same for every copy
+    of a vertex, that takes the walls up to 2 % of a radius off their circles."""
+    mesh = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.5, cellSize=0.1)
+    X = np.array(mesh.X.coords, dtype=float)
+    angle = np.arctan2(X[:, 1], X[:, 0])
+    moved = X * (1.0 + 0.02 * np.cos(3.0 * angle))[:, None]
+    moved += 0.02 * np.column_stack([-X[:, 1], X[:, 0]])
+    projected = mesh.project_to_slip_surface(moved, True, reference_coords=X)
+
+    worst = {}
+    for label in ("Lower", "Upper"):
+        # every local copy of the label's vertices, also on a rank holding a vertex
+        # of the wall and none of its facets
+        on_label = _reduce_over_sharing_ranks(mesh.dm, _pinned_mask(mesh.dm, (label,)), MPI.BOR)
+        radius = mesh.analytic_surface(label).radius
+        off = np.abs(np.linalg.norm(projected[on_label], axis=1) - radius) / radius
+        worst[label] = uw.mpi.comm.allgather(float(np.max(off, initial=0.0)))
+    for label, by_rank in worst.items():
+        assert max(by_rank) < ON_SURFACE, f"{label} off its circle, by rank: {by_rank}"

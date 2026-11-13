@@ -4757,12 +4757,27 @@ class Mesh(Stateful, uw_object):
         it. For callers that just want coordinates snapped back (a checkpoint
         reload, a diagnostic, the free-surface module).
 
+        The projector of :meth:`boundary_slip` moves the vertices a rank owns.
+        This method then copies each owner's value to the other ranks holding
+        the vertex, as the movers do after projecting, so the array returned
+        is the same for every copy of a vertex. Collective.
+
         As in :meth:`boundary_slip`, a label passed as free (``{label: False}``)
         has its declared surface released by this call."""
         _is_pinned, project = self.boundary_slip(
             slip_spec, reference_coords=reference_coords,
             boundary_labels=boundary_labels)
-        return project(numpy.asarray(coords, dtype=float))
+        projected = project(numpy.asarray(coords, dtype=float))
+        if uw.mpi.size > 1:
+            coord_dm = self.dm.getCoordinateDM()
+            local, owned = coord_dm.createLocalVec(), coord_dm.createGlobalVec()
+            local.array[:] = projected.ravel()
+            coord_dm.localToGlobal(local, owned, addv=False)
+            coord_dm.globalToLocal(owned, local)
+            projected[...] = local.array.reshape(projected.shape)
+            local.destroy()
+            owned.destroy()
+        return projected
 
     @timing.routine_timer_decorator
     def update_lvec(self, swarm_sync=True):
