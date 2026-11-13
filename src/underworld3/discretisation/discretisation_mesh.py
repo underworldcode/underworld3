@@ -4398,25 +4398,31 @@ class Mesh(Stateful, uw_object):
             numpy.asarray(coords, dtype=float),
             numpy.asarray(reference, dtype=float))
 
-    def _drop_seam_facets(self, facets, ref):
+    def _drop_seam_facets(self, facets):
         """``facets`` without those on a partition seam. Collective.
 
         ``smoothing._boundary_facets`` finds a rank's boundary facets as those
-        in one local cell, so a facet between two ranks' cells counts on both,
+        in one local cell, so a facet between two ranks' cells counted on both,
         and an internal surface along the seam (``BoxInternalBoundary``'s
-        ``Internal``) gained facets serial lacks: its vertices then slipped
-        where serial pins them (2.3e-2 off serial at np 4, #1103 review). A
-        true boundary facet is held by one rank only; a seam facet by the two
-        on either side. Facets are matched by their vertices' coordinates,
-        which are the same bytes on every rank holding them."""
-        from collections import Counter
-
-        keys = [] if facets is None or not len(facets) else [
-            b"".join(sorted(vertex.tobytes() for vertex in facet))
-            for facet in numpy.asarray(ref, dtype=float)[facets]]
-        held = Counter(key for part in uw.mpi.comm.allgather(keys) for key in part)
-        keep = numpy.array([held[key] == 1 for key in keys], dtype=bool)
-        return facets[keep] if len(keys) else facets
+        ``Internal``) gained facets serial lacks: its vertices then slid where
+        serial pins them (2.0e-2 off serial at np 4, #1103 review). A facet on
+        a seam is shared through the point star forest (a leaf here, or a root
+        with leaves elsewhere); a true boundary facet is not. The identity is
+        the mesh point, not coordinates: a split fault's Plus and Minus
+        replicas coincide by design, and a coordinate key dropped both."""
+        dm = self.dm
+        sf = dm.getPointSF()
+        _nroots, leaves, _remote = sf.getGraph()
+        degree = numpy.asarray(sf.computeDegree())               # collective
+        shared = set(int(p) for p in (leaves if leaves is not None else []))
+        shared.update(int(p) for p in numpy.flatnonzero(degree > 0))
+        if facets is None or not len(facets):
+            return facets
+        vS = dm.getDepthStratum(0)[0]
+        keep = numpy.array([not shared.intersection(int(q) for q in dm.getJoin(
+                             [int(v) + vS for v in facet]))
+                         for facet in facets], dtype=bool)
+        return facets[keep]
 
     def boundary_slip(self, slip_spec=True, reference_coords=None,
                       boundary_labels=None):
@@ -4517,7 +4523,7 @@ class Mesh(Stateful, uw_object):
             if uw.mpi.size > 1:
                 # every rank, a rank with no cells (facets None) included: it is
                 # a collective
-                facets = self._drop_seam_facets(facets, ref)
+                facets = self._drop_seam_facets(facets)
             for lab in unreg:
                 if facets is not None and facets.size:
                     local = ref[facets[local_masks[lab][facets].all(axis=1)]]

@@ -401,6 +401,8 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   batch 3 tests/parallel/test_1152_fac_zone_survives_a_mover_parallel.py
   # So is the boundary-slip classification of seam vertices (#1086).
   batch 3 tests/parallel/test_1086_boundary_slip_classification_parallel.py
+  # So is a split fault's sides slipping as in serial (#1103).
+  batch 3 tests/parallel/test_1103_split_fault_slip_parallel.py
   # So is the merge of coarse unknowns sharing one fine image (#1101).
   batch 3 tests/parallel/test_1101_custom_mg_dependent_columns_parallel.py
   # Shell Inner/Outer cell labels follow the Internal surface, not a radius test:
