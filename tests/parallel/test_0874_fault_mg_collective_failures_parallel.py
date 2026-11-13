@@ -13,6 +13,8 @@ import numpy as np
 import pytest
 
 import underworld3 as uw
+from petsc4py import PETSc
+
 from underworld3.utilities import fault_mg, line_cut
 
 pytestmark = [pytest.mark.mpi(min_size=2), pytest.mark.level_2, pytest.mark.tier_b,
@@ -91,16 +93,21 @@ def _cap_triangle(centre_angle, inverted):
     return P[[0, 2, 1]] if inverted else P
 
 
-def test_the_inversion_count_uses_a_global_winding_vote():
-    # rank 0: enough outward triangles that outward is the global majority;
-    # every other rank: two of its three inverted, so its own majority is inward
-    inverted = [False] * (3 * uw.mpi.size) if uw.mpi.rank == 0 else [False, True, True]
-    P = np.array([_cap_triangle(0.1 * k + uw.mpi.rank, inv) for k, inv in enumerate(inverted)])
+@pytest.mark.parametrize("majority", ["outward", "inward"])
+def test_the_inversion_count_uses_a_global_winding_vote(majority):
+    # rank 0 holds enough cells to set the global majority; every other rank
+    # holds three, two of them wound against that majority, so its own
+    # majority is the opposite one
+    against = majority == "outward"           # the minority's winding
+    mine = ([not against] * (3 * uw.mpi.size) if uw.mpi.rank == 0
+            else [not against, against, against])
+    P = np.array([_cap_triangle(0.1 * k + uw.mpi.rank, inv) for k, inv in enumerate(mine)])
     # the collective path's convention (before #874 there was only the
     # rank-local vote, which is what this falls back to)
     vote = getattr(line_cut, "_global_flip", None)
-    areas = (line_cut._signed_twice_areas(P, vote(P)) if vote is not None
+    areas = (line_cut._signed_twice_areas(P, vote(P, PETSc.COMM_WORLD)) if vote is not None
              else line_cut._signed_twice_areas(P))
     counted = uw.mpi.comm.allreduce(int((areas <= 0).sum()))
-    truth = uw.mpi.comm.allreduce(int(sum(inverted)))
+    # inverted = wound against the global majority
+    truth = uw.mpi.comm.allreduce(int(sum(1 for inv in mine if inv == against)))
     assert counted == truth, (counted, truth)

@@ -310,9 +310,14 @@ def cell_located_transfer_parallel(coarse, fine, degree, continuous,
     # the fine nodes with at least one owned row (ghost nodes are another rank's)
     mine = np.flatnonzero(((l2g_f >= fstart) & (l2g_f < fend)).any(axis=1))
     fcent = vxy_f[cv_f].mean(axis=1)
-    pcell, lam_c = (locate_in_cells(fcent[owner[mine]], vxy_c, cv_c)
-                    if cv_c.shape[0] else
-                    (np.full(mine.size, -1), np.full((mine.size, cv_c.shape[1]), -np.inf)))
+    pcell = np.full(mine.size, -1)
+    lam_c = np.full((mine.size, cv_c.shape[1]), -np.inf)
+    if cv_c.shape[0] and problem is None:
+        try:
+            pcell, lam_c = locate_in_cells(fcent[owner[mine]], vxy_c, cv_c)
+        except Exception as err:   # sanctioned: raised on every rank just below
+            problem = (f"fault_mg: the cell-located transfer failed: "
+                       f"{type(err).__name__}: {err}")
     inside = lam_c.min(axis=1) >= -_INSIDE_TOL
 
     # --- local hits ------------------------------------------------------- #
@@ -325,8 +330,9 @@ def cell_located_transfer_parallel(coarse, fine, degree, continuous,
             lam = _barycentric(Xf[hit], vxy_c[cv_c[cells]])
             W = _node_weights(Xf[hit], cells, lam, Xc, cn, vxy_c, cv_c, degree)
             gcols = l2g_c[cn[cells]]                         # (nh, nb, ncomp)
-        except (np.linalg.LinAlgError, RuntimeError) as err:
-            problem = f"fault_mg: the cell-located transfer failed: {err}"
+        except Exception as err:   # sanctioned: raised on every rank just below
+            problem = (f"fault_mg: the cell-located transfer failed: "
+                       f"{type(err).__name__}: {err}")
     _collective_raise(problem)
     hit_nodes, hit_W, hit_cols = [hit], [W], [gcols]
 
@@ -351,18 +357,20 @@ def cell_located_transfer_parallel(coarse, fine, degree, continuous,
               np.zeros((0, Xf.shape[1])))
         Qn = np.vstack(all_node)
         offs = np.concatenate([[0], np.cumsum(counts)])
+        qcell = np.full(total, -1)
+        qlam = np.full((total, cv_c.shape[1]), -np.inf)
+        answer_problem = None
         if cv_c.shape[0]:
-            qcell, qlam = locate_in_cells(Qc, vxy_c, cv_c)
-            qin = qlam.min(axis=1) >= -_INSIDE_TOL
-        else:
-            qcell = np.full(total, -1)
-            qlam = np.full((total, cv_c.shape[1]), -np.inf)
-            qin = np.zeros(total, dtype=bool)
-        found = np.flatnonzero(qin)
+            try:
+                qcell, qlam = locate_in_cells(Qc, vxy_c, cv_c)
+            except Exception as err:   # sanctioned: raised on every rank below
+                answer_problem = (f"fault_mg: the cell-located transfer failed: "
+                                  f"{type(err).__name__}: {err}")
+        qin = qlam.min(axis=1) >= -_INSIDE_TOL
+        found = np.flatnonzero(qin) if answer_problem is None else np.zeros(0, dtype=np.int64)
         Wq = np.zeros((0, nb))
         colsq = np.zeros((0, nb, ncomp), dtype=np.int64)
         score = np.zeros(0)
-        answer_problem = None
         if found.size:
             try:
                 lamn = _barycentric(Qn[found], vxy_c[cv_c[qcell[found]]])
@@ -370,8 +378,9 @@ def cell_located_transfer_parallel(coarse, fine, degree, continuous,
                                    vxy_c, cv_c, degree)
                 colsq = l2g_c[cn[qcell[found]]]
                 score = qlam[found].min(axis=1)
-            except (np.linalg.LinAlgError, RuntimeError) as err:
-                answer_problem = f"fault_mg: the cell-located transfer failed: {err}"
+            except Exception as err:   # sanctioned: raised on every rank below
+                answer_problem = (f"fault_mg: the cell-located transfer failed: "
+                                  f"{type(err).__name__}: {err}")
                 found = found[:0]
         _collective_raise(answer_problem)
         # answers travel back to every rank; each keeps those for its own queries
@@ -406,8 +415,9 @@ def cell_located_transfer_parallel(coarse, fine, degree, continuous,
                                              vxy_c, cv_c, degree)
                 best_cols[rest] = l2g_c[cn[cells_r]]
                 answered[rest] = True
-            except (np.linalg.LinAlgError, RuntimeError) as err:
-                rest_problem = f"fault_mg: the cell-located transfer failed: {err}"
+            except Exception as err:   # sanctioned: raised on every rank below
+                rest_problem = (f"fault_mg: the cell-located transfer failed: "
+                                f"{type(err).__name__}: {err}")
         if rest_problem is None and not answered.all():
             rest_problem = ("fault_mg: a fine node could not be located in any "
                             "coarse cell on any rank")

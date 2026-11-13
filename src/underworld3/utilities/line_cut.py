@@ -330,7 +330,8 @@ def _resolve_snapping(dm, X, ends, lines, snap_frac, scale, snap_quality=0.5,
     # licenses 0.5**6 of the original, and the worst angle duly fell 15.4 -> 2.3
     # degrees while every individual round looked well behaved.
     # The winding convention, voted over every rank once (#874).
-    flip = _global_flip(X[np.asarray(cell_verts, dtype=np.int64).reshape(-1, 3)])
+    flip = _global_flip(X[np.asarray(cell_verts, dtype=np.int64).reshape(-1, 3)],
+                        dm.getComm())
     floor = (None if snap_quality is None else
              np.minimum(snap_quality, np.abs(_cell_quality(X, cell_verts, flip))))
     # Vertices ALREADY on the line — a tip or junction placed by
@@ -545,18 +546,32 @@ def _outward_signed(P):
     return (n * c).sum(axis=1) / np.maximum(np.linalg.norm(c, axis=1), 1e-300)
 
 
-def _global_flip(P):
-    """The winding convention of a surface mesh, voted over EVERY rank's
-    cells (``P`` is this rank's): True when most are wound inward. A
-    rank-local vote let a rank whose cells were mostly inverted flip its own
-    convention and undercount them (#874). COLLECTIVE. ``None`` in two
-    dimensions, where the planar sign needs no convention."""
-    if P.shape[2] == 2:
-        return None
-    signed = _outward_signed(P) if len(P) else np.zeros(0)
-    neg, total = uw.mpi.comm.allreduce(
+def _global_flip(P, comm):
+    """The winding convention, voted over EVERY rank of ``comm`` (the mesh's
+    communicator; ``P`` is this rank's cells): True when most cells are wound
+    against the positive sense (inward on a surface mesh, clockwise in the
+    plane). A count, not a distance: each cell votes with the sign of its
+    own area. A tie or no cells at all gives no flip. A rank-local vote let a
+    rank whose cells were mostly inverted flip its own convention and
+    undercount them; in the plane there was no vote, so a mesh wound
+    clockwise throughout read every cell as inverted (#874). COLLECTIVE on
+    ``comm``: only on the collective paths (the snapping loop, the inversion
+    count after a cut, pull_vertex_onto)."""
+    if not len(P):
+        signed = np.zeros(0)
+    elif P.shape[2] == 2:
+        signed = _planar_signed(P)
+    else:
+        signed = _outward_signed(P)
+    neg, total = comm.tompi4py().allreduce(
         np.array([int((signed < 0.0).sum()), len(signed)]), op=MPI.SUM)
     return bool(neg > 0.5 * total)
+
+
+def _planar_signed(P):
+    """Twice each planar triangle's signed area (positive anticlockwise)."""
+    return ((P[:, 1, 0] - P[:, 0, 0]) * (P[:, 2, 1] - P[:, 0, 1])
+            - (P[:, 1, 1] - P[:, 0, 1]) * (P[:, 2, 0] - P[:, 0, 0]))
 
 
 def _signed_twice_areas(P, flip=None):
@@ -565,10 +580,11 @@ def _signed_twice_areas(P, flip=None):
     against the outward direction. A mesh is wound one way throughout, so the
     convention is read off the majority and an inverted cell is one against
     it: the global majority when ``flip`` is given (:func:`_global_flip`, on
-    a collective path), else this array's own (a rank-local caller)."""
+    a collective path), else this array's own (a rank-local caller). In the
+    plane a rank-local caller keeps the planar sign as it is."""
     if P.shape[2] == 2:
-        return ((P[:, 1, 0] - P[:, 0, 0]) * (P[:, 2, 1] - P[:, 0, 1])
-                - (P[:, 1, 1] - P[:, 0, 1]) * (P[:, 2, 0] - P[:, 0, 0]))
+        signed = _planar_signed(P)
+        return -signed if flip else signed
     signed = _outward_signed(P)
     if flip is None:
         flip = (signed < 0.0).sum() > 0.5 * len(signed)
@@ -686,7 +702,7 @@ def cell_areas(dm, global_vote=False):
     P = X[np.asarray(rings, dtype=np.int64)] if rings else np.empty((0, 3, X.shape[1]))
     # global_vote is for a caller every rank reaches (it is collective): the
     # inversion count after a cut. Rank-local callers keep their own vote.
-    return 0.5 * _signed_twice_areas(P, _global_flip(P) if global_vote else None)
+    return 0.5 * _signed_twice_areas(P, _global_flip(P, dm.getComm()) if global_vote else None)
 
 
 def min_angles(dm):
@@ -1161,7 +1177,8 @@ def pull_vertex_onto(dm, targets, min_quality=0.1):
     # On a surface mesh the sign is read under ONE convention for the whole
     # call, voted over every rank (_global_flip, #874): a rank-local majority
     # could change between the readings below and flip every cell's sign.
-    flip = _global_flip(X[np.asarray(cell_verts, dtype=np.int64).reshape(-1, 3)])
+    flip = _global_flip(X[np.asarray(cell_verts, dtype=np.int64).reshape(-1, 3)],
+                        dm.getComm())
     wound = np.where(_cell_quality(X, cell_verts, flip) < 0.0, -1.0, 1.0)
 
     cdim = X.shape[1]
