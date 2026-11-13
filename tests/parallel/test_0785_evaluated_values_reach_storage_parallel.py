@@ -227,66 +227,65 @@ def _units_refinement_pair(tag, parent_units="K", child_units="K", shape=1,
 @pytest.mark.mpi(min_size=2)
 @pytest.mark.parametrize("parent_units, child_units, shape, vtype, scaled", [
     ("K", "K", 1, uw.VarType.SCALAR, True),
+    ("cm/yr", "cm/yr", 2, uw.VarType.VECTOR, True),
+    ("Pa", "Pa", (2, 3), uw.VarType.MATRIX, True),
+    ("Pa", "Pa", (2, 2), uw.VarType.TENSOR, True),
+    ("Pa", "Pa", (2, 2), uw.VarType.SYM_TENSOR, True),
     (None, None, 1, uw.VarType.SCALAR, True),
     (None, None, (2, 3), uw.VarType.MATRIX, True),
     ("K", None, 1, uw.VarType.SCALAR, False),
     (None, "K", 1, uw.VarType.SCALAR, False),
-], ids=["both_in_K", "no_units_scalar", "no_units_matrix",
+], ids=["both_in_K", "vector", "matrix_2x3", "tensor", "sym_tensor",
+        "no_units_scalar", "no_units_matrix",
         "parent_in_K_unscaled", "child_in_K_unscaled"])
-def test_the_parallel_refinement_transfers_refuse_under_reference_scales(
+def test_the_parallel_refinement_transfers_are_exact_under_reference_scales(
         reference_scales, parent_units, child_units, shape, vtype, scaled):
-    """The parallel route reads dimensional coordinates as non-dimensional whenever the
-    model has reference quantities, whatever the variables carry (#991). Measured at np 3:
+    """The parallel route used to read dimensional coordinates as non-dimensional
+    whenever the model had reference quantities (#991). Measured at np 3 on eddab707:
     with units, a scalar out by 968; with none, a scalar out by 2.5 and a 2 x 3 MATRIX
-    by 15; with units on the child only, the restriction out by 3874. Every rank
-    refuses both transfers together, and neither variable is written.
+    by 15; with units on the child only, the restriction out by 3874. It was then
+    refused (#1002). #1003 moved both sites to ``coords_nd`` and the storage layout,
+    so the transfers are now exact for every shape and both are allowed.
 
     The one-sided cases switch the scaling flag off, which leaves the reference
-    quantities in place, so the model alone refuses them as well. The variables'
-    units are checked too, for a model without reference quantities."""
+    quantities in place."""
     previous = uw.is_nondimensional_scaling_active()
     uw.use_nondimensional_scaling(scaled)
     try:
-        _check_the_refusal(parent_units, child_units, shape, vtype)
+        _check_the_transfers_are_exact(parent_units, child_units, shape, vtype)
     finally:
         uw.use_nondimensional_scaling(previous)
 
 
-def _check_the_refusal(parent_units, child_units, shape, vtype):
-    tag = f"refuse_{parent_units}_{child_units}_{vtype.name}"
+def _check_the_transfers_are_exact(parent_units, child_units, shape, vtype):
+    tag = f"exact_{parent_units}_{child_units}_{vtype.name}".replace("/", "_")
     child, parent_var, child_var = _units_refinement_pair(tag, parent_units, child_units,
                                                           shape, vtype)
     _fill_raw(parent_var, 0.5)
+    child_var.data[:] = 0.0
+    child._refine_prolongate(parent_var, child_var)
+    prolongate_error = _worst_raw_error(child_var, 0.5)
+
     _fill_raw(child_var, 0.25)
+    parent_var.data[:] = 0.0
+    child._refine_restrict(child_var, parent_var)
+    restrict_error = _worst_raw_error(parent_var, 0.25)
 
-    outcomes = []
-    for transfer, source, target in ((child._refine_prolongate, parent_var, child_var),
-                                     (child._refine_restrict, child_var, parent_var)):
-        try:
-            transfer(source, target)
-            outcomes.append("returned")
-        except NotImplementedError as error:
-            outcomes.append("refused" if "#991" in str(error) else str(error))
-    all_outcomes = uw.mpi.comm.allgather(outcomes)
-    child_error = _worst_raw_error(child_var, 0.25)
-    parent_error = _worst_raw_error(parent_var, 0.5)
-
-    assert all_outcomes == [["refused", "refused"]] * uw.mpi.size, (all_outcomes, child_error, parent_error)
-    assert child_error < 1.0e-12 and parent_error < 1.0e-12, (child_error, parent_error)
+    assert prolongate_error < 1.0e-9 and restrict_error < 1.0e-9, (prolongate_error, restrict_error)
 
 
 @pytest.mark.mpi(min_size=2)
-def test_the_parallel_refinement_transfers_refuse_with_reference_quantities_and_scaling_off():
+def test_the_parallel_refinement_transfers_are_exact_with_reference_quantities_and_scaling_off():
     """``nondimensional_scaling=False`` leaves the flag off, but the coordinates are
     still dimensional: at np 3 a scalar without units was out by 2.5 and a 2 x 3
-    MATRIX by 15. The model's reference quantities decide, not the flag."""
+    MATRIX by 15 (#991). The transfers read ``coords_nd`` now, so they are exact."""
     scaling_before = uw.is_nondimensional_scaling_active()
     uw.get_default_model().set_reference_quantities(
         nondimensional_scaling=False,
         length=uw.quantity(1000, "km"), time=uw.quantity(1, "Myr"),
         mass=uw.quantity(1e24, "kg"), temperature=uw.quantity(1000, "K"))
     try:
-        _check_the_refusal(None, None, 1, uw.VarType.SCALAR)
+        _check_the_transfers_are_exact(None, None, 1, uw.VarType.SCALAR)
     finally:
         uw.reset_default_model()
         uw.use_nondimensional_scaling(scaling_before)

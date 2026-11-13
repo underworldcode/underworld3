@@ -3210,25 +3210,6 @@ class Mesh(Stateful, uw_object):
     #  (FE-exact, the quality path); parallel (np>1) falls back to the
     #  partition-agnostic ``global_evaluate`` REMAP (swarm-migration based).
     # ------------------------------------------------------------------ #
-    @staticmethod
-    def _refuse_parallel_refinement_with_units(*variables):
-        """The parallel refinement route reads the coordinates as non-dimensional, so
-        it gets every shape wrong when the model has reference quantities
-        (``uw.get_default_model().has_units()``), whatever the variables carry and
-        whether or not non-dimensional scaling is switched on, and when either
-        variable carries units (#991). Refuse rather than give a wrong value. These
-        facts and the rank count are the same on every rank, so every rank raises
-        together."""
-        if uw.mpi.size == 1:
-            return
-        referenced = uw.get_default_model().has_units()
-        with_units = [v.clean_name for v in variables if getattr(v, "units", None) is not None]
-        if referenced or with_units:
-            reason = ("the model has reference quantities" if referenced
-                      else f"{', '.join(repr(n) for n in with_units)} carry units")
-            raise NotImplementedError(
-                f"Transfers between a parent and its refinement child are not yet "
-                f"right in parallel when {reason}; see #991.")
 
     def _refine_prolongate(self, parent_var, child_var, mode="replace"):
         """Coarse parent -> fine child interpolation (this mesh is the child)."""
@@ -3236,8 +3217,6 @@ class Mesh(Stateful, uw_object):
             raise ValueError("_refine_prolongate requires an adapt() refinement child")
         pv = getattr(parent_var, "_base_var", parent_var)
         cv = getattr(child_var, "_base_var", child_var)
-
-        self._refuse_parallel_refinement_with_units(pv, cv)
 
         if uw.mpi.size > 1:
             from underworld3.discretisation.discretisation_mesh_variables import _evaluated_in_storage_layout
@@ -3271,8 +3250,6 @@ class Mesh(Stateful, uw_object):
             raise ValueError("_refine_restrict requires an adapt() refinement child")
         pv = getattr(parent_var, "_base_var", parent_var)
         cv = getattr(child_var, "_base_var", child_var)
-
-        self._refuse_parallel_refinement_with_units(pv, cv)
 
         if uw.mpi.size > 1:
             from underworld3.discretisation.discretisation_mesh_variables import _evaluated_in_storage_layout
