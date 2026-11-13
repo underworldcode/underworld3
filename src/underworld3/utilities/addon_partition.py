@@ -34,6 +34,7 @@ import underworld3 as uw
 # A fine cell's centroid lies inside its parent for nested refinement; the
 # tolerance is the cell locator's own, so a point it accepts is accepted here.
 from underworld3.utilities.fault_mg import _INSIDE_TOL
+from underworld3.utilities.fault_contact import _collective_raise
 
 __all__ = ["partition_addon", "mark_labels", "mark_polylines", "mark_sheets",
            "mark_band"]
@@ -236,6 +237,16 @@ def _embedded_surface_marks(mesh, names, first_id):
     return ids
 
 
+def _located_problem(what, err):
+    """The message for a rank-local location failure, raised on every rank
+    through ``fault_contact._collective_raise`` (#874): a rank that raised
+    alone left the others waiting in the next allreduce. A plain
+    ``RuntimeError``, as the unlocated-count checks beside each call raise:
+    these run while a mesh is made or partitioned, not inside a hierarchy
+    build, so there is nothing to retry or degrade."""
+    return f"addon_partition: locating {what} failed: {type(err).__name__}: {err}"
+
+
 def inherit_provenance(child, host):
     """Record on ``child`` — a mesh made from ``host`` by a cut, a placement or
     a split — the parent of each of its cells on the level ``host`` records
@@ -281,12 +292,18 @@ def inherit_provenance(child, host):
     if recorded:
         cell = np.zeros(cvf.shape[0], dtype=np.int64)
         n_bad = 0
+        problem = None
         if cvf.shape[0]:
             if cv_h.shape[0] == 0:
                 n_bad = cvf.shape[0]
             else:
-                cell, lam = locate_in_cells_exhaustive(fcent, vxy_h, cv_h)
-                n_bad = int((lam.min(axis=1) < -_INSIDE_TOL).sum())
+                try:
+                    cell, lam = locate_in_cells_exhaustive(fcent, vxy_h, cv_h)
+                    n_bad = int((lam.min(axis=1) < -_INSIDE_TOL).sum())
+                except Exception as err:   # sanctioned: raised on every rank just below
+                    problem = _located_problem("a surgery's result in the mesh it "
+                                               "was made from", err)
+        _collective_raise(problem)
         n_bad = int(comm.allreduce(n_bad))
         if n_bad:
             raise RuntimeError(
@@ -298,9 +315,17 @@ def inherit_provenance(child, host):
     child._addon_reference = None
     if reference is not None:
         taken_back = np.zeros_like(vxy_child)
+        problem = None
         if vxy_child.shape[0] and cv_h.shape[0]:
-            at_cell, at = locate_in_cells_exhaustive(vxy_child, vxy_h, cv_h)
-            taken_back = np.einsum("nv,nvd->nd", at, reference[cv_h[at_cell]])
+            try:
+                at_cell, at = locate_in_cells_exhaustive(vxy_child, vxy_h, cv_h)
+                taken_back = np.einsum("nv,nvd->nd", at, reference[cv_h[at_cell]])
+            except Exception as err:   # sanctioned: raised on every rank just below
+                problem = _located_problem("a surgery's vertices in the moved mesh "
+                                           "it was made from", err)
+        # every rank reaches this: ``reference`` is set from the meshes' own
+        # records, the same on every rank
+        _collective_raise(problem)
         child._addon_reference = (below, taken_back)
 
 
@@ -326,7 +351,6 @@ def _parent_cells_local(coarse, fine):
     made in, not the one its moved centroid lies over (#1091)."""
     from underworld3.utilities.fault_mg import (locate_in_cells_exhaustive,
                                                 reference_vertices)
-    from underworld3.utilities.fault_contact import _collective_raise
     comm = fine.dm.getComm().tompi4py()
     fcent, _vf, cvf = _cell_centroids(fine)
     reference = reference_vertices(fine, coarse)
@@ -344,8 +368,7 @@ def _parent_cells_local(coarse, fine):
             cell = np.where(lam.min(axis=1) < -_INSIDE_TOL, -1,
                             cell).astype(np.int64)
     except Exception as err:   # sanctioned: raised on every rank just below
-        problem = (f"addon_partition: locating the fine cells in the level "
-                   f"below failed: {type(err).__name__}: {err}")
+        problem = _located_problem("the fine cells in the level below", err)
     _collective_raise(problem)
     n_bad = int(comm.allreduce(int((cell < 0).sum()) + (n_f > 0 and n_c == 0)))
     if n_bad:
@@ -380,12 +403,18 @@ def _base_parent_addresses(base, lev, comm):
     _c, vxy_p, cv_p = _cell_centroids(pre)
     cell = np.zeros(cvf.shape[0], dtype=np.int64)
     n_bad = 0
+    problem = None
     if cvf.shape[0]:
         if cv_p.shape[0] == 0:
             n_bad = cvf.shape[0]
         else:
-            cell, lam = locate_in_cells_exhaustive(fcent, vxy_p, cv_p)
-            n_bad = int((lam.min(axis=1) < -_INSIDE_TOL).sum())
+            try:
+                cell, lam = locate_in_cells_exhaustive(fcent, vxy_p, cv_p)
+                n_bad = int((lam.min(axis=1) < -_INSIDE_TOL).sum())
+            except Exception as err:   # sanctioned: raised on every rank just below
+                problem = _located_problem("the cells in the level their "
+                                           "provenance is recorded on", err)
+    _collective_raise(problem)
     n_bad = int(comm.allreduce(n_bad))
     if n_bad:
         raise RuntimeError(

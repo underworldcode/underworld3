@@ -335,6 +335,7 @@ def cell_located_transfer_parallel(coarse, fine, degree, continuous,
     nodes on the geometry it was made in, as in
     :func:`cell_located_prolongation`.
     """
+    from underworld3.utilities.custom_mg import CollectiveBuildError
     from underworld3.utilities.fault_contact import _collective_raise
 
     m4 = comm.tompi4py()
@@ -385,7 +386,7 @@ def cell_located_transfer_parallel(coarse, fine, degree, continuous,
         except Exception as err:   # sanctioned: raised on every rank just below
             problem = (f"fault_mg: the cell-located transfer failed: "
                        f"{type(err).__name__}: {err}")
-    _collective_raise(problem)
+    _collective_raise(problem, error=CollectiveBuildError, builder_failure=True)
     hit_nodes, hit_W, hit_cols = [hit], [W], [gcols]
 
     # --- misses: ask the other ranks -------------------------------------- #
@@ -434,7 +435,7 @@ def cell_located_transfer_parallel(coarse, fine, degree, continuous,
                 answer_problem = (f"fault_mg: the cell-located transfer failed: "
                                   f"{type(err).__name__}: {err}")
                 found = found[:0]
-        _collective_raise(answer_problem)
+        _collective_raise(answer_problem, error=CollectiveBuildError, builder_failure=True)
         # answers travel back to every rank; each keeps those for its own queries
         ans_idx = m4.allgather(found)
         ans_W = m4.allgather(Wq)
@@ -473,7 +474,7 @@ def cell_located_transfer_parallel(coarse, fine, degree, continuous,
         if rest_problem is None and not answered.all():
             rest_problem = ("fault_mg: a fine node could not be located in any "
                             "coarse cell on any rank")
-        _collective_raise(rest_problem)
+        _collective_raise(rest_problem, error=CollectiveBuildError, builder_failure=True)
         hit_nodes.append(miss)
         hit_W.append(best_W)
         hit_cols.append(best_cols)
@@ -600,7 +601,9 @@ def provenance_transfer_parallel(coarse, fine, pre, degree, continuous,
             except Exception as err:   # sanctioned: raised on every rank just below
                 problem = (f"fault_mg: the provenance transfer failed to locate "
                            f"the fine cells: {type(err).__name__}: {err}")
-        _collective_raise(problem)
+        # the same class as the checks beside it, so the build retries or
+        # degrades on every rank together (#886)
+        _collective_raise(problem, error=CollectiveBuildError, builder_failure=True)
     n_out = int(m4.allreduce(int((plam.min(axis=1) < -_INSIDE_TOL).sum())
                              if mine.size else 0))
     if n_out:
@@ -655,7 +658,7 @@ def provenance_transfer_parallel(coarse, fine, pre, degree, continuous,
             problem = (f"fault_mg: the provenance transfer failed to weight "
                        f"the fine nodes: {type(err).__name__}: {err}")
     from underworld3.utilities.fault_contact import _collective_raise
-    _collective_raise(problem)
+    _collective_raise(problem, error=CollectiveBuildError, builder_failure=True)
     gcols = cols_u[inv]                                        # (nm, nb, ncomp)
 
     global last_transfer_stats
