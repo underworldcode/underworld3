@@ -8917,11 +8917,13 @@ class Mesh(Stateful, uw_object):
         zone = numpy.zeros(cE - cS, dtype=bool)
 
         value = self.boundaries[name].value
-        label = dm.getLabel(name)
-        # An empty stratum hands back a null IS that segfaults in getIndices().
-        # A rank owning no part of the surface is the normal case at np>2.
-        if label is None or label.getStratumSize(value) == 0:
+        # A boundary the DM holds no label for supports no cell; getLabel does
+        # not return None for it (#1163). An empty stratum hands back a null IS
+        # that segfaults in getIndices(), and a rank owning no part of the
+        # surface is the normal case at np>2.
+        if not dm.hasLabel(name) or dm.getLabel(name).getStratumSize(value) == 0:
             return zone
+        label = dm.getLabel(name)
 
         fS, fE = dm.getHeightStratum(1)
         for f in label.getStratumIS(value).getIndices():

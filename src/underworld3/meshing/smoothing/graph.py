@@ -45,19 +45,20 @@ def _global_mean(value):
 
 
 def _auto_pinned_labels(mesh) -> tuple:
-    """All non-sentinel geometric boundary labels on the mesh.
+    """All non-sentinel geometric boundary labels the mesh holds.
 
-    Skips ``All_Boundaries`` / ``Null_Boundary`` (sentinels) and
-    known non-geometric pressure-pin markers such as ``Centre`` on
-    the Annulus (a single-point marker whose underlying ``DMLabel``
-    has an invalid communicator and hard-crashes any
-    ``getNumValues`` / ``getValueIS`` / ``view`` call).
+    Skips ``All_Boundaries`` / ``Null_Boundary`` (sentinels) and the
+    non-geometric pressure-pin marker ``Centre`` of the Annulus. A name in
+    ``mesh.boundaries`` that the DM holds no label for is not a boundary of
+    this mesh and is left out: a solid disc, ``Annulus(radiusInner=0)``,
+    names ``Lower`` and has no inner wall (#1163). Whether a label exists is
+    a property of the distributed DM, so every rank returns the same names.
     """
     skip = {"All_Boundaries", "Null_Boundary", "Centre"}
     names = []
     for member in mesh.boundaries:
         name = getattr(member, "name", None)
-        if name and name not in skip:
+        if name and name not in skip and mesh.dm.hasLabel(name):
             names.append(name)
     return tuple(names)
 
@@ -128,16 +129,19 @@ def _pinned_mask(dm, pinned_labels):
     "seam" vertices free, and the smoother would pull them
     inward. Taking the closure of the tagged edges recovers them.
 
-    Tolerates labels that are present but empty (e.g. the
-    ``Centre`` pressure-pin marker on an Annulus, whose underlying
-    ``DMLabel`` has no strata and hard-crashes any query)."""
+    A name the DM holds no label for pins nothing (e.g. ``Centre`` on an
+    Annulus, or ``Lower`` on a solid disc), and so does a label that is
+    present but empty."""
     pStart, pEnd = dm.getDepthStratum(0)
     n_verts = pEnd - pStart
     is_pinned = np.zeros(n_verts, dtype=bool)
     for lname in pinned_labels:
-        label = dm.getLabel(lname)
-        if label is None:
+        # dm.getLabel never returns None: for a missing name it hands back a
+        # label with a null handle, and any query on that is a segmentation
+        # fault (#1163). hasLabel is the test.
+        if not dm.hasLabel(lname):
             continue
+        label = dm.getLabel(lname)
         try:
             if label.getNumValues() == 0:
                 continue
