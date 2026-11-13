@@ -7252,7 +7252,7 @@ class SNES_Scalar(SolverBaseClass):
             self.snes.setFromOptions()
 
 
-            UW_DMPlexSetSNESLocalFEM(cdm.dm, PETSC_FALSE, NULL)
+            CHKERRQ( UW_DMPlexSetSNESLocalFEM(cdm.dm, PETSC_FALSE, NULL) )
 
         self.is_setup = True
         self._form_facts = None     # forms (re)built: cached symbolic facts are stale
@@ -8353,7 +8353,7 @@ class SNES_Vector(SolverBaseClass):
             self.snes.setOptionsPrefix(self.petsc_options_prefix)
             self.snes.setFromOptions()
 
-            UW_DMPlexSetSNESLocalFEM(cdm.dm, PETSC_FALSE, NULL)
+            CHKERRQ( UW_DMPlexSetSNESLocalFEM(cdm.dm, PETSC_FALSE, NULL) )
 
 
         self.is_setup = True
@@ -9107,7 +9107,7 @@ class SNES_MultiComponent(SolverBaseClass):
             self.snes.setOptionsPrefix(self.petsc_options_prefix)
             self.snes.setFromOptions()
 
-            UW_DMPlexSetSNESLocalFEM(cdm.dm, PETSC_FALSE, NULL)
+            CHKERRQ( UW_DMPlexSetSNESLocalFEM(cdm.dm, PETSC_FALSE, NULL) )
 
         self.is_setup = True
         self._form_facts = None     # forms (re)built: cached symbolic facts are stale
@@ -12246,7 +12246,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             self.snes.setOptionsPrefix(self.petsc_options_prefix)
             self.snes.setFromOptions()
 
-            UW_DMPlexSetSNESLocalFEM(cdm.dm, PETSC_FALSE, NULL)
+            CHKERRQ( UW_DMPlexSetSNESLocalFEM(cdm.dm, PETSC_FALSE, NULL) )
 
             # Setup subdms here too.
             # These will be used to copy back/forth SNES solutions
