@@ -1,27 +1,27 @@
-"""A Stokes solve on a mesh with a rank that holds no cells is refused on every
-rank (#962).
+"""A Stokes solve completes on a mesh with a rank that holds no cells (#962).
 
-The Stokes solver registers a Jacobian preconditioner, so SNES assembles two
-matrices. PETSc's ``DMPlexComputeJacobianByKey`` (3.25.3 and ``main``) then leaves
-early on a rank without cells and skips the assembly of the Jacobian that the other
-ranks make. Before the refusal the solve stopped in ``MPI_Allreduce`` on the ranks
-without cells, or hung: a 14-cell box on 8 ranks, a region extracted from a mesh
-whose other ranks hold none of it, and a refined annulus whose base left two of 8
-ranks empty.
+The Stokes solver registers kernels for the Jacobian and for the matrix its
+preconditioner is built from, so SNES assembles two matrices. PETSc's one-pass
+assembly (``DMPlexComputeJacobianByKey``, 3.25.3 and ``main``) leaves early on a
+rank without cells and skips an assembly of the Jacobian that the other ranks
+make: the solve stopped in ``MPI_Allreduce`` on the ranks without cells, or hung.
+The solver's local Jacobian routine hands PETSc one matrix to a call
+(``UW_DMPlexSNESComputeJacobianFEM``), and every rank then assembles alike.
 
-Power: both fixtures leave a rank without cells at every np >= 2 (the triangle at
-np 2 is one cell; from np 3 up, and for the region at every count, a shell
-partition does it), and each test asserts that premise. The refusal is one gather
-of the cell counts, so what the tests show is that every rank raises the same
-error, named by those counts, and is still in step for the gather that follows. A
-regression stops in MPI or hangs, and the MPI supervisor's silence limit ends it;
-the decision and the text are asserted on one rank in
-``tests/test_0786_stokes_refuses_a_rank_without_cells.py``.
+Power: the region leaves a rank without cells at every np >= 2 and the triangle
+from np 3 up, by a shell partition, and each test asserts that premise. With
+PETSc's routine registered the run stops in MPI or hangs, and the MPI
+supervisor's silence limit ends it. The value asserted is the largest nodal speed
+of the same solve on one rank, where PETSc's routine is right. At np 2 the
+triangle can leave a rank empty only as one cell, which has every velocity node
+on a wall and nothing to solve for, so it is skipped there.
+``tests/test_0786_stokes_jacobian_and_preconditioner_one_call_each.py`` compares
+the matrices themselves on one rank.
 
-A scalar solve has one matrix and is not refused: on the same region it converges
-to the linear field its walls prescribe.
+A scalar solve has one matrix and never met the defect: on the same region it
+converges to the linear field its walls prescribe.
 
-    python scripts/mpi_supervisor.py --silence 300 -- mpirun -n 3 python -m pytest --with-mpi tests/parallel/test_0786_stokes_refuses_a_rank_without_cells_parallel.py
+    python scripts/mpi_supervisor.py --silence 300 -- mpirun -n 3 python -m pytest --with-mpi tests/parallel/test_0786_stokes_rank_without_cells_parallel.py
 """
 import importlib.util
 from pathlib import Path
@@ -40,6 +40,12 @@ pytestmark = [pytest.mark.mpi(min_size=2), pytest.mark.level_2, pytest.mark.time
 REGION_WALLS = ("Top", "Left", "Right", "Internal")
 
 
+# The largest nodal speed of each solve on one rank (macOS, PETSc 3.25.3), by cells
+# along the triangle's side and for the region. One cell has no free velocity node.
+SPEED_TRIANGLE = {1: None, 4: 2.4923109e-03, 8: 2.5355659e-03}
+SPEED_REGION = 8.1535981e-05
+
+
 def _triangle_with_an_empty_rank():
     size = uw.mpi.size
     n = cells_along_a_side_leaving_one_rank_empty(size)
@@ -47,7 +53,7 @@ def _triangle_with_an_empty_rank():
     # a mesh made from a bare DM has the name All_Boundaries and no such label
     dm.createLabel("All_Boundaries")
     dm.markBoundaryFaces("All_Boundaries", ALL_BOUNDARIES_VALUE)
-    return uw.discretisation.Mesh(dm, qdegree=3), ("All_Boundaries",)
+    return uw.discretisation.Mesh(dm, qdegree=3), ("All_Boundaries",), SPEED_TRIANGLE[n]
 
 
 def _region_held_by_rank_0():
@@ -57,7 +63,7 @@ def _region_held_by_rank_0():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     parent = module._thin_slab_parent("single_rank_region")
-    return parent.extract_region("Outer"), REGION_WALLS
+    return parent.extract_region("Outer"), REGION_WALLS, SPEED_REGION
 
 
 def _stokes(mesh, walls):
@@ -71,32 +77,31 @@ def _stokes(mesh, walls):
     for wall in walls:
         stokes.add_essential_bc((0.0, 0.0), wall)
     stokes.petsc_use_pressure_nullspace = True
-    return stokes
+    stokes.tolerance = 1.0e-10
+    return stokes, v
 
 
 @pytest.mark.tier_b
 @pytest.mark.parametrize("fixture", (_triangle_with_an_empty_rank, _region_held_by_rank_0))
-def test_stokes_is_refused_on_every_rank(fixture):
-    mesh, walls = fixture()
+def test_stokes_solves_with_a_rank_without_cells(fixture):
+    mesh, walls, speed_on_one_rank = fixture()
+    if speed_on_one_rank is None:
+        pytest.skip(f"np {uw.mpi.size}: the triangle is one cell, with no free velocity node")
     counts = cells_per_rank(mesh)
-    stokes = _stokes(mesh, walls)
-    try:
-        stokes.solve()
-        outcome = "solved"
-    except RuntimeError as error:
-        outcome = str(error)
-    outcomes = uw.mpi.comm.allgather(outcome)
+    stokes, v = _stokes(mesh, walls)
+    stokes.solve()
 
+    reason = stokes.snes.getConvergedReason()
+    local = np.linalg.norm(np.asarray(v.array)[:, 0, :], axis=1)
+    speed = max(uw.mpi.comm.allgather(float(local.max(initial=0.0))))
     assert counts.count(0) >= 1 and sum(counts) > 0, counts
-    assert len(set(outcomes)) == 1, outcomes
-    assert (f"ranks without cells of this mesh: {counts.count(0)} of {uw.mpi.size} "
-            f"({sum(counts)} cells in all)") in outcome, outcome
-    assert "#962" in outcome, outcome
+    assert reason > 0, reason
+    assert abs(speed - speed_on_one_rank) <= 1.0e-6 * speed_on_one_rank, (speed, counts)
 
 
 @pytest.mark.tier_b
-def test_a_scalar_solve_on_the_region_is_not_refused():
-    mesh, walls = _region_held_by_rank_0()
+def test_a_scalar_solve_on_the_region_converges():
+    mesh, walls, _speed = _region_held_by_rank_0()
     counts = cells_per_rank(mesh)
     t = uw.discretisation.MeshVariable("T0786", mesh, 1, degree=2)
     poisson = uw.systems.Poisson(mesh, u_Field=t)
