@@ -339,6 +339,10 @@ def remesh_with_field_transfer(
         # only the outer call's return value carries that information.
         do_move()
         return True
+    # A failure list left by an earlier call that never reached its raise must
+    # not raise on this one (H4's review of #960). Only the outer call clears it:
+    # a nested call returns above and leaves the outer call's list alone.
+    mesh._remesh_failed_transfer = None
     mesh._in_remesh_transfer = True
     # Per-adapt scratch dict surfaced to the closure so an adapt op
     # can publish flags (e.g. ``ale_opt_out``) before the operator

@@ -28,6 +28,7 @@ also the worker: ``python -m mpi4py <this file> <case>``), so a regression ends
 in the supervisor's silence limit instead of hanging the suite.
 """
 
+import ast
 import os
 import subprocess
 import sys
@@ -39,9 +40,75 @@ SILENCE = 40      # seconds without output before the supervisor ends a child
 RANKS = 2
 
 
+def _hook_worker():
+    """A failed transfer inside the semi-Lagrangian DDt's on_remesh hook (its
+    ALE opt-out REMAP path) reaches the caller on every rank, after the move. Rank 1
+    fails once, after the evaluation's collectives, for a variable the hook owns.
+    (The probe of the second review of #960, as a case.)"""
+    import numpy as np
+    import underworld3 as uw
+    from underworld3.discretisation import remesh
+
+    mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0, 0), maxCoords=(1, 1),
+                                             cellSize=1 / 12, qdegree=3)
+    T = uw.discretisation.MeshVariable("T", mesh, 1, degree=2)
+    V = uw.discretisation.MeshVariable("V", mesh, 2, degree=1)
+    adv = uw.systems.AdvDiffusionSLCN(mesh, u_Field=T, V_fn=V.sym, order=1)
+    adv.constitutive_model = uw.constitutive_models.DiffusionModel
+    adv.constitutive_model.Parameters.diffusivity = 1.0
+    tc = np.asarray(T.coords)
+    T.data[:, 0] = tc[:, 0] + 2 * tc[:, 1]
+    owned = [v for v in mesh.vars.values() if getattr(v, "_remesh_managed_by", None) is not None]
+    assert owned, "the DDt manages no variable"
+    for v in owned:
+        vc = np.asarray(v.coords)
+        d = np.array(v.data)
+        d[:] = (vc[:, 0] - vc[:, 1])[:, None]
+        v.data[...] = d
+    before = [np.asarray(v.data).copy() for v in owned]
+
+    original = uw.function.global_evaluate
+    fired = []
+
+    def global_evaluate(*args, **kwargs):
+        value = original(*args, **kwargs)
+        if (not fired and uw.mpi.rank == 1
+                and sys._getframe(1).f_code.co_name == "remap_var_set"
+                and sys._getframe(2).f_code.co_name == "on_remesh"):
+            fired.append(1)
+            raise RuntimeError("forced failure on rank 1 inside the DDt hook's remap")
+        return value
+
+    uw.function.global_evaluate = global_evaluate
+    c0 = np.asarray(mesh.X.coords).copy()
+    x, y = c0[:, 0], c0[:, 1]
+    inside = (x > 1e-9) & (x < 1 - 1e-9) & (y > 1e-9) & (y < 1 - 1e-9)
+    c1 = c0.copy()
+    c1[inside, 0] += 0.02 * np.sin(np.pi * x[inside]) * np.sin(np.pi * y[inside])
+
+    def do_move():
+        mesh._remesh_pending_scratch["ale_opt_out"] = True     # a discrete jump: the hook REMAPs
+        mesh._deform_mesh(c1)
+
+    try:
+        remesh.remesh_with_field_transfer(mesh, do_move, dt=0.1)
+        raised = False
+    except RuntimeError as error:
+        raised = "#960" in str(error)
+    moved = bool(np.abs(np.asarray(mesh.X.coords) - c1).max(initial=0.0) < 1e-12)
+    kept = tuple(bool(np.array_equal(np.asarray(v.data), b)) for v, b in zip(owned, before))
+    results = uw.mpi.comm.gather((raised, moved, kept, len(fired)), root=0)
+    if uw.mpi.rank == 0:
+        print(f"REMAP DONE raised {[r[0] for r in results]} at_new_coords {[r[1] for r in results]} "
+              f"history_kept {[r[2] for r in results]} fired {[r[3] for r in results]}", flush=True)
+
+
 def _worker(case):
     import numpy as np
     import underworld3 as uw
+
+    if case == "hook":
+        return _hook_worker()
 
     mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0, 0), maxCoords=(1, 1),
                                              cellSize=1 / 16, qdegree=3, regular=False)
@@ -195,6 +262,23 @@ def test_a_limiter_failure_on_one_rank_fails_the_variable_on_every_rank(tmp_path
     # every rank, not a reason for that rank alone to evaluate again
     assert "raised [True, True]" in line, line
     assert "at_new_coords [True, True]" in line, line
+
+
+def test_a_failure_in_a_ddt_hook_on_one_rank_reaches_the_caller_on_every_rank(tmp_path):
+    _serial_only()
+    code, log = _run("hook", tmp_path)
+    assert code == 0, log[-4000:]
+    line = next(ln for ln in log.splitlines() if "REMAP DONE" in ln)
+    # the hook dispatcher swallows a hook's own exception, so the failure is
+    # handed to remesh_with_field_transfer, which raises on every rank once the
+    # move is complete; the failed history keeps its pre-move values
+    assert "fired [0, 1]" in line, line
+    assert "raised [True, True]" in line, line
+    assert "at_new_coords [True, True]" in line, line
+    # per variable the hook owns: the failed one kept on BOTH ranks, the others
+    # transferred, the same pattern on every rank
+    per_rank = ast.literal_eval(line.split("history_kept ")[1].split(" fired")[0])
+    assert len(set(per_rank)) == 1 and any(per_rank[0]) and not all(per_rank[0]), line
 
 
 def test_a_raise_in_the_evaluation_on_one_rank_is_not_swallowed(tmp_path):
