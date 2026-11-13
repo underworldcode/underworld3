@@ -178,47 +178,76 @@ worst angle (8.79° against 5.29°). It costs mesh displacement rather than
 geometric accuracy — the same trade as `snap_frac` — and the tip is where the
 stress concentrates.
 
-A target inside the mesh never takes a vertex of the domain boundary. A target
+A target inside the mesh never takes a vertex of the mesh boundary. A target
 on a boundary edge takes one of that edge's ends; a target inside the mesh
 takes an interior corner of the cell holding it, however close a boundary
 corner is, so the pull leaves a tip under a wall a tip and does not dent the
-wall. `pull_vertex_onto` raises `ValueError` on every rank when the cell holding
-an interior target has no interior corner, and when each interior corner it has
+wall. The boundary is every edge with one cell, so the two sides of a fault
+already split into the mesh are boundary as the walls of the domain are: a
+target beside an earlier fault takes an interior vertex and leaves the fault's
+vertices where they are, or is refused as it would be under a wall. A target
+within 1e-9 of a cell's height of an edge is read as on that edge.
+
+`pull_vertex_onto` raises `ValueError` on every rank when the cell holding an
+interior target has no interior corner, and when each interior corner it has
 would leave a cell below `min_quality` (0.1 by default). An interior corner
-that fails is passed over and the next nearest is tried, so a cell that touches
-the boundary at one corner refuses a target only close beside that corner. A
-cell with an edge on the boundary has one interior corner, and refuses a target
-closer to that edge than a twentieth to a tenth of the cell's height (0.044 to
-0.088 measured on a 1/12 box and on an annulus of cell size 0.1).
+that fails is passed over and the next nearest is tried.
+
+- A cell with an edge on the boundary has one interior corner, and refuses a
+  target closer to that edge than a twentieth to a tenth of the cell's height.
+  Measured over every such cell: 0.043 to 0.068 on a regular 1/12 box, 0.045
+  to 0.083 on an irregular one, 0.047 to 0.087 on an annulus of cell size 0.1.
+- A cell that touches the boundary at one corner refuses a target only close
+  beside that corner (within 0.16 of the shorter edge from it).
+- A cell at a corner of the domain can have two boundary corners and no
+  boundary edge. The edge joining them is interior, and a target close to it
+  is refused wherever it is along that edge: at 0.014 from it on a unit cell
+  the one interior corner would leave a quality of 0.02.
 
 `min_quality` applies to an interior corner taken in place of a nearer boundary
 corner, and to nothing else. A target whose nearest corner is interior takes
 that corner untested, as before, so the floor is not a floor on the mesh
-returned: on a regular 1/12 box, 14 of 2822 accepted pulls of random targets in
-cells touching the boundary left a cell below 0.1 (the worst at 0.02), each by
-the nearest corner. An irregular 1/12 box and an annulus of cell size 0.1 gave
-none.
+returned. Of some 2800 accepted pulls of random targets in cells touching the
+boundary of a regular 1/12 box, 10 to 14 left a cell below 0.1, each by the
+nearest corner; the worst was at 0.02 in one sample and 0.047 in another. An
+irregular 1/12 box and an annulus of cell size 0.1 gave none.
 
-On a curved boundary the boundary is the mesh's own chords, so a point of the
-true curve on a concave wall is an interior target a sagitta from the boundary.
-It is refused where the sagitta is below the limit above (cell size 0.15 and
-finer on an inner radius of 0.5) and takes the interior corner on a coarser
-mesh; put it on the chord.
+On a curved boundary the boundary is the mesh's own chords. A point of the true
+curve on a concave wall falls inside a cell, a sagitta from the chord, and is an
+interior target. On an inner radius of 0.5 every such point tried was refused at
+cell size 0.15 and finer; at 0.175 to 0.25 the point over the middle of each
+chord was placed and those over its quarter points refused; at 0.3 the quarter
+points were placed too. A target on the chord itself is placed, by the nearer
+end of the chord, and that end leaves the curve: at cell size 0.1 it goes from
+radius 0.5 to 0.498 and the domain gains 2.8e-4 of area. Every vertex of a
+curved wall is a corner in this sense, as a box corner is, which slides along
+one wall and off the other when it is the nearer end of the edge holding a
+target.
 
 Two targets of one call can choose the same vertex, and the later one then
 takes it from the earlier, which is left with no vertex and no error (issue
 #559). The boundary rule makes that easier to reach beside a boundary: two
 targets in neighbouring boundary cells that share their one interior corner
-collide at one cell spacing. Keep the targets of one call further apart than
-the cells they sit in.
+collide at one cell spacing, and a target whose nearer interior corner is passed
+over takes the further one. With four to six random targets a call beside the
+boundary of an irregular 1/12 box, at one cell spacing, 14 to 25 of 150 calls
+left a target without a vertex; of 1375 calls whose targets were further apart
+than the longest edge of the cells they sat in, on the three meshes above, none
+did. Keep the targets of one call that far apart.
+
+`Mesh.add_fault` pulls a vertex onto every control point of a fault, so these
+refusals reach it. On a mesh with add-on levels the fault is also replayed onto
+each level of the multigrid tail, where the cells are larger and a tip is
+closer under the boundary in units of the cell. A level whose pull is refused
+is left welded, with the levels beneath it, and a warning says which and why;
+the finest level is still split.
 
 A split fault that has to end closer under the boundary than the pull allows
 can be a welded fault zone with a transverse-isotropic rheology there, which
 needs no vertex at the tip.
 
 This is the pull only. The cut's own snap (`snap_frac`) can still move a
-boundary vertex onto the line (issue #1089), and a box corner still slides
-along one wall when it is the nearer end of the boundary edge holding a target.
+boundary vertex onto the line (issue #1089).
 
 Y (branching), T (abutting) and X (crossing) networks all work, in serial and at
 np=2/3/4. The union-of-cells zone **bulges** where branches meet, because the fan

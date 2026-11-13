@@ -37,6 +37,12 @@ def _box(cell_size=1 / 24):
         cellSize=cell_size, regular=False, qdegree=2)
 
 
+def _box_regular(cell_size=1 / 12):
+    return uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0),
+        cellSize=cell_size, regular=True, qdegree=2)
+
+
 def _shear_stokes(mesh, tag):
     x, y = mesh.X
     v = uw.discretisation.MeshVariable(f"v{tag}", mesh, 2, degree=2)
@@ -283,3 +289,59 @@ def test_a_fault_tip_under_a_wall_vertex_is_placed_and_the_wall_keeps_its_shape(
     assert cell_areas(split.dm).sum() == pytest.approx(1.0, rel=1e-13)
     assert Xs[:, 1].max() == 1.0
     assert (Xs == X[W]).all(axis=1).any(), "the wall corner moved"
+
+
+def test_a_fault_ending_beside_an_earlier_fault_leaves_its_vertices_alone():
+    """The sides of a fault already split into the mesh are boundary.
+
+    Fault One runs along y = 0.5 of a regular 1/12 box from x = 0.25 to 0.75,
+    and its two sides are edges with one cell each. A point just above it is
+    inside a cell with two corners on the fault and one interior corner,
+    (0.5, 7/12): nearest to a corner on the fault, as a tip under a wall is
+    nearest to a wall corner. Taking that corner would move a vertex of One.
+
+    Asserted on the pull: at a quarter of a cell above One the interior corner
+    takes the point and the twelve vertices of One's sides are bitwise where
+    they were; at 0.03 of a cell the pull is refused, and the message names
+    the side of a fault. Asserted on ``add_fault``: fault Two, coming down
+    from (0.52, 0.9) to a quarter of a cell above One, is placed and split,
+    One's vertices are in place, and the box keeps its area of 1.
+    """
+    from underworld3.utilities.line_cut import (_cell_vertices, _coords,
+                                                cell_areas, pull_vertex_onto)
+
+    first = _box_regular().add_fault(("One", np.array([[0.25, 0.5], [0.75, 0.5]])))
+    X = _coords(first.dm)
+    vS = first.dm.getDepthStratum(0)[0]
+    one_sided = np.zeros(len(X), dtype=bool)
+    for e in range(*first.dm.getDepthStratum(1)):
+        if len(first.dm.getSupport(e)) == 1:
+            one_sided[[int(v) - vS for v in first.dm.getCone(e)]] = True
+    sides = one_sided & (np.abs(X - 0.5).max(axis=1) < 0.4)
+    assert sides.sum() == 12
+    assert np.array_equal(X[sides][:, 1], np.full(12, 0.5))
+
+    near = np.array([0.52, 0.5 + 0.25 / 12])
+    cell = next(c for c in _cell_vertices(first.dm)
+                if sides[c].sum() == 2 and X[c][:, 1].max() > 0.55
+                and X[c][:, 0].min() > 0.49 and X[c][:, 0].max() < 0.59)
+    assert sides[cell[np.linalg.norm(X[cell] - near, axis=1).argmin()]], (
+        "a corner on the fault is not the nearest, so the case is not exercised")
+    Xo = _coords(pull_vertex_onto(first.dm, near))
+    moved = np.flatnonzero((Xo != X).any(axis=1))
+    assert len(moved) == 1 and not one_sided[moved[0]]
+    assert np.allclose(X[moved[0]], (0.5, 7 / 12), rtol=0.0, atol=1e-9)
+    assert np.array_equal(Xo[moved[0]], near)
+    assert np.array_equal(Xo[sides], X[sides])
+
+    with pytest.raises(ValueError, match="min_quality=0.1") as refusal:
+        pull_vertex_onto(first.dm, np.array([0.52, 0.5 + 0.03 / 12]))
+    assert "a side of a fault already split into the mesh" in str(refusal.value)
+
+    second = first.add_fault(("Two", np.vstack([[0.52, 0.9], near])))
+    assert "TwoPlus" in [b.name for b in second.boundaries]
+    Xs = _coords(second.dm)
+    assert np.linalg.norm(Xs - near, axis=1).min() < 1e-12
+    for vertex in X[sides]:
+        assert (Xs == vertex).all(axis=1).any(), "a vertex of the first fault moved"
+    assert cell_areas(second.dm).sum() == pytest.approx(1.0, rel=1e-13)
