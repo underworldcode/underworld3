@@ -5977,6 +5977,15 @@ def reset_default_model():
 
     Also resets global state including strict units mode to default (ON).
 
+    It does NOT switch the non-dimensional scaling flag off: after
+    ``set_reference_quantities(...)`` and then ``reset_default_model()``,
+    ``uw.is_nondimensional_scaling_active()`` is still True although the new
+    model has no reference quantities. That is the maintainer's decision (#1001,
+    2026-11-13), pinned by ``test_0816::test_flag_state_persistence``. To turn it
+    off, call ``uw.use_nondimensional_scaling(False)``, or set the reference
+    quantities with ``nondimensional_scaling=False``. The test suite's
+    ``conftest.py`` resets the flag between tests (#1045).
+
     Returns
     -------
     Model
