@@ -478,9 +478,17 @@ authoritative while it is registered and not released.
   not measure the wall. Where the accessor refuses (nothing registered, a surface
   that is not analytic, a released surface) the method refuses too: there is no
   fallback to the faceted wall.
-- Every operation that writes mesh coordinates either keeps the wall on the
+- Every operation that writes mesh coordinates must either keep the wall on the
   declared surface by construction (the movers slide boundary nodes and restore
-  them onto the registered surface) or releases the declaration (`deform`).
+  them onto the registered surface) or release the declaration. `deform` releases
+  every surface. This is the rule, and not yet the state of the code: a smoother or
+  mover run with a wall neither pinned nor slipped, a write to the coordinates of a
+  mesh that carries no variables, a label slid as a free surface, and a refinement
+  that holds a wall vertex back all move a wall and leave its declaration standing.
+  Each of those must release before a method relies on the accessor.
+- A constructor does not declare what the mesh does not hold: a solid disc or ball
+  has no inner wall, and a refined `SphericalShellInternalBoundary` withdraws its
+  `Internal` sphere, which refinement leaves on the coarse chords (#949).
 - No tolerance appears at run time. A distance check belongs in the tests of each
   preserving operation, as a small multiple of machine epsilon times the radius.
 
