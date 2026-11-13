@@ -211,6 +211,11 @@ one campaign and is the error to recognise.
   a level rather than tolerate a large bottom. The coarse solve itself, and
   the rule for it, are on
   [Multigrid preconditioning](../../advanced/multigrid-preconditioning.md).
+- The base must still give every rank a cell. It is partitioned before it is
+  refined and every level keeps that partition, so a rank the base leaves empty
+  holds no cells at any level, and a Stokes solve is then refused at set-up
+  (#962). `Annulus(cellSize=0.8, refinement=2)` on 8 ranks has cells per rank
+  [48, 48, 0, 64, 0, 64, 64, 64].
 - The augmented-Lagrangian penalty at $\gamma = 1$ shortens the pressure Schur
   loop once the velocity preconditioner is healthy (22 to 17 iterations, warm
   solve ahead of GAMG outright); $\gamma = 10$ over-stiffens the velocity block
@@ -219,8 +224,8 @@ one campaign and is the error to recognise.
 
 ## Parallel: where the imbalance is, and is not
 
-The base and its coarse levels are balanced at every rank count and nothing in
-the fault machinery touches them. The imbalance is in the add-on levels, in two
+The base and its coarse levels are balanced at every rank count, given a base
+with several cells for each rank, and nothing in the fault machinery touches them. The imbalance is in the add-on levels, in two
 parts, in this order of size:
 
 1. **An adapt-and-cut child inherits the base's partition.** Every refined cell

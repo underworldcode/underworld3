@@ -4398,6 +4398,35 @@ class Mesh(Stateful, uw_object):
             numpy.asarray(coords, dtype=float),
             numpy.asarray(reference, dtype=float))
 
+    def _drop_seam_facets(self, facets):
+        """``facets`` without those on a partition seam. Collective.
+
+        ``smoothing._boundary_facets`` finds a rank's boundary facets as those
+        in one local cell, so a facet between two ranks' cells counted on both,
+        and an internal surface along the seam (``BoxInternalBoundary``'s
+        ``Internal``) gained facets serial lacks: its vertices then slid where
+        serial pins them (2.0e-2 off serial at np 4, #1103 review). A facet on
+        a seam is shared through the point star forest (a leaf here, or a root
+        with leaves elsewhere); a true boundary facet is not. The identity is
+        the mesh point, not coordinates: a split fault's Plus and Minus
+        replicas coincide by design, and a coordinate key dropped both."""
+        dm = self.dm
+        sf = dm.getPointSF()
+        _nroots, leaves, _remote = sf.getGraph()
+        degree = numpy.asarray(sf.computeDegree())               # collective
+        shared = set(int(p) for p in (leaves if leaves is not None else []))
+        shared.update(int(p) for p in numpy.flatnonzero(degree > 0))
+        if facets is None or not len(facets):
+            return facets
+        vS = dm.getDepthStratum(0)[0]
+        # the FULL join: getJoin walks one level up, so the three vertices of
+        # a tet facet have no common edge and joined to nothing (3-D seam
+        # facets were never dropped)
+        keep = numpy.array([not shared.intersection(int(q) for q in dm.getFullJoin(
+                             [int(v) + vS for v in facet]))
+                         for facet in facets], dtype=bool)
+        return facets[keep]
+
     def boundary_slip(self, slip_spec=True, reference_coords=None,
                       boundary_labels=None):
         """Build ``(is_pinned, project)`` for tangent slip on this mesh's
@@ -4485,27 +4514,28 @@ class Mesh(Stateful, uw_object):
         # exists for adapt()'s refinement snapping.
         surf = {lab: s for lab, s in dict(self.bounding_surfaces).items()
                 if not getattr(s, "interior", False)}
-        # Which labels are usable is decided on all ranks together (#1082): the
-        # normals below are a collective projection, so every rank must make the
-        # same calls. A rank holding none of a label's facets gets an empty facet
-        # surface. That is enough when such a rank also holds none of the
-        # label's vertices (every cell on one rank), but not in general: a rank
-        # can own slip vertices of a label without any of its facets, and its
-        # restore then fails alone. Each rank also restores onto its own facets
-        # only, so facet slip is partition-dependent. Both are #1103.
+        # A facet surface is the label's boundary facets over ALL ranks (#1103):
+        # restored onto its own rank's facets only, a vertex that slid past
+        # their end was clamped there (3e-2 to 5e-2 off serial), and a rank
+        # owning slip vertices of a label without any of its facets raised
+        # alone. Gathering also makes the usable labels the same on every rank
+        # (#1082), which the collective normal projection below needs.
         unreg = [lab for lab in slip_labels if lab not in surf]
         if unreg:
-            from mpi4py import MPI
-
             facets, _opp = _boundary_facets(self, cdim)
+            if uw.mpi.size > 1:
+                # every rank, a rank with no cells (facets None) included: it is
+                # a collective
+                facets = self._drop_seam_facets(facets)
             for lab in unreg:
                 if facets is not None and facets.size:
                     local = ref[facets[local_masks[lab][facets].all(axis=1)]]
                 else:
                     local = numpy.zeros((0, cdim, cdim))
-                if uw.mpi.comm.allreduce(len(local) > 0, op=MPI.LOR):
+                gathered = numpy.concatenate(uw.mpi.comm.allgather(local))
+                if len(gathered):
                     surf[lab] = BoundingSurface(self, lab, "facet",
-                                                reference_facets=local)
+                                                reference_facets=gathered)
         usable = [lab for lab in slip_labels if lab in surf]
         masks = {lab: masks[lab] for lab in usable}
         count = numpy.zeros(n_verts, dtype=int)
@@ -7995,6 +8025,33 @@ class Mesh(Stateful, uw_object):
             self._domain_kdtree = uw.kdtree.KDTree(centroids)
             self._domain_kdtree_version = self._mesh_version
         return self._domain_kdtree
+
+    @uw.collective_operation
+    def _get_domain_boxes(self):
+        """Every rank's vertex bounding box, padded: ``(lo, hi)``, each
+        ``(size, cdim)``, the same on every rank. A point a rank's domain holds
+        is inside its unpadded box; the pad covers a point just outside the
+        mesh that the locator still gives a cell. That slab has a relative part
+        (the face tolerance, ``_EVAL_FACE_TOL``, of a cell) and an absolute
+        one, from the locator's 1e-3 control-point offset: about 1e-5 model
+        units outside a wall, 3e-5 at a corner. So the pad is the larger of
+        four face tolerances of the largest cell radius and an absolute floor
+        of ten face tolerances of that offset (1e-4); without the floor, on
+        cells finer than about 7.5e-4 a point some rank claims fell outside
+        every box and a migrate that deletes lost points deleted it. A point
+        outside all of them is in no rank's domain. A rank with no cells has
+        an empty box (``lo = +inf``). Collective: one small allgather."""
+        import underworld3 as uw
+
+        coords = numpy.asarray(self.dm.getCoordinatesLocal().array).reshape(-1, self.cdim)
+        if coords.size:
+            lo, hi = coords.min(axis=0), coords.max(axis=0)
+        else:
+            lo, hi = numpy.full(self.cdim, numpy.inf), numpy.full(self.cdim, -numpy.inf)
+        pad = max(4.0 * self._EVAL_FACE_TOL * self.get_max_radius(),
+                  10.0 * self._EVAL_FACE_TOL * 1.0e-3)
+        boxes = uw.mpi.comm.allgather((lo - pad, hi + pad))
+        return (numpy.array([b[0] for b in boxes]), numpy.array([b[1] for b in boxes]))
 
     def get_min_radius_old(self) -> float:
         """

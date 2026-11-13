@@ -74,6 +74,15 @@ extraction is collective, including ranks with no local faces.
 Independent child repartitioning requires migrating the parent--child mapping;
 it is not provided by coordinate-coincidence injection.
 
+**A Stokes solve needs cells of the child on every rank.** A preserved partition
+leaves a rank with no cells of the child whenever its share of the parent lies
+outside the region. A scalar solve runs on such a child. A Stokes solve, or any
+solve with a multiplier field, is refused at set-up on every rank: these solvers
+register a Jacobian preconditioner, and PETSc 3.25.3 does not assemble the
+Jacobian on a rank without cells when the preconditioner is a second matrix
+(`DMPlexComputeJacobianByKey`; #962). The same holds for any mesh whose partition
+leaves a rank without cells, whatever its size.
+
 The subdomain and resolution-level examples solve the **same** annulus +
 radial-buoyancy Stokes problem so those two flavours are directly
 comparable: one solves on a *subdomain* of the annulus, the other on a
