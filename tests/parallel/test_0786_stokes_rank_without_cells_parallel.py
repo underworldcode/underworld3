@@ -12,10 +12,12 @@ Power: the box of two cells and the region leave a rank without cells at every
 np >= 2 and the triangle from np 3 up, and each test asserts that premise. With
 PETSc's routine registered the run stops in MPI or hangs, and the MPI
 supervisor's silence limit ends it. The value asserted is the largest nodal speed
-of the same solve on one rank, where PETSc's routine is right. The box needs no
-mesh generator, so its value is the same on every host. At np 2 the triangle
-leaves a rank empty only when it is one cell, which has every velocity node on a
-wall and nothing to solve for, so it is skipped there.
+of the same solve on one rank, where PETSc's routine is right. The box is a
+structured mesh of two quadrilaterals, the one
+``tests/parallel/test_0766_mover_refreshes_mesh_vector_parallel.py`` relies on
+for a rank without cells. At np 2 the triangle leaves a rank empty only when it
+is one cell, which has every velocity node on a wall and nothing to solve for, so
+it is skipped there; ``scripts/test.sh`` runs this file at np 3 as well.
 ``tests/test_0786_stokes_jacobian_and_preconditioner_one_call_each.py`` compares
 the matrices themselves on one rank.
 
@@ -54,7 +56,7 @@ SPEED_REGION = 8.1535981e-05
 
 
 def _box_of_two_cells():
-    """Cells per rank [0, 2] at np 2 and [0, 0, 0, 2] at np 4."""
+    """Both cells go to one rank: the partitioner decides that, and the test asserts it."""
     mesh = uw.meshing.StructuredQuadBox(elementRes=(1, 2), qdegree=3)
     return mesh, BOX_WALLS, SPEED_BOX
 
@@ -63,7 +65,7 @@ def _triangle_with_an_empty_rank():
     size = uw.mpi.size
     n = cells_along_a_side_leaving_one_rank_empty(size)
     dm = right_triangle_of_cells(n, max(size - 1, 1))
-    # a mesh made from a bare DM has the name All_Boundaries and no such label
+    # a mesh made from a bare DM has the name All_Boundaries and no such label (#1138)
     dm.createLabel("All_Boundaries")
     dm.markBoundaryFaces("All_Boundaries", ALL_BOUNDARIES_VALUE)
     return uw.discretisation.Mesh(dm, qdegree=3), {"All_Boundaries": NO_SLIP}, SPEED_TRIANGLE[n]

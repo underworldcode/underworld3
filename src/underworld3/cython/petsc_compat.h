@@ -252,10 +252,12 @@ typedef struct {
 // assembles the two in one pass. On a rank with no cells that pass leaves
 // before it has read that there are two, and skips an assembly of the Jacobian
 // that the other ranks make (DMPlexComputeJacobianByKey; #962). Handed one
-// matrix, PETSc reads one set of kernels and every rank assembles alike. So
-// each call here hands it one matrix and one set: the Jacobian with the
-// preconditioner's tables set aside, then the preconditioner's matrix with its
-// tables in the Jacobian's place. Both are decided by the discrete systems,
+// matrix, every rank assembles alike. PETSc's cell loop then reads the
+// Jacobian's kernels only, while its boundary loop still adds both sets, so
+// each call here hands it one matrix and leaves it one set to find: the
+// Jacobian with the preconditioner's tables set aside, then the
+// preconditioner's matrix with its tables in the Jacobian's place. Both are
+// decided by the discrete systems,
 // which are the same on every rank, and the tables go back before an error
 // leaves.
 //

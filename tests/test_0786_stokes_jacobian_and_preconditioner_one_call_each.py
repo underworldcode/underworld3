@@ -8,7 +8,12 @@ hands PETSc one matrix and one set of kernels at a time
 right, and it is the baseline here: both matrices must equal it in structure and
 bit for bit in value, for a plain solve, for Nitsche boundary terms (boundary
 kernels in both sets) and for a constrained solve (a multiplier block whose
-preconditioner kernel is not its Jacobian kernel).
+preconditioner kernel is not its Jacobian kernel, with ``multiplier_schur_pc``).
+
+Every solver registers the same boundary kernels for the Jacobian and for the
+preconditioner, so no case here can tell which boundary tables the second call
+reads. A solver whose boundary preconditioner kernel is its own needs a case of
+its own.
 
 One rank only: the baseline is PETSc's routine, which is the defect on a rank
 without cells. ``tests/parallel/test_0786_stokes_rank_without_cells_parallel.py``
@@ -61,6 +66,8 @@ def _constrained():
     stokes.add_essential_bc((0.0, 0.0), "Bottom")
     stokes.add_constraint_bc(0.0, "Left", normal=sympy.Matrix([[-1.0, 0.0]]))
     stokes.add_constraint_bc(0.0, "Right", normal=sympy.Matrix([[1.0, 0.0]]))
+    # the multiplier blocks of the preconditioner's matrix take the pressure mass kernel
+    stokes.multiplier_schur_pc = True
     return stokes
 
 
