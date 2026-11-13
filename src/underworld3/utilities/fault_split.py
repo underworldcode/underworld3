@@ -1398,12 +1398,12 @@ def split_along_label_3d(dm, name, value, plus_name, plus_value,
     new.symmetrize()
     new.stratify()
     if uw.mpi.size > 1:
-        # The vertex star-forest goes on before the interpolate, so that the
-        # faces and edges on a partition seam get one cone order on every
-        # rank that holds them. A repartition of the split mesh takes a
-        # shared face from one rank and the cells on it from another, and
-        # with two cone orders the cells it moves come out inverted. No
-        # replica is shared: the patch's star is on one rank.
+        # The vertex star-forest goes on before the interpolate, as the
+        # sheet placement does it. A split mesh interpolated without it
+        # comes out of a repartition with cells of both hands (#1099,
+        # measured at 2 and 4 ranks); what differs in that mesh has not
+        # been identified, and PETSc's interface-cone check passes on it.
+        # No replica is shared: the patch's star is on one rank.
         from underworld3.utilities.place_surface import (
             _attach_uninterp_vertex_sf)
         _attach_uninterp_vertex_sf(new, dm, np.arange(nv, dtype=np.int64),
