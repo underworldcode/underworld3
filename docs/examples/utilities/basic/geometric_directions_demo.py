@@ -178,7 +178,7 @@ print("\n=== PRACTICAL USAGE EXAMPLES ===")
 
 # Example 1: Radial body force in cylindrical coordinates
 print("1. Radial body force in cylindrical coordinates:")
-x, y = annulus.N
+x, y = annulus.X
 r = sympy.sqrt(x**2 + y**2)
 radial_force_magnitude = r  # Force increases with radius
 

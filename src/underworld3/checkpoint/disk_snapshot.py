@@ -47,7 +47,7 @@ import numpy as np
 import underworld3 as uw
 from underworld3.utilities._io import _short_io_path
 
-from .snapshot import _solvers_of
+from .snapshot import _agreed_problem, _solvers_of
 
 
 DISK_SNAPSHOT_SCHEMA_VERSION = 1
@@ -512,18 +512,53 @@ def read_snapshot(model, path: str) -> None:
     meshes = model._live_meshes()
     meshes_by_name = {m.name: m for m in meshes}
 
+    bearers_by_key = {
+        f"{type(o).__name__}_{o.instance_number}": o
+        for o in list(model._state_bearers)
+    }
     with h5py.File(path, "r") as f:
+        # The meshes, variables and history managers the file names are looked up
+        # before any variable is read, and the verdict is agreed across the ranks:
+        # an object collected on some ranks but still referenced on others made those
+        # ranks load (a collective read) and the others raise, and the job hung
+        # (#1041).
+        problem = None
+        for mesh_safe, g in f[_GROUP_MESHES].items():
+            mesh_name = str(g.attrs.get("name", mesh_safe))
+            mesh = meshes_by_name.get(mesh_name)
+            if mesh is None:
+                problem = (
+                    f"snapshot at {path} contains mesh {mesh_name!r} which "
+                    f"is not registered on this model "
+                    f"(registered: {sorted(meshes_by_name.keys())}). Nothing was loaded")
+                break
+            current = {v.clean_name for v in mesh.vars.values()}
+            absent = [str(vg.attrs["name"]) for vg in g["variables"].values()
+                      if str(vg.attrs["name"]) not in current]
+            if absent:
+                problem = (f"snapshot variable {absent[0]!r} not registered on "
+                           f"mesh {mesh_name!r}. Nothing was loaded")
+                break
+        if problem is None and _GROUP_PYTHON_STATE in f:
+            missing = [key for key in f[_GROUP_PYTHON_STATE].keys()
+                       if key not in bearers_by_key]
+            if missing:
+                problem = (
+                    f"snapshot at {path} contains state-bearer {missing[0]!r} "
+                    f"that is not registered on this model: the object "
+                    f"it was written from (a history manager, often a "
+                    f"solver's DuDt) has been collected, or was never "
+                    f"built here. Build the same solvers, and keep them, "
+                    f"before loading. Nothing was loaded")
+        problem = _agreed_problem(problem)
+        if problem is not None:
+            raise ValueError(problem)
+
         meshes_group = f[_GROUP_MESHES]
         for mesh_safe in meshes_group.keys():
             g = meshes_group[mesh_safe]
             mesh_name = str(g.attrs.get("name", mesh_safe))
-            mesh = meshes_by_name.get(mesh_name)
-            if mesh is None:
-                raise ValueError(
-                    f"snapshot at {path} contains mesh {mesh_name!r} which "
-                    f"is not registered on this model "
-                    f"(registered: {sorted(meshes_by_name.keys())})"
-                )
+            mesh = meshes_by_name[mesh_name]       # present: checked above
 
             current_vars = {v.clean_name: v for v in mesh.vars.values()}
             vars_g = g["variables"]
@@ -531,12 +566,7 @@ def read_snapshot(model, path: str) -> None:
                 v_attrs = vars_g[var_safe].attrs
                 var_name = str(v_attrs["name"])
                 external_file = str(v_attrs["external_file"])
-                var = current_vars.get(var_name)
-                if var is None:
-                    raise ValueError(
-                        f"snapshot variable {var_name!r} not registered on "
-                        f"mesh {mesh_name!r}"
-                    )
+                var = current_vars[var_name]       # present: checked above
                 with _short_io_path(
                     os.path.join(bulk_dir, external_file)
                 ) as short_external_file:
@@ -546,21 +576,11 @@ def read_snapshot(model, path: str) -> None:
                         same_layout=True,
                     )
 
-        # Phase 3a: restore state-bearer dataclasses.
+        # Phase 3a: restore state-bearer dataclasses (all present: checked above).
         if _GROUP_PYTHON_STATE in f:
             ps_group = f[_GROUP_PYTHON_STATE]
-            bearers_by_key = {
-                f"{type(o).__name__}_{o.instance_number}": o
-                for o in list(model._state_bearers)
-            }
             for key in ps_group.keys():
-                obj = bearers_by_key.get(key)
-                if obj is None:
-                    raise ValueError(
-                        f"snapshot at {path} contains state-bearer {key!r} "
-                        f"that is not registered on this model"
-                    )
-                _read_state_bearer_into(ps_group[key], obj)
+                _read_state_bearer_into(ps_group[key], bearers_by_key[key])
 
         # Phase 3c: solver step state. A solver the file does not describe
         # (built since, or a file written before solver states were kept) goes

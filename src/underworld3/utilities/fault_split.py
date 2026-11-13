@@ -2082,21 +2082,26 @@ def collect_point_pairs(dm, names, remove=True):
     return out, n_dropped
 
 
-def redistribute_by_assignment(dm, assign, pairs=None, fields=None):
+def redistribute_by_assignment(dm, assign, pairs=None, fields=None,
+                               vertex_fields=None):
     """Redistribute ``dm`` so local cell ``k`` goes to rank ``assign[k]``.
-    Returns ``(new_dm, new_pairs, n_dropped, new_fields)``: the pairing
-    ``pairs`` (a mesh's ``_fault_point_pairs``, or None) carried through the
-    move with :func:`stamp_point_pairs` / :func:`collect_point_pairs`, and the
-    per-cell integer ``fields`` (a list of arrays over the local cells, or
-    None) carried through ``distributeField`` on the migration star forest,
-    each returned over the new local cells. Nothing moves when every cell is
-    already where it is asked to be (the input comes back). The
-    shell-partitioner idiom of the fault-interior move and the add-on
-    partition."""
+    Returns ``(new_dm, new_pairs, n_dropped, new_fields, new_vertex_fields)``:
+    the pairing ``pairs`` (a mesh's ``_fault_point_pairs``, or None) carried
+    through the move with :func:`stamp_point_pairs` /
+    :func:`collect_point_pairs`, and the per-cell integer ``fields`` (a list
+    of arrays over the local cells, or None) carried through
+    ``distributeField`` on the migration star forest, each returned over the
+    new local cells. ``vertex_fields`` (a list of real ``(n_vertices, cdim)``
+    arrays in the order of the vertex points, or None) travel the same way,
+    as the coordinates themselves do, and come back over the new local
+    vertices. Nothing moves when every cell is already where it is asked to
+    be (the input comes back). The shell-partitioner idiom of the
+    fault-interior move and the add-on partition."""
+    from underworld3.utilities._plex_topology import fill_section, section_offsets
     comm = dm.getComm().tompi4py()
     assign = np.asarray(assign, dtype=np.int32)
     if comm.size == 1 or not comm.allreduce(int((assign != comm.rank).sum())):
-        return dm, pairs, 0, fields
+        return dm, pairs, 0, fields, vertex_fields
     work = dm.clone()
     names = stamp_point_pairs(work, pairs) if pairs else []
     cS, cE = work.getHeightStratum(0)
@@ -2104,8 +2109,6 @@ def redistribute_by_assignment(dm, assign, pairs=None, fields=None):
     if fields:
         # one cell-wise section, the fields interleaved; integers travel as
         # doubles, exact below 2**53
-        from underworld3.utilities._plex_topology import (fill_section,
-                                                           section_offsets)
         nf = len(fields)
         cells = np.arange(cS, cE)
         sec = PETSc.Section().create(comm=work.getComm())
@@ -2116,6 +2119,21 @@ def redistribute_by_assignment(dm, assign, pairs=None, fields=None):
         for j, f in enumerate(fields):
             arr[offs + j] = np.asarray(f, dtype=float)
         vec.setArray(arr)
+    vsec = vvec = None
+    if vertex_fields:
+        cdim = work.getCoordinateDim()
+        width = len(vertex_fields) * cdim
+        vS, vE = work.getDepthStratum(0)
+        verts = np.arange(vS, vE)
+        vsec = PETSc.Section().create(comm=work.getComm())
+        fill_section(vsec, work, verts, width)
+        vvec = PETSc.Vec().createSeq(vsec.getStorageSize(), comm=PETSc.COMM_SELF)
+        varr = vvec.getArray()
+        voffs = section_offsets(vsec, verts)
+        varr[voffs[:, None] + np.arange(width)] = np.hstack(
+            [np.asarray(f, dtype=float).reshape(vE - vS, cdim)
+             for f in vertex_fields])
+        vvec.setArray(varr)
     part = work.getPartitioner()
     part.setType(PETSc.Partitioner.Type.SHELL)
     order = np.argsort(assign, kind="stable").astype(np.int32)
@@ -2130,12 +2148,21 @@ def redistribute_by_assignment(dm, assign, pairs=None, fields=None):
         offs = section_offsets(newsec, np.arange(ncS, ncE))
         new_fields = [np.rint(narr[offs + j]).astype(np.int64) if offs.size
                       else np.zeros(0, dtype=np.int64) for j in range(nf)]
+    new_vertex_fields = None
+    if vertex_fields:
+        newsec, newvec = work.distributeField(sf, vsec, vvec)
+        nvS, nvE = work.getDepthStratum(0)
+        narr = newvec.getArray()
+        voffs = section_offsets(newsec, np.arange(nvS, nvE))
+        block = narr[voffs[:, None] + np.arange(width)].reshape(nvE - nvS, width)
+        new_vertex_fields = [block[:, j * cdim:(j + 1) * cdim].copy()
+                             for j in range(len(vertex_fields))]
     new_pairs, dropped = (collect_point_pairs(work, names) if pairs
                           else (None, 0))
     for lab in [l for n in names for l in _pair_label_names(n)]:
         if dm.hasLabel(lab):
             dm.removeLabel(lab)
-    return work, new_pairs, dropped, new_fields
+    return work, new_pairs, dropped, new_fields, new_vertex_fields
 
 
 def split_faults(mesh, names, verbose=False, groups=None,
