@@ -18,6 +18,35 @@ ones wherever the refinement gives the serial generations (with `repair=True` or
 a `node_budget` it does not), so an iteration count recorded in parallel on an
 adapted mesh can move.
 
+### The Nitsche condition's continuity-row term is assembled (November 2026, #1072)
+
+`add_nitsche_bc` on a Stokes solver builds two wall terms, one for the momentum rows
+and one for the continuity rows. PETSc integrates a boundary term only for the field
+its boundary entry is registered with, and the condition was registered with the
+velocity field alone, so the continuity-row term was never assembled. Its sign was
+also opposite to the one the `+q div(u)` continuity residual needs. The assembled
+pressure-velocity block was then not minus the transpose of the velocity-pressure
+block, and a closed box with Nitsche on some walls had a system with no solution: the
+solve ended in a failed line search at whatever residual it had reached. A solve
+could also report convergence on a small step with a wrong pressure: the SolCx
+benchmark with Nitsche free slip on its top wall did so at 16 and 32 cells across,
+with a stress error of order ten or more.
+
+Each Nitsche condition now registers a second boundary entry on the pressure field,
+the continuity-row residual and its Jacobian are wired to that entry, and the term is
+`-(n.d)(u.d - g)`. On a manufactured free-slip solution in a box, at cell sizes 1/8,
+1/16 and 1/32, the Nitsche velocity and pressure errors are within 4 % of the
+essential condition's and each solve takes one Newton step. Before, the pressure
+error was 2.7 to 4.4 times the essential one and no solve converged. The flow through
+the wall is the same to 1 %: 1.4e-3, 1.9e-4 and 2.4e-5 of the largest velocity at the
+three cell sizes.
+
+Every Stokes answer with a Nitsche condition whose direction is not tangential
+changes, including solves that converged before: on an annulus with a no-slip inner
+wall and Nitsche free slip on the outer wall, the difference from the rotated
+free-slip answer goes from 1.60e-3 to 1.23e-3 at 8 cells across and from 2.33e-4 to
+1.87e-4 at 16.
+
 ### The fault-band patch factors in quotient minimum degree (November 2026, #895)
 
 The FAC patch smoother solves a fault band's block by LU, and under PETSc's default
