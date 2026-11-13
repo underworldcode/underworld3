@@ -499,6 +499,9 @@ def test_the_setter_declares_only_rigid_rotations():
     assert mesh.nullspace_rotations == []
 
 
+# the fault is left a traction-free crack on purpose: the test is about the
+# declared rotation, and a law would change its baselines
+@pytest.mark.filterwarnings("ignore:split fault")
 def test_an_add_fault_child_inherits_the_declaration():
     base = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.5, cellSize=0.2, refinement=1,
                               qdegree=2)

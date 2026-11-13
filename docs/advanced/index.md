@@ -145,6 +145,7 @@ fault-mechanics-examples
 stress-visualisation
 custom-meshes
 curved-boundary-conditions
+prescribed-pressure-jumps
 mesh-adaptation
 particle-population-and-materials
 semi-lagrangian-time-integration

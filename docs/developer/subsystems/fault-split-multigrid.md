@@ -24,6 +24,26 @@ stokes.solve()                                      # geometric multigrid, no se
 mesh = child.add_fault([("Flt", trace)], split_levels=False)   # the welded tail
 ```
 
+A second `add_fault` call on a mesh that already carries split faults keeps them
+(#1099). The earlier faults' pairing is recorded by mesh point, and a cut renumbers
+the points, so the call marks every recorded point with a label before it cuts, reads
+the label back afterwards, and hands the renumbered pairing to the new mesh and to
+each add-on level that carried it. If a recorded point was refined or removed, or a
+recorded node moved, the new fault has changed an earlier one and the call is refused:
+the check is collective. Only the faults the call adds are replayed onto the tail.
+`add_conforming_surface` and `add_conforming_sheet` carry the record through their cut
+the same way. In 3-D the sheet clip leaves the two sides of an earlier fault out of the
+domain boundary it clips against; they stay walls to the cavity, which is what keeps a
+new sheet clear of them. The outcrop frame skips their vertices: they are on no wall
+region, so an outcrop neither deletes them nor counts them as near. Both apply only to
+a mesh that carries a split fault (`place_sheet(split_faults_are_interior=True)`); on
+any other mesh a wall vertex missing from the boundary complex is still an error.
+
+The add-on partition restamps the pairing through its move. It does not carry the
+seam normals of a fault split through the partition seams (`across_seams`), and
+refuses to move a mesh that holds any: a second call on such a mesh is refused, not
+handed normals that name other points.
+
 In 3-D a fault is a triangulated sheet (`("Flt", points, triangles)` or a
 `FaultSurface`), placed with the sheet placement and split; the levels are replayed
 the same way. The extruded thick twin of a faulted sheet (`mesh.extrude`) extrudes the
