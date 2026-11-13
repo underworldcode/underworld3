@@ -60,6 +60,40 @@ def test_a_short_essential_value_is_refused_in_three_dimensions():
 
 
 @pytest.mark.tier_b
+def test_the_example_puts_each_entry_at_its_own_component():
+    """3-D, two entries for components 1 and 2: u_y takes 0.01 and u_z 0.05."""
+    mesh, v, stokes = _stokes(dim=3)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        with pytest.raises(ValueError, match=r"e\.g\. \(None, 0\.01, 0\.05\)"):
+            stokes.add_dirichlet_bc((0.01, 0.05), "Left", (1, 2))
+
+
+def _refusal_without_an_example(add):
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        with pytest.raises(ValueError, match="component 1") as refused:
+            add()
+    assert "e.g." not in str(refused.value), str(refused.value)
+
+
+@pytest.mark.tier_b
+def test_no_example_where_the_names_and_entries_do_not_pair():
+    """One entry for two components: (None, 0.05) would free u_x. No example."""
+    mesh, v, stokes = _stokes()
+    _refusal_without_an_example(lambda: stokes.add_dirichlet_bc((0.05,), "Left", (0, 1)))
+
+
+@pytest.mark.tier_b
+def test_no_example_for_a_component_the_field_does_not_have():
+    """A scalar unknown has no component 1: (None, 0.0) would be accepted and apply nothing."""
+    mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0, 0), maxCoords=(1, 1), cellSize=0.25)
+    T = uw.discretisation.MeshVariable("T1166", mesh, 1, degree=1)
+    poisson = uw.systems.Poisson(mesh, u_Field=T)
+    _refusal_without_an_example(lambda: poisson.add_dirichlet_bc(0.0, "Bottom", 1))
+
+
+@pytest.mark.tier_b
 def test_a_short_natural_value_with_components_is_refused():
     mesh, v, stokes = _stokes()
     with warnings.catch_warnings():
