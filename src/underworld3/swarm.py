@@ -1406,7 +1406,12 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
                 if variable is not None:
                     variable._proxy_stale = True
 
+            # On the base variable, which is what mesh.vars holds and the remesh
+            # pass reads (#866); on the wrapper too, for anything holding that.
             self._meshVar._remesh_reinit_callback = _mark_proxy_stale
+            base = getattr(self._meshVar, "_base_var", None)
+            if base is not None:
+                base._remesh_reinit_callback = _mark_proxy_stale
 
     def _update(self):
         """
