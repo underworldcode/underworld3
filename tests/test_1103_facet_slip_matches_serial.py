@@ -8,7 +8,11 @@ moved mesh differed from serial by 3e-2 to 5e-2 at np 2 to 4. A rank owning
 slip vertices of a label without any of its facets raised
 (``argmin of an empty sequence``) while the others waited: at the natural
 np 5 partition of this box the job hung. The facets of each label are now
-gathered over the ranks, so every rank restores onto the serial set.
+gathered over the ranks, so every rank restores onto the serial set. A facet
+on a partition seam, which each rank holding it took for a boundary facet, is
+dropped: on ``BoxInternalBoundary`` a seam along ``Internal`` gave that
+internal surface facets serial lacks, and its vertices slid where serial pins
+them (2.3e-2 off serial at np 4).
 
 The box's registered plane surfaces are removed, so its four sides slip on
 facet surfaces. Each case runs ``Mesh.redistribute_nodes`` serially and in
@@ -30,6 +34,10 @@ CASES = {
     "facet_2d": (2, 0.25, (2, 3, 4, 5), False),
     "facet_2d_scattered": (2, 0.25, (3, 4), True),
     "facet_3d": (3, 0.35, (2, 3), False),
+    # an internal surface: no boundary facets in serial, so its vertices are
+    # pinned; a partition seam along it must not give it any (H1, #1109)
+    "internal_2d": (2, None, (2, 4), False),
+    "internal_2d_scattered": (2, None, (4,), True),
 }
 
 
@@ -67,8 +75,13 @@ def _move(case, out):
     dmod = uw.discretisation.discretisation_mesh
     original = _scatter_cells(dmod) if scatter and uw.mpi.size > 1 else None
     try:
-        mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0,) * dim, maxCoords=(1.0,) * dim,
-                                                 cellSize=cell_size)
+        if case.startswith("internal"):
+            mesh = uw.meshing.BoxInternalBoundary(
+                elementRes=(8, 8), zelementRes=(4, 4), minCoords=(0.0, 0.0),
+                maxCoords=(1.0, 1.0), zintCoord=0.5, simplex=True)
+        else:
+            mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0,) * dim,
+                                                     maxCoords=(1.0,) * dim, cellSize=cell_size)
     finally:
         if original is not None:
             dmod._from_plexh5 = original
