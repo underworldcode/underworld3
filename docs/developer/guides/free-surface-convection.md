@@ -36,7 +36,12 @@ Two Stokes solves per step on the SAME mesh, then a pointwise surface update:
 2. **Held-lid solve** — a second Stokes solve with a RIGID free-slip held lid
    (`u_n = 0`, via `add_nitsche_bc(0.0, "Upper", local_h=True)`; `local_h`, the
    default since PR #275, scales the Nitsche penalty by each cell's own size
-   instead of the smallest cell in the mesh) and a DRIVING-ONLY body force. Its surface normal stress `σ_nn` gives the
+   instead of the smallest cell in the mesh) and a DRIVING-ONLY body force. The
+   held lid does not change during the run, so the project ruling's choice for it
+   is rotated strong free slip, `stokes.add_rotated_freeslip_bc(0, "Upper")`,
+   whose reaction `stokes.boundary_normal_traction("Upper")` is the wall normal
+   stress; this recipe was built with Nitsche before #1145 corrected it (#1072)
+   and has not been rerun with either. Its surface normal stress `σ_nn` gives the
    equilibrium topography `h_∞ = -(σ_nn - mean)/ρg`. (The free solve forces
    `σ_nn = 0`, so the equilibrium MUST come from the held-lid stress.)
 3. **Pointwise exp step**, per surface node, from THREE numbers (`h`, `ḣ=u_n`,
@@ -55,8 +60,7 @@ Two Stokes solves per step on the SAME mesh, then a pointwise surface update:
 Reference impl: `fs4_compare.py` → `_surface_step`, `_h_inf` (held-lid σ_nn via a
 `Projection`), `_surf_un`, `_carry_diffuser`. The free-slip RIGID-top run (no
 surface motion) is the reference; the free-surface run is the same driving solve
-PLUS this surface update. See [[project_fs4_adaptive_2x2]],
-[[project_stress_equilibrium_freesurface]], [[project_freeslip_topo_freesurface]].
+PLUS this surface update.
 
 ## Performance
 
@@ -216,7 +220,7 @@ deform-aware foot restore. The parallel datum defect is #421.
 | T leaves [0,1] on a deforming mesh, mesh-locked hot/cold spikes in the squeezed band, worse at SMALLER dt | old-frame SL reach-back amplifying per loop cycle (issue #423) — use the standard ALE path (`old_frame_traceback=False`, the manager default since b507aca1) |
 | Stress-free top but surface not updated each step | nothing stops throughflow (the stress-free top is an open boundary unless the integrator moves the surface to track `u_n`) |
 | Nu decays when it should be steady (kinematic free surface) | LAG: the SL foot reaches beyond an under-moved surface → cold pump. Fix = the h_∞ relaxation, not more smoothing |
-| Surface "mountain" / one-step spike on adaptive mesh | held-lid Nitsche penalty over-stiffened by GLOBAL h; use `local_h=True` (default, PR #275) = `mesh.cell_size()` |
+| Surface "mountain" / one-step spike on adaptive mesh | held-lid Nitsche penalty over-stiffened by GLOBAL h; use `local_h=True` (default, PR #275) = `mesh.cell_size()`. Diagnosed before #1145 (#1072), not re-verified |
 
 ## Dead ends (already tried — do NOT repeat)
 

@@ -196,7 +196,10 @@ continuity-equation term was not assembled (#1072). None has been rerun on the
 corrected code, so treat the γ values and the diagnoses as unverified.
 
 Penalty (`add_natural_bc(KFS·v·n·n)`, KFS≈1e6) or Nitsche γ=10 both work on a
-UNIFORM mesh. Nitsche preferred for sharp fault corners. Do NOT diagnose free-slip
+UNIFORM mesh. (Which normal those penalty runs used is not recorded: write the
+penalty with the node normal `mesh.boundary_normal(boundary)`; with the facet
+normal `mesh.Gamma` it does not converge, see
+`docs/advanced/curved-boundary-conditions.md`.) Nitsche preferred for sharp fault corners. Do NOT diagnose free-slip
 with nodal v·n: Nitsche enforces v·n=0 weakly, so nodal v·n is not zero even when
 the solve is correct — use vrms (kinetic energy). (An earlier "warm-restart × Nitsche → blow-up,
 use cold restart" diagnosis was WRONG / confounded by the §5 eval bug + a stale build.)
