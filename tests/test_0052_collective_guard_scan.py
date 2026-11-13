@@ -65,6 +65,51 @@ MPI_COLLECTIVES = frozenset({
 # ON something called `comm` (`uw.mpi.comm.allreduce`, `self._comm.bcast`).
 COMM_NAMES = frozenset({"comm", "COMM_WORLD", "_comm", "mpi_comm"})
 
+# petsc4py hands out its communicator as an mpi4py one through `tompi4py()`, so
+# `dm.comm.tompi4py().allreduce(...)` and `self.dm.getComm().tompi4py().Bcast(...)`
+# are collectives too, whatever the receiver is called.
+TO_MPI4PY = "tompi4py"
+
+
+def makes_communicator(node):
+    """Whether *node* evaluates to a communicator: a name or attribute in
+    :data:`COMM_NAMES`, or a ``<expr>.tompi4py()`` call."""
+    if isinstance(node, ast.Name):
+        return node.id in COMM_NAMES
+    if isinstance(node, ast.Attribute):
+        return node.attr in COMM_NAMES
+    return (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+            and node.func.attr == TO_MPI4PY)
+
+
+def communicator_names(node):
+    """Names assigned a communicator anywhere under *node*.
+
+    ``mpicomm = self.dm.getComm().tompi4py()`` makes ``mpicomm.allreduce`` a
+    collective although ``mpicomm`` is not a name the scan knows.
+    """
+    names = set()
+    for statement in ast.walk(node):
+        if isinstance(statement, ast.Assign) and makes_communicator(statement.value):
+            names |= {t.id for t in statement.targets if isinstance(t, ast.Name)}
+    return names
+
+
+def is_collective(call, aliases=frozenset()):
+    """The ``receiver.op`` label if *call* is an MPI collective, else None."""
+    function = call.func
+    if not isinstance(function, ast.Attribute) or function.attr not in MPI_COLLECTIVES:
+        return None
+    base = function.value
+    if isinstance(base, ast.Name) and base.id in aliases:
+        return f"{base.id}.{function.attr}"
+    if not makes_communicator(base):
+        return None
+    if isinstance(base, ast.Call):
+        return f"{TO_MPI4PY}().{function.attr}"
+    receiver = base.attr if isinstance(base, ast.Attribute) else base.id
+    return f"{receiver}.{function.attr}"
+
 # Quantities every rank agrees on by construction.
 UNIFORM_TOKENS = (
     "mpi.size", "comm.size", "mpi.rank", "comm.rank",
@@ -96,6 +141,14 @@ ACCEPTED = {
         "pass by every rank before the test, so every rank leaves the loop on "
         "the same pass and the reductions of the next pass are reached by all "
         "or by none.",
+    ("utilities/custom_mg.py", "build"):
+        "`pre` is `fault_mg.provenance_source(coarse, fine)`, which walks the "
+        "`_addon_below` / `_addon_parent` attributes of the mesh objects. "
+        "`addon_partition` sets them on every rank together when it builds or "
+        "moves the add-on hierarchy: an array (empty on a rank with no cells) "
+        "or None everywhere, never None on some ranks only. So `pre is not "
+        "None` is the same on every rank. (Seen once the scan read "
+        "`tompi4py()` collectives.)",
     ("utilities/rotated_bc.py", "solve_rotated_freeslip"):
         "the cache is created and destroyed on all ranks together, so "
         "`cache is not None` is uniform; the allgather inside exists "
@@ -184,6 +237,7 @@ class Scan(ast.NodeVisitor):
         self.guards = []
         self.params = set()
         self.reduced = set()
+        self.aliases = set()
         self.function = None
         self.loop = None
         self.findings = []
@@ -191,7 +245,7 @@ class Scan(ast.NodeVisitor):
     def visit_FunctionDef(self, node):
         arguments = node.args
         saved = (self.function, self.guards, self.params, self.loop,
-                 self.reduced)
+                 self.reduced, self.aliases)
         self.function = node.name
         self.guards = []
         self.loop = None
@@ -203,9 +257,10 @@ class Scan(ast.NodeVisitor):
                             *arguments.kwonlyargs]
         }
         self.reduced = self.reduced | reduced_names(node)
+        self.aliases = self.aliases | communicator_names(node)
         self.generic_visit(node)
         (self.function, self.guards, self.params, self.loop,
-         self.reduced) = saved
+         self.reduced, self.aliases) = saved
 
     visit_AsyncFunctionDef = visit_FunctionDef
 
@@ -248,20 +303,15 @@ class Scan(ast.NodeVisitor):
     visit_Return = _visit_exit
 
     def visit_Call(self, node):
-        function = node.func
-        if isinstance(function, ast.Attribute):
-            base = function.value
-            receiver = base.attr if isinstance(base, ast.Attribute) else (
-                base.id if isinstance(base, ast.Name) else None)
-            if function.attr in MPI_COLLECTIVES and receiver in COMM_NAMES:
-                call = f"{receiver}.{function.attr}"
-                if self.loop is not None:
-                    self.loop["collectives"].append((node.lineno, call))
-                divergent = [g for g in self.guards if g[0] == "local-data"]
-                if divergent:
-                    self.findings.append(
-                        (node.lineno, self.function, call, divergent[0][1])
-                    )
+        call = is_collective(node, self.aliases)
+        if call is not None:
+            if self.loop is not None:
+                self.loop["collectives"].append((node.lineno, call))
+            divergent = [g for g in self.guards if g[0] == "local-data"]
+            if divergent:
+                self.findings.append(
+                    (node.lineno, self.function, call, divergent[0][1])
+                )
         self.generic_visit(node)
 
 
@@ -295,16 +345,9 @@ def test_source_tree_is_scannable():
             tree = ast.parse(path.read_text(), filename=str(path))
         except (SyntaxError, UnicodeDecodeError):
             continue
+        aliases = communicator_names(tree)
         for node in ast.walk(tree):
-            if not isinstance(node, ast.Call):
-                continue
-            f = node.func
-            if not isinstance(f, ast.Attribute):
-                continue
-            base = f.value
-            receiver = base.attr if isinstance(base, ast.Attribute) else (
-                base.id if isinstance(base, ast.Name) else None)
-            if f.attr in MPI_COLLECTIVES and receiver in COMM_NAMES:
+            if isinstance(node, ast.Call) and is_collective(node, aliases):
                 collectives += 1
 
     assert collectives > 100, (
@@ -385,6 +428,40 @@ def test_scan_finds_an_injected_defect_and_spares_the_fix():
                 n = uw.mpi.comm.allreduce(len(victims), op=MPI.SUM)
                 if n == 0:
                     break
+    """)
+
+
+def test_scan_sees_collectives_on_a_petsc_communicator():
+    """Control: a collective made on ``<expr>.tompi4py()``, directly or through a
+    name, is a collective. The scan used to read only receivers called ``comm``,
+    so these two shapes passed under any guard."""
+    def findings(source):
+        scan = Scan()
+        scan.visit(ast.parse(textwrap.dedent(source)))
+        return scan.findings
+
+    direct = findings("""
+        def count(self):
+            if local.size:
+                n = self.dm.comm.tompi4py().allreduce(local.size)
+    """)
+    assert len(direct) == 1 and direct[0][2] == "tompi4py().allreduce", direct
+
+    through_a_name = findings("""
+        def count(self):
+            mpicomm = self.dm.getComm().tompi4py()
+            if local.size:
+                mpicomm.Allreduce(MPI.IN_PLACE, buf, op=MPI.MAX)
+    """)
+    assert len(through_a_name) == 1 and through_a_name[0][2] == "mpicomm.Allreduce", (
+        through_a_name)
+
+    # reduce first, then branch, on a petsc communicator: clean
+    assert not findings("""
+        def count(self):
+            n = self.dm.comm.tompi4py().allreduce(local.size)
+            if n:
+                pass
     """)
 
 
