@@ -803,7 +803,10 @@ class Model(PintNativeModelMixin, BaseModel):
         - Updating model's mesh reference
         - Registering swarm with new mesh
         """
-        old_mesh = self.mesh
+        # The mesh the swarm is LEAVING, which need not be the model's primary
+        # mesh: unregistering from the primary left the swarm on its old mesh,
+        # synchronised (a per-swarm allreduce) on every update_lvec there (#867).
+        old_mesh = getattr(swarm, "_mesh", None)
 
         # Unregister swarm from old mesh
         if old_mesh is not None:
