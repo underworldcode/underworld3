@@ -6,9 +6,11 @@ on the level below. The transfer between the two levels is a statement about
 that relation, so it is the same before and after the move. Rebuilt from the
 moved coordinates it is not: a node of the moved level is located among the
 unmoved coarse nodes and the weights follow the displacement. On the
-split-level fixture below that takes the solve from 5 velocity iterations to
-13 at the first move, and on the faulted fixture of test_1152 it takes the
-smallest diagonal entry of a level operator from 2.4 to 4.5e-4.
+split-level fixture below the rebuilt hierarchy has dependent coarse columns
+at the first move and the dependent-column check refuses it (#1101); before
+that check the solve went from 5 velocity iterations to 13. On the faulted
+fixture of test_1152 it takes the smallest diagonal entry of a level operator
+from 2.4 to 4.5e-4.
 
 The hierarchy builds a moved level's transfers on the geometry the level was
 made in, so the transfers after a move are those before it. That holds on each
@@ -169,9 +171,9 @@ def test_the_transfers_after_a_move_are_those_before_it(build, move):
 
 def test_a_split_level_solve_after_a_move_keeps_its_iterations():
     """5 velocity iterations at rest and 6 after each of three moves, which is
-    what a solver built on the moved mesh takes; with the transfer rebuilt from
-    the moved coordinates the first move takes 13. The fixture carries no FAC
-    patch."""
+    what a solver built on the moved mesh takes. With the transfer rebuilt from
+    the moved coordinates the first move is refused by the dependent-column
+    check (#1101). The fixture carries no FAC patch."""
     s, mesh = _split_level_stokes()
     s.solve()
     counts = [max(s._rotated_freeslip_info["vel_its_last"])]

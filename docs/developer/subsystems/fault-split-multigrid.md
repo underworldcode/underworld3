@@ -254,10 +254,11 @@ Built from the moved coordinates, a moved node was located among the unmoved
 coarse nodes and its weights followed the displacement. On the fixtures of
 `tests/test_1176_custom_mg_transfer_after_a_move.py` (serial, displacements of
 0.02 on a unit box) a weight changed by 0.65 to 1.1, and the faulted Stokes solve
-went from 5 velocity iterations to 13. With the level read where it was built the
-transfers after a move equal those before it entry for entry, and the same solve
-takes 6 iterations after each of three moves, as a solver built on the moved mesh
-does. On 2 to 5 ranks it took 6 at rest and 7 after each move.
+went from 5 velocity iterations to 13; with the dependent-column check of #1101
+that rebuilt hierarchy is refused at the first move. With the level read where it
+was built the transfers after a move equal those before it entry for entry, and
+the same solve takes 6 iterations after each of three moves, as a solver built on
+the moved mesh does. On 2 to 5 ranks it took 6 at rest and 7 after each move.
 `tests/parallel/test_1176_custom_mg_transfer_after_a_move_parallel.py` holds those
 counts.
 
