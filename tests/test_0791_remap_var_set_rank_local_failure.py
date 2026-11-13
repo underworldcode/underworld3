@@ -28,6 +28,7 @@ also the worker: ``python -m mpi4py <this file> <case>``), so a regression ends
 in the supervisor's silence limit instead of hanging the suite.
 """
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -100,6 +101,22 @@ def _worker(case):
 
         uw.function.global_evaluate = global_evaluate
 
+    elif case == "limiter":
+        # REMESH_MONOTONE=clamp (set for this child): the limiter raises on rank 1
+        # once, after the evaluation's collectives. Before, the ValueError sent
+        # rank 1 alone into a second global_evaluate.
+        from underworld3.function import functions_unit_system as fus
+        original = fus._apply_monotone_limit
+        fired = []
+
+        def limiter(*args, **kwargs):
+            if not fired and uw.mpi.rank == 1:
+                fired.append(1)
+                raise ValueError("forced limiter failure on rank 1")
+            return original(*args, **kwargs)
+
+        fus._apply_monotone_limit = limiter
+
     try:
         mesh.deform(c)
         raised = False
@@ -117,7 +134,7 @@ def _worker(case):
               f"at_new_coords {[r[3] for r in results]}", flush=True)
 
 
-def _run(case, tmp_path):
+def _run(case, tmp_path, env=None):
     root = Path(__file__).resolve().parents[1]
     mpirun = str(Path(sys.executable).with_name("mpirun"))
     command = [sys.executable, str(root / "scripts/mpi_supervisor.py"), "--silence", str(SILENCE), "--",
@@ -126,7 +143,8 @@ def _run(case, tmp_path):
     log = tmp_path / f"{case}.log"
     with log.open("w") as fh:
         result = subprocess.run(command, cwd=tmp_path, stdout=fh, stderr=subprocess.STDOUT,
-                                timeout=10 * SILENCE)
+                                timeout=10 * SILENCE,
+                                env=None if env is None else {**os.environ, **env})
     return result.returncode, log.read_text()
 
 
@@ -166,6 +184,17 @@ def test_a_failure_after_the_evaluation_on_one_rank_fails_the_variable_on_every_
     assert "t_kept [True, True]" in line, line
     s_err = float(line.split("s_err ")[1].split()[0])
     assert s_err < 1.0e-4, line
+
+
+def test_a_limiter_failure_on_one_rank_fails_the_variable_on_every_rank(tmp_path):
+    _serial_only()
+    code, log = _run("limiter", tmp_path, env={"REMESH_MONOTONE": "clamp"})
+    assert code == 0, log[-4000:]
+    line = next(ln for ln in log.splitlines() if "REMAP DONE" in ln)
+    # with the limiter opted in, a ValueError on one rank is a failure agreed by
+    # every rank, not a reason for that rank alone to evaluate again
+    assert "raised [True, True]" in line, line
+    assert "at_new_coords [True, True]" in line, line
 
 
 def test_a_raise_in_the_evaluation_on_one_rank_is_not_swallowed(tmp_path):

@@ -399,6 +399,10 @@ def _remesh_with_field_transfer_impl(
     # The one-shot REMAP dance for the generic per-variable pass.
     failed = remap_var_set(mesh, remap_vars, old_X, new_X, old_data, verbose=verbose,
                            raise_on_failure=False)
+    # Hooks that remap their own variables add theirs here (the dispatcher below
+    # does not let a hook's exception through), and the caller raises once the
+    # move is complete (#960).
+    mesh._remesh_failed_transfer = list(failed)
 
     # Operator hooks (Phase 2 ALE etc.). Currently fired even when
     # remap_vars is empty so a CARRY-only DDt still gets its v_mesh.
@@ -451,8 +455,6 @@ def _remesh_with_field_transfer_impl(
 
     # A failed transfer is reported by the caller, once the move is otherwise
     # complete, its version counted included (#960).
-    mesh._remesh_failed_transfer = failed
-
     return True
 
 
@@ -555,18 +557,13 @@ def remap_var_set(mesh, vars_, old_X, new_X, old_data, *, verbose=False, raise_o
         # REMESH_MONOTONE (module constant, see its comment) is off by default.
         error = None
         try:
-            try:
-                val = uw.function.global_evaluate(
-                    var.sym, target, monotone=REMESH_MONOTONE)
-            except (ValueError, NotImplementedError):
-                # monotone needs a single-MeshVariable expr; composite /
-                # unsupported vars fall back to plain FE (still transferred).
-                # The refusal depends on the expression alone, so every rank
-                # takes this branch alike. With the limiter off there is no
-                # refusal to fall back from: the error is a failure, and is
-                # agreed below rather than retried on one rank alone.
-                if not REMESH_MONOTONE:
-                    raise
+            # Whether the limiter applies is decided from the expression alone,
+            # which is the same on every rank; an error inside the evaluation is
+            # a failure, agreed below, never a reason to evaluate again on one
+            # rank alone.
+            if _limiter_applies(var.sym):
+                val = uw.function.global_evaluate(var.sym, target, monotone=REMESH_MONOTONE)
+            else:
                 val = uw.function.global_evaluate(var.sym, target)
             # Laid out by _data_layout, which a flat reshape is not for a MATRIX
             # or a symmetric tensor. var.data holds non-dimensional values, and
@@ -599,6 +596,23 @@ def remap_var_set(mesh, vars_, old_X, new_X, old_data, *, verbose=False, raise_o
     if failed and raise_on_failure:
         raise _remap_failure(failed)
     return failed
+
+
+def _limiter_applies(expr):
+    """Whether ``REMESH_MONOTONE`` can bound ``expr``: the limiter needs an
+    expression that is one MeshVariable (or a component of one), and its "pick"
+    mode is serial only. Decided from the expression and the rank count alone,
+    so every rank answers alike (#960)."""
+    if not REMESH_MONOTONE:
+        return False
+    if REMESH_MONOTONE == "pick" and uw.mpi.size > 1:
+        return False
+    from underworld3.function.expressions import extract_meshes
+
+    meshes = extract_meshes(expr)
+    if len(meshes) != 1:
+        return False
+    return uw.discretisation.meshVariable_lookup_by_symbol(next(iter(meshes)), expr) is not None
 
 
 def _remap_failure(failed):
