@@ -260,7 +260,10 @@ was built the transfers after a move equal those before it entry for entry, and
 the same solve takes 6 iterations after each of three moves, as a solver built on
 the moved mesh does. On 2 to 5 ranks it took 6 at rest and 7 after each move.
 `tests/parallel/test_1176_custom_mg_transfer_after_a_move_parallel.py` holds those
-counts.
+counts. On 7 and 8 ranks the adapt keeps one add-on level on that fixture instead
+of two (#865), so the level under the fault is welded: the finest level carries a
+FAC patch at rest, a move drops it, and the solve takes 3 iterations at rest and
+15 after each move with the transfers unchanged to round-off.
 
 The kept transfers do not lower the count on every move. Under a mover that
 shifts interior nodes by one to four cell widths while the coarse levels still

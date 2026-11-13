@@ -8,18 +8,21 @@ here are not those of the serial file. Both are handed a moved level on the
 nodes it was built with, bit for bit, and their transfers after a move are
 those before it entry for entry.
 
-The node-cloud builder is not continuous in its nodes. With the built nodes
-recovered only to round-off (2e-16), one weight of the tetrahedral pair below
-changed by 1.4e-4 at 2 and 4 ranks and by 1.1e-4 at 8.
+Bit for bit is what the node-cloud builder needs: it is not continuous in its
+nodes. Handed the built nodes to round-off (2e-16) instead, one weight of the
+tetrahedral pair below changed by 1.4e-4 at 2 and 4 ranks and by 1.1e-4 at 8.
 
-The iteration counts were measured on 2026-11-13 on a 96-thread Linux
-workstation (Intel Xeon Gold 6240R, MPICH) at 2, 3, 4, 5 and 8 ranks, with the
-built nodes recovered to round-off; the tetrahedral counts at 8 ranks only.
-They are asserted at the rank counts they were measured on. Another rank count
-asserts the transfers only.
+The unchanged transfers and the iteration counts were measured on 2026-11-13
+on a 96-thread Linux workstation (Intel Xeon Gold 6240R, MPICH) at 2, 3, 4, 5
+and 8 ranks. The counts are asserted at the rank counts they were measured on.
+Another rank count asserts the transfers only.
 
-Tier C: the counts and the unchanged transfers have not been measured with the
-nodes read bit for bit.
+The faulted fixture does not get the same multigrid tail at every rank count:
+the adapt keeps two add-on levels at 1 to 6 ranks and one at 7 and 8, because
+it sizes a generation by the smallest of the ranks' own cell-size percentiles.
+With one add-on level the level under the fault is welded, and the finest pair
+is the recorded route (#1091), which reads the moved coordinates and repeats
+its transfer to round-off.
 
     mpirun -n 2 python -m pytest --with-mpi tests/parallel/test_1176_custom_mg_transfer_after_a_move_parallel.py
 """
@@ -31,7 +34,7 @@ from petsc4py import PETSc
 import underworld3 as uw
 from underworld3.utilities import custom_mg, fault_mg
 
-pytestmark = [pytest.mark.mpi(min_size=2), pytest.mark.level_2, pytest.mark.tier_c,
+pytestmark = [pytest.mark.mpi(min_size=2), pytest.mark.level_2, pytest.mark.tier_b,
               pytest.mark.timeout(900)]
 
 TRACE = np.array([[0.3, 0.45], [0.7, 0.55]])
@@ -131,7 +134,8 @@ def _fault_stokes(mesh):
 
 
 def _split_level_mesh():
-    """A fault on an adapt child: the add-on levels are split."""
+    """A fault on an adapt child. Where the adapt keeps two add-on levels the
+    one under the fault is split; where it keeps one, that level is welded."""
     base = uw.meshing.UnstructuredSimplexBox(
         minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.1, refinement=1,
         qdegree=2)
@@ -141,22 +145,24 @@ def _split_level_mesh():
     guide.discretize()
     child = base.adapt(guide.refinement_metric_function(
         h_near=0.05 / 4, h_far=0.05, width=0.08, profile="linear"), max_levels=2)
-    mesh = child.add_fault([("Flt", TRACE)])
-    assert fault_mg.is_split_level(mesh._custom_mg_coarse_meshes[-1])
-    return mesh
+    return child.add_fault([("Flt", TRACE)])
 
 
 # Velocity iterations at rest and after each of three moves, and those of a
-# solver built on the moved mesh, by rank count. At 8 ranks the finest pair
-# carries a FAC patch at rest and a move drops it (the rule of
-# tests/parallel/test_1152_fac_zone_survives_a_mover_parallel.py), so the
-# count rises there with the transfers unchanged.
+# solver built on the moved mesh, by rank count, where the level under the
+# fault is split.
 SPLIT_COUNTS = {2: ([6, 7, 7, 7], 7), 3: ([6, 7, 7, 7], 7), 4: ([6, 7, 7, 7], 7),
-                5: ([6, 7, 7, 7], 7), 8: ([3, 15, 15, 15], 15)}
+                5: ([6, 7, 7, 7], 7)}
+# The same where that level is welded. The finest level then carries a FAC
+# patch at rest and a move drops it (the rule of
+# tests/parallel/test_1152_fac_zone_survives_a_mover_parallel.py), so the
+# count rises with the transfers unchanged.
+WELDED_COUNTS = {8: ([3, 15, 15, 15], 15)}
 
 
 def test_a_split_level_keeps_the_transfers_and_the_velocity_iterations():
     mesh = _split_level_mesh()
+    split_below = fault_mg.is_split_level(mesh._custom_mg_coarse_meshes[-1])
     s = _fault_stokes(mesh)
     s.solve()
     before = _transfers(s)
@@ -166,20 +172,25 @@ def test_a_split_level_keeps_the_transfers_and_the_velocity_iterations():
         s.solve()
         assert s.snes.getConvergedReason() > 0
         counts.append(max(s._rotated_freeslip_info["vel_its_last"]))
-    # only the finest level moves, and its pair is one of split levels
-    assert _largest_change(before, _transfers(s)) == 0
-    if uw.mpi.size in SPLIT_COUNTS:
-        moved, built_on_it = SPLIT_COUNTS[uw.mpi.size]
+    # Only the finest level moves. Over a split level its pair is cell-located
+    # on the built nodes; over a welded one it is the recorded route.
+    if split_below:
+        assert _largest_change(before, _transfers(s)) == 0
+    else:
+        assert _largest_change(before, _transfers(s)) < 1e-12
+    table = SPLIT_COUNTS if split_below else WELDED_COUNTS
+    if uw.mpi.size in table:
+        moved, built_on_it = table[uw.mpi.size]
         assert counts == moved
         built_after = _fault_stokes(mesh)
         built_after.solve()
         assert max(built_after._rotated_freeslip_info["vel_its_last"]) == built_on_it
 
 
-# Iterations at rest and after each of two moves, measured at 8 ranks only.
-# The pair rebuilt from the moved coordinates takes as many; the transfers
-# tell the two apart.
-TET_COUNTS = {8: [3, 3, 3]}
+# Iterations at rest and after each of two moves, by rank count. The pair
+# rebuilt from the moved coordinates takes as many; the transfers tell the
+# two apart.
+TET_COUNTS = {np_: [3, 3, 3] for np_ in (2, 3, 4, 5, 8)}
 
 
 def test_a_moved_tetrahedral_level_keeps_its_transfers():
