@@ -28,7 +28,7 @@ vertex rather than "the ~64 % that lie on an edge" — but that 64 % belongs to 
 and 100 % of fine vertices on a coarse edge. The edge reference already covered
 everything that ran, and it catches something barycentric position cannot — a
 PHANTOM parent edge, two coarse vertices straddling the fine vertex without
-spanning any coarse edge. That is the 3-D defect, and a symmetric wrong pair also
+spanning any coarse edge. That was the 3-D defect (#449), and a symmetric wrong pair also
 reproduces linear fields exactly, so the linear test is blind to it too.
 """
 import numpy as np
@@ -36,7 +36,8 @@ import pytest
 import scipy.sparse as sp
 import underworld3 as uw
 
-pytestmark = [pytest.mark.level_1, pytest.mark.tier_a]
+# The level is per case: the slow 3-D every-pass case is level_2, the rest level_1.
+pytestmark = [pytest.mark.tier_a]
 
 
 def _metric(centroids):
@@ -91,7 +92,7 @@ def _coarse_support_of(cx, edges, x, tol=1e-9):
     composes, every fine vertex lies on a coarse edge, and the barycentric check
     is strictly weaker there because it cannot tell a correct parent edge from a
     PHANTOM one — two coarse vertices that straddle the fine vertex without
-    spanning any coarse edge. That is exactly the 3-D defect, and it is why both
+    spanning any coarse edge. That was exactly the 3-D defect (#449), and it is why both
     references are kept.
     """
     d = np.linalg.norm(cx - x, axis=1)
@@ -123,9 +124,15 @@ def _adapted(dim, cell_size, max_levels=2, ratio=2.0):
 # multigrid level, max 3 nonzeros per row. Without it the docstring's claim
 # about composition is not exercised anywhere that runs: in the standard 2-D
 # case nothing composes (one transfer, max 2 per row, every fine vertex on a
-# coarse edge) and the only composing case was the 3-D one, which is xfailed.
-CASES = [(2, 0.2, 2, 2.0), (3, 0.4, 2, 2.0), (2, 0.3, 4, 4.0)]
-CASE_IDS = ["2d", "3d", "2d-composed"]
+# coarse edge) and the only composing case was the 3-D one. The fourth case is
+# 3-D at a coarsening ratio of 1.2: each pass is a kept level, so a wrong round-2
+# pair is not hidden inside one cell of the next kept level (#449: with the
+# one-cell condition removed it has 6 of 44 wrong rows; the 2.0 case none).
+CASES = [pytest.param(2, 0.2, 2, 2.0, marks=pytest.mark.level_1),
+         pytest.param(3, 0.4, 2, 2.0, marks=pytest.mark.level_1),
+         pytest.param(2, 0.3, 4, 4.0, marks=pytest.mark.level_1),
+         pytest.param(3, 0.4, 2, 1.2, marks=pytest.mark.level_2)]   # slow: 3 to 11 min
+CASE_IDS = ["2d", "3d", "2d-composed", "3d-every-pass"]
 
 
 def _levels(child):
@@ -171,8 +178,9 @@ def _embedding_report(dim, cell_size, max_levels, ratio):
     Returns ``(on_support, interior)``: lists of ``(pass, row, exact)`` for rows
     whose fine vertex lies on a coarse vertex or edge, and for rows whose fine
     vertex lies strictly inside a coarse cell. They are reported separately
-    because in 3-D only the second kind is broken, and lumping them together
-    loses the guarantee on the first — which is the majority.
+    because in 3-D only the second kind can come from round 2's inference
+    (#449), and lumping them together loses the guarantee on the first — which
+    is the majority.
     """
     child = _adapted(dim, cell_size, max_levels, ratio)
     Ps = child._adapt_prolongation
@@ -219,8 +227,8 @@ def test_a_fine_vertex_on_a_coarse_edge_depends_only_on_that_edge(
     alone cannot see the failure this catches: a PHANTOM parent edge, whose two
     endpoints straddle the fine vertex symmetrically without spanning any coarse
     edge, reproduces the position and reproduces linear fields exactly while
-    being the wrong parentage. That is the 3-D defect, characterised: fine vertex
-    1780 carries the row ``{484: 0.5, 798: 0.5}`` while its true barycentric
+    being the wrong parentage. That was the 3-D defect (#449), characterised: fine vertex
+    1780 carried the row ``{484: 0.5, 798: 0.5}`` while its true barycentric
     position is ``(0, 0.25, 0.5, 0.25)``.
 
     Holds in EVERY case including 3-D, where it is the guarantee on the majority
@@ -250,33 +258,14 @@ def test_reproduces_an_arbitrary_coarse_field(dim, cell_size, max_levels, ratio)
     cell boundaries (#432) — using it as the reference produced a convincing
     false accusation against this code.
 
-    TODO(BUG) ``nvb.nested_prolongation`` is wrong in 3-D for vertices a closure
-    cascade places strictly INSIDE a coarse tet — worst error 1.19, measured per
-    generation with no composition involved, against 1.9e-15 in 2-D. The defect
-    is asserted POSITIVELY below rather than through ``xfail(strict=True)``: it
-    is carried by ONE row in 2336 of a gmsh mesh, so a strict xfail turns a gmsh
-    version bump into a hard failure, and it hides how narrow the breakage is.
-    When the bug is fixed this test fails and says so.
+    In 3-D a vertex the closure cascade places strictly inside a coarse tet
+    used to take the first pair of resolved neighbours whose midpoint it is,
+    which was sometimes not its parents (#449, worst error 1.19). Every
+    dimension now asserts exactness; test_0449 checks the same rows on four
+    native bisection passes of a box, every pass a level.
     """
     _on_support, interior = _embedding_report(dim, cell_size, max_levels, ratio)
     wrong = [(k, r) for k, r, exact in interior if not exact]
-
-    if dim == 3:
-        if not wrong:
-            # The defect is carried by the handful of vertices a closure
-            # cascade places strictly inside a coarse tet, and WHETHER any
-            # arise depends on the gmsh mesh: the linux CI mesh presents
-            # none while the macOS reference mesh does, so a hard assert
-            # here fires falsely on one platform or the other (measured,
-            # PR #510 CI). Skipping keeps the tripwire's message without
-            # the flake; when #449 is truly fixed, the skip goes with it
-            # and every dimension asserts exactness below.
-            pytest.skip(
-                "no 3-D interior-vertex row is wrong on this mesh — the #449 "
-                "cascade parentage did not occur here (mesh-dependent), or "
-                "the defect is fixed. Verify against the reference-toolchain "
-                "mesh before deleting this branch.")
-        return
 
     assert not wrong, (
         f"{len(wrong)} of {len(interior)} rows whose fine vertex lies strictly "
@@ -289,7 +278,7 @@ def test_reproduces_a_linear_field_exactly(dim, cell_size, max_levels, ratio):
     failure here localises the problem to the arithmetic rather than the
     parentage.
 
-    Provably BLIND to the 3-D defect above, which is why it cannot be the only
+    Provably BLIND to the 3-D defect above (#449), which is why it cannot be the only
     embedding check: a symmetric wrong pair of parents reproduces a linear field
     exactly. Kept for localisation, not for coverage.
     """
@@ -338,6 +327,7 @@ def test_transfer_is_sparser_than_point_location(dim, cell_size, max_levels, rat
             f"point-location density; the recorded transfer should be sparser")
 
 
+@pytest.mark.level_1
 def test_mg_actually_uses_the_recorded_transfer_for_degree_one():
     """Guard against silently reverting to point location.
 
@@ -385,6 +375,7 @@ def test_mg_actually_uses_the_recorded_transfer_for_degree_one():
     assert err < 1e-9
 
 
+@pytest.mark.level_1
 def test_higher_degree_still_uses_the_geometric_builder():
     """The recorded relation is vertex-level, so P2 must NOT use it (its edge
     DOFs are not described by the vertex parentage). #425 stage 2."""
