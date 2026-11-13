@@ -114,7 +114,9 @@ def _lid_against_a_pinned_wall(left, capsys, lid_normal=(sympy.Rational(3, 5), s
     capsys.readouterr()
     s.solve()
     out = capsys.readouterr().out
-    return [line for line in out.splitlines() if "essential BC on" in line]
+    # the report is printed by rank 0 alone: every rank asserts on what it printed
+    lines = [line for line in out.splitlines() if "essential BC on" in line]
+    return uw.mpi.comm.bcast(lines if uw.mpi.rank == 0 else None, root=0)
 
 
 @pytest.mark.tier_b
@@ -233,7 +235,9 @@ def test_a_value_that_cannot_be_evaluated_is_reported_and_does_not_stop_the_solv
 
     monkeypatch.setattr(rotated_bc, "_value_at_point", cannot_evaluate)
     warnings = _lid_against_a_pinned_wall((None, 0.05), capsys)
-    assert len(warnings) == 1 and "could not be evaluated" in warnings[0]
+    # with no value readable, both essential walls that meet a rotated one are named
+    assert [("'Bottom'" in w, "'Left'" in w) for w in warnings] == [(True, False), (False, True)]
+    assert all("could not be evaluated" in w for w in warnings)
 
 
 @pytest.mark.tier_b

@@ -784,7 +784,8 @@ def _value_at_point(solver, value, x):
     axes = list(zip(solver.mesh.X, solver.mesh.N.base_scalars()))
     at_x = {symbol: float(x[i]) for symbol in expr.free_symbols
             for i, names in enumerate(axes) if symbol in names}
-    expr = expr.xreplace(at_x)
+    # xreplace on a lone symbol hands back the plain float
+    expr = sympy.sympify(expr.xreplace(at_x))
     return float(expr) if expr.is_number else None
 
 
@@ -797,6 +798,10 @@ def _pinned_value_along_normal(solver, dm, point, pinned, normals):
     Returns ``(walls, size, known)``: the essential walls whose values contribute,
     the largest |n_P . g_P| over the node's normals, and whether every value could
     be evaluated here. ``None`` when nothing contributes.
+
+    The value is read when the rotation is built. The rotation is kept across
+    solves, so a value that changes later (one that follows the model clock) is
+    not read again until the rotation is rebuilt.
     """
     dim = len(normals[0])
     values = {}
@@ -809,15 +814,24 @@ def _pinned_value_along_normal(solver, dm, point, pinned, normals):
         if dm.getLabel(bc.boundary).getValue(point) < 0:
             continue
         for c in pinned:
-            value = _essential_value(bc, c, dim)
-            if value is None or not any(float(n[c]) != 0.0 for n in normals):
+            if not any(float(n[c]) != 0.0 for n in normals):
                 continue
             if x is None:
                 csec = dm.getCoordinateSection()
                 cvec = np.asarray(dm.getCoordinatesLocal().array).reshape(-1, dim)
                 v0, v1 = dm.getDepthStratum(0)
                 x = _point_coord(dm, dim, cvec, csec, v0, v1, point)
-            number = _value_at_point(solver, value, x)
+            try:
+                value = _essential_value(bc, c, dim)
+                number = None if value is None else _value_at_point(solver, value, x)
+            except Exception:
+                # Sanctioned: this is a diagnostic on the ranks that hold a shared
+                # node, ahead of a collective report. Whatever a user's expression
+                # does when read here, the rank must reach that report, so a value
+                # that cannot be read is reported as one, not raised.
+                value, number = bc, None
+            if value is None:
+                continue
             if number is None:
                 known = False
             elif number == 0.0:
@@ -858,7 +872,9 @@ def _report_pinned_values_along_normals(solver, conflicts):
                    f"constraint at such a node is reduced as if the essential value were "
                    f"zero (the affine reduction against the pinned components is not "
                    f"implemented), so v.n there is not the prescribed one. Other nodes "
-                   f"are unaffected.")
+                   f"are unaffected. The value was read as the rotation was built; a "
+                   f"value that changes later is not read again while the rotation is "
+                   f"kept.")
 
 
 _PARTIAL_DATUM_WARNED = [False]
