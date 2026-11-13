@@ -43,6 +43,8 @@ import underworld3 as uw
 import underworld3.utilities.rotated_bc as rbc
 from underworld3.systems.free_surface import FreeSurface
 
+from empty_rank_fixtures import cells_per_rank
+
 pytestmark = [pytest.mark.mpi(min_size=2), pytest.mark.level_2, pytest.mark.timeout(300)]
 
 WALL_NORMALS = {"Top": (0.0, 1.0), "Bottom": (0.0, -1.0),
@@ -141,6 +143,10 @@ def test_the_fixture_holds_an_owned_wall_node_no_local_facet_reaches(regular, ce
 @pytest.mark.parametrize("regular, cell_size", FIXTURES)
 def test_no_normal_flow_at_any_wall_node(regular, cell_size, kind):
     stokes, v = _box_solver(regular, cell_size)
+    counts = cells_per_rank(stokes.mesh)
+    if 0 in counts:
+        pytest.skip(f"np {uw.mpi.size}: cells per rank {counts}, and a Stokes solve is "
+                    f"refused while a rank holds none (#962)")
     x, _y = stokes.mesh.X
     # buoyancy up the left wall and down the right: one cell, which moves a corner
     # that has lost its constraint rows
