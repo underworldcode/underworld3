@@ -329,3 +329,32 @@ def test_exterior_points_never_reach_a_rank_with_no_cells(last_empty_annulus):
     assert counts[-1] == 0 and all(counts[:-1])
     held, _ = _place_exterior(mesh, 7093)
     _where_they_belong(mesh, held)
+
+
+@pytest.mark.tier_b
+def test_a_fine_mesh_keeps_every_point_some_rank_claims():
+    """On cells much finer than the locator's absolute face slab (about 1e-5
+    outside a wall), a point just outside the mesh can still be claimed by a
+    rank. A migrate that deletes lost points must keep every such point, as
+    base does: the domain boxes' pad has an absolute floor for this."""
+    mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0, 0.0), maxCoords=(1.0e-3, 1.0e-3),
+                                             cellSize=6.0e-5)
+    rng = np.random.default_rng(8093 + uw.mpi.rank)
+    n = 300
+    t = rng.uniform(0.0, 1.0e-3, n)
+    out = rng.uniform(1.0e-7, 3.0e-5, n)                # just outside a wall
+    wall = rng.integers(0, 4, n)
+    points = np.where((wall == 0)[:, None], np.column_stack([-out, t]),
+             np.where((wall == 1)[:, None], np.column_stack([1.0e-3 + out, t]),
+             np.where((wall == 2)[:, None], np.column_stack([t, -out]),
+                      np.column_stack([t, 1.0e-3 + out]))))
+    every = np.concatenate(uw.mpi.comm.allgather(points))
+    mine = np.asarray(mesh.points_in_domain(every), dtype=bool)        # collective
+    claimed = np.any(np.array(uw.mpi.comm.allgather(mine)), axis=0)
+    assert claimed.sum() > 0, "the locator claims none of the points: the case is not exercised"
+    swarm = uw.swarm.Swarm(mesh)
+    swarm.add_particles_with_global_coordinates(points, migrate=False)
+    swarm.migrate(remove_sent_points=True, delete_lost_points=True)
+    held = np.asarray(swarm.dm.getField("DMSwarmPIC_coor")).reshape(-1, 2).copy()
+    swarm.dm.restoreField("DMSwarmPIC_coor")
+    assert uw.mpi.comm.allreduce(len(held)) == int(claimed.sum())
