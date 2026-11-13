@@ -5,6 +5,10 @@ their gmsh file on rank 0 alone, on ``COMM_SELF``, because they edit the DM befo
 is distributed. The conversion ended with a barrier on the world communicator, which
 only rank 0 reached: at two ranks the constructor never returned.
 
+Under MPICH the shell case happens to complete on the unfixed code (the stray
+barrier pairs with another collective); the ball and the spoked annulus hang, and
+are the cases that guard the fix.
+
 Each mesh must build, and hold the cells the same generator gives on one rank. That
 count is computed here, in this environment, by a single-rank child (see
 ``serial_reference``), so it does not depend on which gmsh built the mesh.
@@ -19,9 +23,10 @@ import underworld3 as uw
 
 from serial_reference import emit, serial_reference
 
-# The timeout is the regression's failure: without it a hang blocks the CI job.
-pytestmark = [pytest.mark.mpi(min_size=2), pytest.mark.level_1, pytest.mark.tier_b,
-              pytest.mark.timeout(300)]
+# A regression here is a rank blocked in an MPI barrier, which no pytest timeout
+# interrupts: the supervisor that scripts/test.sh runs every parallel job under is
+# what turns the hang into a failure.
+pytestmark = [pytest.mark.mpi(min_size=2), pytest.mark.level_1, pytest.mark.tier_b]
 
 GENERATORS = {
     "segmented_shell": lambda: uw.meshing.SegmentedSphericalShell(cellSize=0.5, numSegments=3),

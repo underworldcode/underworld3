@@ -134,9 +134,10 @@ def _gmsh_to_h5(
     """Convert a Gmsh file to PETSc HDF5 without loading the resulting DM.
 
     ``comm`` is the communicator the caller will build the mesh on. A caller on
-    ``COMM_SELF`` is converting on one rank alone, inside its own rank-0 block,
-    so the closing barrier on the world communicator is skipped: no other rank
-    would reach it.
+    a one-rank communicator is converting on one rank alone, inside its own
+    rank-0 block, so the closing barrier on the world communicator is skipped:
+    no other rank would reach it. Such a caller orders its own write before the
+    collective read that follows.
     """
 
     h5_filename = filename + ".h5"
@@ -200,7 +201,7 @@ def _gmsh_to_h5(
         _clear_gmsh_import_options()
 
     # The barrier ensures every rank sees the complete atomically-renamed file.
-    if comm != PETSc.COMM_SELF:
+    if comm is None or comm.getSize() > 1:
         uw.mpi.barrier()
 
     return filename + ".h5"
