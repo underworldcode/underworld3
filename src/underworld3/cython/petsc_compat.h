@@ -1,4 +1,5 @@
 #include "petsc.h"
+#include <petsc/private/petscdsimpl.h>   // the kernel tables of a PetscWeakForm
 
 // Version-compatible wrapper for DMPlexFilter.
 // PETSc 3.25 added an MPI_Comm argument before the SF pointer.
@@ -227,14 +228,114 @@ PetscErrorCode UW_DMSetTime(DM dm, PetscReal time)
     return PETSC_SUCCESS;
 }
 
+// The kernel tables a Jacobian assembly reads from a weak form, volume then
+// boundary: those of the Jacobian, and those of the matrix the preconditioner
+// is built from.
+#define UW_NUM_JACOBIAN_TABLES 8
+static const PetscWeakFormKind UW_WF_JACOBIAN[UW_NUM_JACOBIAN_TABLES] = {
+    PETSC_WF_G0, PETSC_WF_G1, PETSC_WF_G2, PETSC_WF_G3,
+    PETSC_WF_BDG0, PETSC_WF_BDG1, PETSC_WF_BDG2, PETSC_WF_BDG3};
+static const PetscWeakFormKind UW_WF_PRECONDITIONER[UW_NUM_JACOBIAN_TABLES] = {
+    PETSC_WF_GP0, PETSC_WF_GP1, PETSC_WF_GP2, PETSC_WF_GP3,
+    PETSC_WF_BDGP0, PETSC_WF_BDGP1, PETSC_WF_BDGP2, PETSC_WF_BDGP3};
+
+typedef struct {
+    PetscWeakForm wf;
+    PetscHMapForm jacobian[UW_NUM_JACOBIAN_TABLES];
+    PetscHMapForm preconditioner[UW_NUM_JACOBIAN_TABLES];
+} UW_WeakFormTables;
+
+// The local Jacobian of a DM, with the Jacobian and the matrix the
+// preconditioner is built from assembled one to a call.
+//
+// When a discrete system has kernels for both and is handed two matrices, PETSc
+// assembles the two in one pass. On a rank with no cells that pass leaves
+// before it has read that there are two, and skips an assembly of the Jacobian
+// that the other ranks make (DMPlexComputeJacobianByKey, 3.25.3 and main;
+// #962). Handed one matrix, PETSc reads one set of kernels and every rank
+// assembles alike. So each call here hands it one matrix and one set: the
+// Jacobian with the preconditioner's tables set aside, then the
+// preconditioner's matrix with its tables in the Jacobian's place. Both are
+// decided by the discrete systems, which are the same on every rank, and the
+// tables go back before an error leaves. Drop this for
+// DMPlexSNESComputeJacobianFEM once PETSc assembles the same matrices on every
+// rank.
+PetscErrorCode UW_DMPlexSNESComputeJacobianFEM(DM dm, Vec X, Mat J, Mat P, void *ctx)
+{
+    UW_WeakFormTables *tables;
+    PetscHMapForm      none;
+    PetscInt           Nds, s, bd, numBd, k, n = 0, i = 0;
+    PetscBool          hasJac, hasPrec, two = PETSC_FALSE, jacobianOnly = PETSC_FALSE;
+    PetscErrorCode     ierr;
+
+    PetscFunctionBeginUser;
+    PetscCall(DMGetNumDS(dm, &Nds));
+    for (s = 0; s < Nds; ++s) {
+        PetscDS ds;
+
+        PetscCall(DMGetRegionNumDS(dm, s, NULL, NULL, &ds, NULL));
+        PetscCall(PetscDSHasJacobian(ds, &hasJac));
+        PetscCall(PetscDSHasJacobianPreconditioner(ds, &hasPrec));
+        if (hasJac && hasPrec) two = PETSC_TRUE;
+        if (hasJac && !hasPrec) jacobianOnly = PETSC_TRUE;
+        PetscCall(PetscDSGetNumBoundary(ds, &numBd));
+        n += 1 + numBd;
+    }
+    if (J == P || !two) {
+        PetscCall(DMPlexSNESComputeJacobianFEM(dm, X, J, P, ctx));
+        PetscFunctionReturn(PETSC_SUCCESS);
+    }
+    // PETSc puts such a system's Jacobian in the preconditioner's matrix
+    PetscCheck(!jacobianOnly, PetscObjectComm((PetscObject)dm), PETSC_ERR_SUP,
+               "A discrete system with Jacobian kernels and no preconditioner kernels, beside one with both");
+
+    PetscCall(PetscMalloc1(n, &tables));
+    for (s = 0; s < Nds; ++s) {
+        PetscDS ds;
+
+        PetscCall(DMGetRegionNumDS(dm, s, NULL, NULL, &ds, NULL));
+        PetscCall(PetscDSGetWeakForm(ds, &tables[i++].wf));
+        PetscCall(PetscDSGetNumBoundary(ds, &numBd));
+        for (bd = 0; bd < numBd; ++bd) PetscCall(UW_PetscDSGetBoundaryWeakForm(ds, bd, &tables[i++].wf));
+    }
+    for (i = 0; i < n; ++i) {
+        for (k = 0; k < UW_NUM_JACOBIAN_TABLES; ++k) {
+            tables[i].jacobian[k]       = tables[i].wf->form[UW_WF_JACOBIAN[k]];
+            tables[i].preconditioner[k] = tables[i].wf->form[UW_WF_PRECONDITIONER[k]];
+        }
+    }
+    PetscCall(PetscHMapFormCreate(&none));
+
+    for (i = 0; i < n; ++i)
+        for (k = 0; k < UW_NUM_JACOBIAN_TABLES; ++k) tables[i].wf->form[UW_WF_PRECONDITIONER[k]] = none;
+    ierr = DMPlexSNESComputeJacobianFEM(dm, X, J, J, ctx);
+    if (!ierr) {
+        for (i = 0; i < n; ++i)
+            for (k = 0; k < UW_NUM_JACOBIAN_TABLES; ++k) tables[i].wf->form[UW_WF_JACOBIAN[k]] = tables[i].preconditioner[k];
+        ierr = DMPlexSNESComputeJacobianFEM(dm, X, P, P, ctx);
+    }
+    for (i = 0; i < n; ++i) {
+        for (k = 0; k < UW_NUM_JACOBIAN_TABLES; ++k) {
+            tables[i].wf->form[UW_WF_JACOBIAN[k]]       = tables[i].jacobian[k];
+            tables[i].wf->form[UW_WF_PRECONDITIONER[k]] = tables[i].preconditioner[k];
+        }
+    }
+    PetscCall(PetscHMapFormDestroy(&none));
+    PetscCall(PetscFree(tables));
+    PetscCall(ierr);
+    PetscFunctionReturn(PETSC_SUCCESS);
+}
+
 PetscErrorCode UW_DMPlexSetSNESLocalFEM(DM dm, PetscBool flag, void *ctx)
 {
 
 #if PETSC_VERSION_LE(3, 20, 5)
-    return DMPlexSetSNESLocalFEM(dm, NULL, NULL, NULL);
+    PetscCall(DMPlexSetSNESLocalFEM(dm, NULL, NULL, NULL));
 #else
-    return DMPlexSetSNESLocalFEM(dm, flag, NULL);
+    PetscCall(DMPlexSetSNESLocalFEM(dm, flag, NULL));
 #endif
+    PetscCall(DMSNESSetJacobianLocal(dm, UW_DMPlexSNESComputeJacobianFEM, NULL));
+    return PETSC_SUCCESS;
 }
 
 // Simplified wrapper for DMPlexComputeBdIntegral.
