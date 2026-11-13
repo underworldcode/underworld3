@@ -11840,8 +11840,11 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                 if Sold.getFieldDof(p, fid_h) > 0 and p not in keep:
                     iset.add(p)
 
-        # Nothing to constrain (e.g. boundary-only multiplier discretisation).
-        if not any(interior_pts.values()):
+        # Nothing to constrain on any rank (e.g. boundary-only multiplier
+        # discretisation). COLLECTIVE, and reached on every rank: the global
+        # section is rebuilt below, so a rank with nothing of its own to
+        # constrain (one without cells, say) goes through it with its peers.
+        if not uw.mpi.comm.allreduce(int(any(interior_pts.values())), op=uw.MPI.MAX):
             return
 
         # 2. Build a new local section mirroring the old (chart, fields, dofs and

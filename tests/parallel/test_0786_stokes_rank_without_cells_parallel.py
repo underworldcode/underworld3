@@ -24,6 +24,12 @@ the matrices themselves on one rank.
 A scalar solve has one matrix and never met the defect: on the same region it
 converges to the linear field its walls prescribe.
 
+A constrained solve removes its multipliers' interior unknowns from the system
+and rebuilds the DM's global section, which every rank does together. A rank
+with nothing of its own to remove left before the rebuild, and the solve hung
+at set-up. On the region rank 0 removes 104 of each multiplier's 109 unknowns
+and the other ranks have none.
+
     python scripts/mpi_supervisor.py --silence 300 -- mpirun -n 3 python -m pytest --with-mpi tests/parallel/test_0786_stokes_rank_without_cells_parallel.py
 """
 import importlib.util
@@ -53,6 +59,7 @@ BOX_WALLS = {"Top": (None, 0.0), "Bottom": (None, 0.0), "Left": (0.0, None), "Ri
 SPEED_BOX = 3.5798925e-02
 SPEED_TRIANGLE = {1: None, 4: 2.4923109e-03, 8: 2.5355659e-03}
 SPEED_REGION = 8.1535981e-05
+SPEED_REGION_CONSTRAINED = 1.2158645e-03
 
 
 def _box_of_two_cells():
@@ -137,3 +144,35 @@ def test_a_scalar_solve_on_the_region_converges():
     assert reason > 0, reason
     # the walls prescribe x, which the elements hold exactly
     assert worst < 1.0e-8, (worst, counts)
+
+
+@pytest.mark.tier_b
+def test_a_constrained_solve_completes_with_a_rank_without_cells():
+    """No flow through the region's side walls by multipliers, no slip on its base."""
+    mesh, _walls, _speed = _region_held_by_rank_0()
+    counts = cells_per_rank(mesh)
+    v = uw.discretisation.MeshVariable("V0786c", mesh, 2, degree=2)
+    p = uw.discretisation.MeshVariable("P0786c", mesh, 1, degree=1)
+    stokes = uw.systems.Stokes_Constrained(mesh, velocityField=v, pressureField=p)
+    stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    stokes.constitutive_model.Parameters.shear_viscosity_0 = 1.0
+    x, _y = mesh.X
+    stokes.bodyforce = sympy.Matrix([[0.0, sympy.cos(sympy.pi * x)]])
+    stokes.add_essential_bc(NO_SLIP, "Internal")
+    stokes.add_constraint_bc(0.0, "Left", normal=sympy.Matrix([[-1.0, 0.0]]))
+    stokes.add_constraint_bc(0.0, "Right", normal=sympy.Matrix([[1.0, 0.0]]))
+    stokes.tolerance = 1.0e-10
+    stokes.solve()
+
+    reason = stokes.snes.getConvergedReason()
+    local = np.linalg.norm(np.asarray(v.array)[:, 0, :], axis=1)
+    speed = max(uw.mpi.comm.allgather(float(local.max(initial=0.0))))
+    section = stokes.dm.getLocalSection()
+    multiplier = stokes._block_constraint_bcs[0].lam._solver_field_id
+    removed = uw.mpi.comm.allgather(
+        sum(section.getFieldConstraintDof(q, multiplier) for q in range(*section.getChart())))
+    assert counts.count(0) >= 1 and sum(counts) > 0, counts
+    # the premise: a rank that removes multiplier unknowns beside one that has none
+    assert max(removed) > 0 and min(removed) == 0, removed
+    assert reason > 0, reason
+    assert abs(speed - SPEED_REGION_CONSTRAINED) <= 1.0e-6 * SPEED_REGION_CONSTRAINED, (speed, counts)
