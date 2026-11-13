@@ -44,6 +44,7 @@ pytestmark = [pytest.mark.mpi(min_size=2), pytest.mark.level_1, pytest.mark.tier
 
 CASES = {
     "front-following": dict(refinement=4.0),
+    "arc-length": dict(refinement=4.0, metric_choice="arc-length"),
     "percentile": dict(strategy="med"),
     "raw": dict(mode="raw"),
 }
