@@ -64,16 +64,32 @@ def _constrained():
     return stokes
 
 
-def _use_the_one_pass_assembly_of_petsc(dm):
-    """Put PETSc's own local routines back on ``dm``; petsc4py does not wrap the call."""
+def _petsc():
+    """PETSc's library, for the two calls below that petsc4py does not wrap."""
     config = petsc4py.get_config()
     name = "libpetsc.dylib" if sys.platform == "darwin" else "libpetsc.so"
-    library = ctypes.CDLL(
+    return ctypes.CDLL(
         os.path.join(config["PETSC_DIR"], config.get("PETSC_ARCH", ""), "lib", name))
-    set_local_fem = library.DMPlexSetSNESLocalFEM
+
+
+def _use_the_one_pass_assembly_of_petsc(dm):
+    """Put PETSc's own local routines back on ``dm``."""
+    set_local_fem = _petsc().DMPlexSetSNESLocalFEM
     set_local_fem.argtypes = [ctypes.c_void_p, ctypes.c_bool, ctypes.c_void_p]
     set_local_fem.restype = ctypes.c_int
     assert set_local_fem(dm.handle, False, None) == 0
+
+
+def _has_the_one_pass_assembly_of_petsc(dm):
+    """Whether the local Jacobian routine of ``dm`` is PETSc's own."""
+    library = _petsc()
+    get_local = library.DMSNESGetJacobianLocal
+    get_local.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p),
+                          ctypes.POINTER(ctypes.c_void_p)]
+    get_local.restype = ctypes.c_int
+    routine, context = ctypes.c_void_p(), ctypes.c_void_p()
+    assert get_local(dm.handle, ctypes.byref(routine), ctypes.byref(context)) == 0
+    return routine.value == ctypes.cast(library.DMPlexSNESComputeJacobianFEM, ctypes.c_void_p).value
 
 
 def _assembled(stokes):
@@ -89,13 +105,16 @@ def test_each_matrix_is_the_one_petsc_assembles_in_one_pass(build):
     stokes = build()
     stokes.solve()
 
+    # the premise: the solver's own routine made these, and they are two matrices
+    # that differ, so neither stands in for the other
+    assert not _has_the_one_pass_assembly_of_petsc(stokes.dm)
     J, P = _assembled(stokes)
-    # the premise: two matrices that differ, so neither stands in for the other
     assert J.handle != P.handle
     assert J.norm() > 0.0 and P.norm() > 0.0
     assert not J.equal(P)
 
     _use_the_one_pass_assembly_of_petsc(stokes.dm)
+    assert _has_the_one_pass_assembly_of_petsc(stokes.dm)
     J_one_pass, P_one_pass = _assembled(stokes)
 
     assert J.equal(J_one_pass)

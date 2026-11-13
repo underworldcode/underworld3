@@ -8,13 +8,14 @@ make: the solve stopped in ``MPI_Allreduce`` on the ranks without cells, or hung
 The solver's local Jacobian routine hands PETSc one matrix to a call
 (``UW_DMPlexSNESComputeJacobianFEM``), and every rank then assembles alike.
 
-Power: the region leaves a rank without cells at every np >= 2 and the triangle
-from np 3 up, by a shell partition, and each test asserts that premise. With
+Power: the box of two cells and the region leave a rank without cells at every
+np >= 2 and the triangle from np 3 up, and each test asserts that premise. With
 PETSc's routine registered the run stops in MPI or hangs, and the MPI
 supervisor's silence limit ends it. The value asserted is the largest nodal speed
-of the same solve on one rank, where PETSc's routine is right. At np 2 the
-triangle can leave a rank empty only as one cell, which has every velocity node
-on a wall and nothing to solve for, so it is skipped there.
+of the same solve on one rank, where PETSc's routine is right. The box needs no
+mesh generator, so its value is the same on every host. At np 2 the triangle
+leaves a rank empty only when it is one cell, which has every velocity node on a
+wall and nothing to solve for, so it is skipped there.
 ``tests/test_0786_stokes_jacobian_and_preconditioner_one_call_each.py`` compares
 the matrices themselves on one rank.
 
@@ -37,13 +38,25 @@ from empty_rank_fixtures import (ALL_BOUNDARIES_VALUE, cells_along_a_side_leavin
 
 pytestmark = [pytest.mark.mpi(min_size=2), pytest.mark.level_2, pytest.mark.timeout(300)]
 
+NO_SLIP = (0.0, 0.0)
 REGION_WALLS = ("Top", "Left", "Right", "Internal")
+# no flow through a wall, free to slide along it: with no slip the box's three
+# interior velocity nodes do not move
+BOX_WALLS = {"Top": (None, 0.0), "Bottom": (None, 0.0), "Left": (0.0, None), "Right": (0.0, None)}
 
 
-# The largest nodal speed of each solve on one rank (macOS, PETSc 3.25.3), by cells
-# along the triangle's side and for the region. One cell has no free velocity node.
+# The largest nodal speed of each solve on one rank (macOS, PETSc 3.25.3): for the
+# box, by cells along the triangle's side, and for the region. A triangle of one
+# cell has no free velocity node.
+SPEED_BOX = 3.5798925e-02
 SPEED_TRIANGLE = {1: None, 4: 2.4923109e-03, 8: 2.5355659e-03}
 SPEED_REGION = 8.1535981e-05
+
+
+def _box_of_two_cells():
+    """Cells per rank [0, 2] at np 2 and [0, 0, 0, 2] at np 4."""
+    mesh = uw.meshing.StructuredQuadBox(elementRes=(1, 2), qdegree=3)
+    return mesh, BOX_WALLS, SPEED_BOX
 
 
 def _triangle_with_an_empty_rank():
@@ -53,7 +66,7 @@ def _triangle_with_an_empty_rank():
     # a mesh made from a bare DM has the name All_Boundaries and no such label
     dm.createLabel("All_Boundaries")
     dm.markBoundaryFaces("All_Boundaries", ALL_BOUNDARIES_VALUE)
-    return uw.discretisation.Mesh(dm, qdegree=3), ("All_Boundaries",), SPEED_TRIANGLE[n]
+    return uw.discretisation.Mesh(dm, qdegree=3), {"All_Boundaries": NO_SLIP}, SPEED_TRIANGLE[n]
 
 
 def _region_held_by_rank_0():
@@ -63,7 +76,7 @@ def _region_held_by_rank_0():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     parent = module._thin_slab_parent("single_rank_region")
-    return parent.extract_region("Outer"), REGION_WALLS, SPEED_REGION
+    return parent.extract_region("Outer"), dict.fromkeys(REGION_WALLS, NO_SLIP), SPEED_REGION
 
 
 def _stokes(mesh, walls):
@@ -74,15 +87,16 @@ def _stokes(mesh, walls):
     stokes.constitutive_model.Parameters.shear_viscosity_0 = 1.0
     x, _y = mesh.X
     stokes.bodyforce = sympy.Matrix([[0.0, sympy.cos(sympy.pi * x)]])
-    for wall in walls:
-        stokes.add_essential_bc((0.0, 0.0), wall)
+    for wall, velocity in walls.items():
+        stokes.add_essential_bc(velocity, wall)
     stokes.petsc_use_pressure_nullspace = True
     stokes.tolerance = 1.0e-10
     return stokes, v
 
 
 @pytest.mark.tier_b
-@pytest.mark.parametrize("fixture", (_triangle_with_an_empty_rank, _region_held_by_rank_0))
+@pytest.mark.parametrize(
+    "fixture", (_box_of_two_cells, _triangle_with_an_empty_rank, _region_held_by_rank_0))
 def test_stokes_solves_with_a_rank_without_cells(fixture):
     mesh, walls, speed_on_one_rank = fixture()
     if speed_on_one_rank is None:
