@@ -586,11 +586,21 @@ def provenance_transfer_parallel(coarse, fine, pre, degree, continuous,
         # the record is on this very mesh: a node's cell IS the recorded cell
         pcell = owner[mine]
         plam = np.zeros((mine.size, nv))
-    elif mine.size:
-        pcell, plam = locate_in_cells_exhaustive(fcent[owner[mine]], vxy_p, cv_p)
     else:
-        pcell = np.zeros(0, dtype=np.int64)
-        plam = np.zeros((0, nv))
+        # A rank-local failure is raised on every rank (#874): a rank that
+        # raised alone left the others waiting in the allreduce below.
+        from underworld3.utilities.fault_contact import _collective_raise
+        pcell = np.zeros(mine.size, dtype=np.int64)
+        plam = np.zeros((mine.size, nv))
+        problem = None
+        if mine.size:
+            try:
+                pcell, plam = locate_in_cells_exhaustive(fcent[owner[mine]],
+                                                         vxy_p, cv_p)
+            except Exception as err:   # sanctioned: raised on every rank just below
+                problem = (f"fault_mg: the provenance transfer failed to locate "
+                           f"the fine cells: {type(err).__name__}: {err}")
+        _collective_raise(problem)
     n_out = int(m4.allreduce(int((plam.min(axis=1) < -_INSIDE_TOL).sum())
                              if mine.size else 0))
     if n_out:
@@ -631,12 +641,21 @@ def provenance_transfer_parallel(coarse, fine, pre, degree, continuous,
     cv_u = np.arange(nu * nv).reshape(nu, nv)
     Xw = Xf[mine]
     reference = reference_vertices(pre, coarse)
-    if reference is not None and mine.size:
-        at = _barycentric(Xw, vxy_p[cv_p[pcell]])
-        Xw = np.einsum("nv,nvd->nd", at, reference[cv_p[pcell]])
-    lam = _barycentric(Xw, V_u[cv_u[inv]]) if mine.size else np.zeros((0, nv))
-    W = (_node_weights(Xw, inv, lam, Xn_u, cn_u, V_u, cv_u, degree)
-         if mine.size else np.zeros((0, nb)))
+    W = np.zeros((mine.size, nb))
+    problem = None
+    if mine.size:
+        # rank-local: a failure is raised on every rank just below (#874)
+        try:
+            if reference is not None:
+                at = _barycentric(Xw, vxy_p[cv_p[pcell]])
+                Xw = np.einsum("nv,nvd->nd", at, reference[cv_p[pcell]])
+            lam = _barycentric(Xw, V_u[cv_u[inv]])
+            W = _node_weights(Xw, inv, lam, Xn_u, cn_u, V_u, cv_u, degree)
+        except Exception as err:   # sanctioned: raised on every rank just below
+            problem = (f"fault_mg: the provenance transfer failed to weight "
+                       f"the fine nodes: {type(err).__name__}: {err}")
+    from underworld3.utilities.fault_contact import _collective_raise
+    _collective_raise(problem)
     gcols = cols_u[inv]                                        # (nm, nb, ncomp)
 
     global last_transfer_stats

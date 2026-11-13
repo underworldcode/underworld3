@@ -326,17 +326,27 @@ def _parent_cells_local(coarse, fine):
     made in, not the one its moved centroid lies over (#1091)."""
     from underworld3.utilities.fault_mg import (locate_in_cells_exhaustive,
                                                 reference_vertices)
+    from underworld3.utilities.fault_contact import _collective_raise
     comm = fine.dm.getComm().tompi4py()
     fcent, _vf, cvf = _cell_centroids(fine)
     reference = reference_vertices(fine, coarse)
-    if reference is not None:
-        fcent = reference[cvf].mean(axis=1)
     _cc, vxy_c, cv_c = _cell_centroids(coarse)
     n_f, n_c = cvf.shape[0], cv_c.shape[0]
     cell = np.full(n_f, -1, dtype=np.int64)
-    if n_f and n_c:
-        cell, lam = locate_in_cells_exhaustive(fcent, vxy_c, cv_c)
-        cell = np.where(lam.min(axis=1) < -_INSIDE_TOL, -1, cell).astype(np.int64)
+    # A rank-local failure is raised on every rank (#874): a rank that raised
+    # alone left the others waiting in the allreduce below.
+    problem = None
+    try:
+        if reference is not None:
+            fcent = reference[cvf].mean(axis=1)
+        if n_f and n_c:
+            cell, lam = locate_in_cells_exhaustive(fcent, vxy_c, cv_c)
+            cell = np.where(lam.min(axis=1) < -_INSIDE_TOL, -1,
+                            cell).astype(np.int64)
+    except Exception as err:   # sanctioned: raised on every rank just below
+        problem = (f"addon_partition: locating the fine cells in the level "
+                   f"below failed: {type(err).__name__}: {err}")
+    _collective_raise(problem)
     n_bad = int(comm.allreduce(int((cell < 0).sum()) + (n_f > 0 and n_c == 0)))
     if n_bad:
         raise RuntimeError(
