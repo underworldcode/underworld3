@@ -15,8 +15,8 @@ import underworld3 as uw
 pytestmark = [pytest.mark.level_2, pytest.mark.tier_b]
 
 
-def _solve_freeslip_box(method, res=8, reasons=None):
-    """Solve buoyancy-driven flow in a unit box with free-slip top/bottom.
+def _build_freeslip_box(method, res=8):
+    """The solver for buoyancy-driven flow in a unit box with free-slip top/bottom.
 
     Parameters
     ----------
@@ -24,17 +24,11 @@ def _solve_freeslip_box(method, res=8, reasons=None):
         "essential", "penalty", or "nitsche"
     res : int
         Element resolution per side.
-    reasons : dict, optional
-        If given, the SNES converged reason is stored in it under ``method``.
 
     Returns
     -------
-    v_data : ndarray
-        Velocity at P2 nodes.
-    p_data : ndarray
-        Pressure at P1 nodes.
-    coords : ndarray
-        P2 node coordinates.
+    stokes, v, p
+        The solver, not yet solved, and its velocity and pressure variables.
     """
 
     mesh = uw.meshing.UnstructuredSimplexBox(
@@ -77,11 +71,126 @@ def _solve_freeslip_box(method, res=8, reasons=None):
     stokes.tolerance = 1e-6
     stokes.petsc_options["ksp_type"] = "fgmres"
 
+    return stokes, v, p
+
+
+def _solve_freeslip_box(method, res=8, reasons=None):
+    """Solve the box of :func:`_build_freeslip_box`.
+
+    Parameters
+    ----------
+    reasons : dict, optional
+        If given, the SNES converged reason is stored in it under ``method``.
+
+    Returns
+    -------
+    v_data : ndarray
+        Velocity at P2 nodes.
+    p_data : ndarray
+        Pressure at P1 nodes.
+    coords : ndarray
+        P2 node coordinates.
+    """
+    stokes, v, p = _build_freeslip_box(method, res)
     stokes.solve()
     if reasons is not None:
         reasons[method] = stokes.snes.getConvergedReason()
 
     return v.data.copy(), p.data.copy(), v.coords.copy()
+
+
+def _velocity_and_pressure_unknowns(stokes):
+    """The index sets of the velocity and the pressure unknowns of a solved solver."""
+    _, index_sets, _ = stokes.dm.createFieldDecomposition()
+    return index_sets[0], index_sets[1]
+
+
+@pytest.fixture(scope="module")
+def solved_nitsche_box():
+    stokes, _, _ = _build_freeslip_box("nitsche")
+    stokes.solve()
+    return stokes
+
+
+@pytest.mark.tier_b
+def test_the_continuity_row_carries_the_nitsche_term(solved_nitsche_box):
+    """The pressure-velocity block is minus the transpose of the velocity-pressure block.
+
+    The Nitsche condition puts the pressure into the momentum rows on the wall, and
+    the matching term belongs in the continuity rows. It is integrated only if the
+    wall is registered on the pressure field as well as the velocity field: PETSc
+    visits a natural boundary for the field it is registered on and no other. With
+    the term missing the two blocks differ by 0.28 on this fixture (#1072).
+    """
+    stokes = solved_nitsche_box
+    jacobian = stokes.snes.getJacobian()[0]
+    velocity, pressure = _velocity_and_pressure_unknowns(stokes)
+
+    pressure_velocity = jacobian.createSubMatrix(pressure, velocity)
+    velocity_pressure = jacobian.createSubMatrix(velocity, pressure)
+    scale = velocity_pressure.norm()
+    # in place, on the copy createSubMatrix made
+    velocity_pressure.transpose()
+    pressure_velocity.axpy(1.0, velocity_pressure)
+    mismatch = pressure_velocity.norm()
+
+    assert scale > 0.5
+    assert mismatch < 1.0e-12 * scale, (
+        f"the pressure-velocity block differs from minus the transpose of the "
+        f"velocity-pressure block by {mismatch:.3e} (block norm {scale:.3e})"
+    )
+
+
+@pytest.mark.tier_b
+def test_the_continuity_residual_sums_to_zero_in_a_closed_box(solved_nitsche_box):
+    """No velocity field has a net continuity residual when no wall lets flow through.
+
+    Summed over the pressure unknowns, the continuity residual is the integral of
+    the divergence less the wall-normal velocity the Nitsche walls measure, which is
+    the flux through the other walls: zero here, whatever the velocity. That is what
+    makes the constant pressure a null vector of the transposed system as well, and
+    so the system solvable. Without the Nitsche term in the continuity rows the sum
+    is the flux through Top and Bottom (#1072).
+    """
+    from petsc4py import PETSc
+
+    stokes = solved_nitsche_box
+    _, pressure = _velocity_and_pressure_unknowns(stokes)
+
+    state = stokes.snes.getJacobian()[0].createVecRight()
+    state.setRandom(PETSc.Random().create(comm=state.comm))
+    residual = state.duplicate()
+    stokes.snes.computeFunction(state, residual)
+
+    continuity = residual.getSubVector(pressure)
+    net, size = continuity.sum(), continuity.norm(PETSc.NormType.NORM_1)
+    residual.restoreSubVector(pressure, continuity)
+
+    assert size > 1.0e-3
+    assert abs(net) < 1.0e-12 * size, (
+        f"the continuity residual sums to {net:.3e} (sum of magnitudes {size:.3e})"
+    )
+
+
+@pytest.mark.tier_b
+def test_the_boundary_residual_diagnostic_returns_the_continuity_row_term():
+    """``compute_boundary_residual_fields`` reaches the entry on the pressure field.
+
+    For the velocity (0, x(1-x)), which the quadratic elements hold exactly and
+    which is zero on the no-slip sides, the continuity-row term of a free-slip
+    wall sums to minus the flow out through it: -1/6 on Top and +1/6 on Bottom.
+    """
+    stokes, v, _ = _build_freeslip_box("nitsche")
+    x = v.coords[:, 0]
+    v.array[:, 0, 0] = 0.0
+    v.array[:, 0, 1] = x * (1.0 - x)
+
+    for wall, flow_out in (("Top", 1.0 / 6.0), ("Bottom", -1.0 / 6.0)):
+        rows = stokes.compute_boundary_residual_fields(wall, residual_field_id=1)
+        assert np.abs(rows["velocity"]).max() == 0.0
+        assert abs(rows["pressure"].sum() + flow_out) < 1.0e-12, (
+            f"{wall}: the continuity-row term sums to {rows['pressure'].sum():.15e}"
+        )
 
 
 class TestNitscheFreeslip:
@@ -103,12 +212,8 @@ class TestNitscheFreeslip:
         assert reasons["essential"] > 0, reasons
         assert reasons["penalty"] > 0, reasons
 
-    @pytest.mark.xfail(reason="the Nitsche Stokes solve stops short of its tolerance (#1072)",
-                       strict=True)
     def test_nitsche_converges(self, solutions):
-        """The Nitsche solve reaches its tolerance. It does not yet: on one host it
-        ends DIVERGED_LINE_SEARCH after 3 Newton steps, on another its pressure
-        sub-solve stops at its cap (#1072)."""
+        """The Nitsche solve reaches its tolerance."""
         assert solutions["reasons"]["nitsche"] > 0, solutions["reasons"]
 
     def test_nitsche_solution_is_finite(self, solutions):
@@ -118,14 +223,19 @@ class TestNitscheFreeslip:
         assert not np.any(np.isnan(v))
 
     def test_nitsche_matches_essential(self, solutions):
-        """Nitsche velocity should match essential BC solution closely."""
+        """The Nitsche velocity is within 2e-3 of the essential one at this resolution.
+
+        Measured 1.17e-3 at the default penalty (gamma 12.5). Without the
+        Nitsche term in the continuity rows it is 3.36e-3 (#1072), and at
+        gamma 10 it is 1.98e-3, so the bound separates all three.
+        """
         v_ess, _, _ = solutions["essential"]
         v_nit, _, _ = solutions["nitsche"]
 
         # L2 relative difference
         diff = np.sqrt(np.sum((v_ess - v_nit) ** 2)) / np.sqrt(np.sum(v_ess ** 2))
         print(f"Nitsche vs essential: relative L2 diff = {diff:.4e}")
-        assert diff < 0.01, f"Nitsche differs from essential by {diff:.4e}"
+        assert diff < 1.5e-3, f"Nitsche differs from essential by {diff:.4e}"
 
     def test_penalty_matches_essential(self, solutions):
         """Penalty velocity should also match essential BC solution."""
