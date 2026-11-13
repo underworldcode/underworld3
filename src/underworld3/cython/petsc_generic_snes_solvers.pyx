@@ -7296,10 +7296,15 @@ class SNES_Scalar(SolverBaseClass):
         debug_name : str, optional
             Name prefix for debug output files.
         time : float or Quantity, optional
-            Physical time for this solve. Passed as ``petsc_t`` to all
-            pointwise functions. Expressions using ``mesh.t`` evaluate at
-            this time. Non-dimensionalised when scaling is active.
+            Physical time for this solve, set as PETSc's time (``petsc_t``) on
+            the solver's DM. Non-dimensionalised when scaling is active.
             Default: None (petsc_t unchanged).
+
+            Expressions written with ``mesh.t`` do not follow this value.
+            ``mesh.t`` carries the model clock
+            (``uw.get_default_model().tracker.time``), in source terms and
+            in essential (Dirichlet) conditions alike: with ``time=2`` and
+            the clock at 0 they evaluate at 0 (#410). Set the clock.
         divergence_retries : int, default=0
             If SNES reports DIVERGED after the solve, re-call it with warm
             start up to this many times. A single retry rescues most VEP
@@ -13083,10 +13088,14 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         _force_setup : bool, default=False
             Force rebuild of the solver even if already set up.
         time : float or Quantity, optional
-            Physical time for this solve. Passed as ``petsc_t`` to all
-            pointwise residual and Jacobian functions. Expressions using
-            ``mesh.t`` will evaluate at this time. Non-dimensionalised
-            automatically when scaling is active. Default: None (petsc_t=0).
+            Physical time for this solve, set as PETSc's time (``petsc_t``) on
+            the solver's DM. Non-dimensionalised automatically when scaling
+            is active. Default: None (petsc_t=0).
+
+            Expressions written with ``mesh.t`` do not follow this value.
+            ``mesh.t`` carries the model clock
+            (``uw.get_default_model().tracker.time``), in source terms and
+            in essential (Dirichlet) conditions alike (#410). Set the clock.
         divergence_retries : int, default=0
             If the final SNES solve reports DIVERGED, re-call it with warm
             start up to this many times. A single retry rescues most VEP
