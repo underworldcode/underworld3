@@ -129,8 +129,15 @@ def _gmsh_to_h5(
     markVertices=False,
     useRegions=True,
     useMultipleTags=True,
+    comm=None,
 ):
-    """Convert a Gmsh file to PETSc HDF5 without loading the resulting DM."""
+    """Convert a Gmsh file to PETSc HDF5 without loading the resulting DM.
+
+    ``comm`` is the communicator the caller will build the mesh on. A caller on
+    ``COMM_SELF`` is converting on one rank alone, inside its own rank-0 block,
+    so the closing barrier on the world communicator is skipped: no other rank
+    would reach it.
+    """
 
     h5_filename = filename + ".h5"
     options = PETSc.Options()
@@ -193,7 +200,8 @@ def _gmsh_to_h5(
         _clear_gmsh_import_options()
 
     # The barrier ensures every rank sees the complete atomically-renamed file.
-    uw.mpi.barrier()
+    if comm != PETSc.COMM_SELF:
+        uw.mpi.barrier()
 
     return filename + ".h5"
 
@@ -222,6 +230,7 @@ def _from_gmsh(
         markVertices=markVertices,
         useRegions=useRegions,
         useMultipleTags=useMultipleTags,
+        comm=comm,
     )
 
     return _from_plexh5(h5_filename, comm, return_sf=True)
@@ -8140,6 +8149,8 @@ class Mesh(Stateful, uw_object):
     def meshVariable_mask_from_label(self, label_name, label_value):
         """Extract single label value and make a point mask - note: this produces a mask on the mesh points and
         assumes a 1st order mesh. Cell labels are not respected in this function."""
+
+        from underworld3.discretisation import MeshVariable
 
         meshVar = MeshVariable(
             f"Mask_{label_name}_{label_value}",
