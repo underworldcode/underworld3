@@ -224,7 +224,9 @@ time faster (needed to develop convection in stiff stagnant-lid regimes).
 - **TI / anisotropic** weak fault (`TransverseIsotropicFlowModel`:
   `shear_viscosity_0=η_FK`, `shear_viscosity_1=η_weak`, `director`=fault normal):
   keep the **default newtonls** (NOT ksponly — ksponly converges to the WRONG
-  answer); use **penalty** free-slip (Nitsche trips the anisotropic-Jacobian bug);
+  answer); use **penalty** free-slip (what the runs below were made with; the Nitsche
+  tangent for an anisotropic stress has since been fixed, #239, and Nitsche + TI has
+  not been measured on this recipe);
   **GAMG** (FMG ~7× slower). Measured on the gmsh-resolved + one-sided base
   (Ra1e6 Δη1e3): ran clean to t=0.06, folded=0, vrms→20, **~10×** the isotropic
   cost per step (GAMG eats the 1000× anisotropic contrast — well under the feared
@@ -390,8 +392,9 @@ Key choices, verified:
   costs transient ACCURACY (over-diffusive backward-Euler DELAYS the convective
   onset vs a resolved arbiter — dt×1.5 recovers it). Use small dt_mult for faithful
   transients, large to reach quasi-steady fast.
-- **`--freeslip penalty`** (default) — REQUIRED for TI (Nitsche trips the
-  anisotropic-Jacobian bug). It's the raw velocity penalty `kfs·(v·n)n`.
+- **`--freeslip penalty`** (default) — what every TI run here was made with (the
+  Nitsche tangent for an anisotropic stress has since been fixed, #239; Nitsche + TI
+  has not been measured on this recipe). It's the raw velocity penalty `kfs·(v·n)n`.
 - Fault: `--fault-base-smin` (gmsh resolve), `--metric-combine max` +
   `--fault-refine-amp 25` (keep refinement ON the fault), `--fault-*-side` (one-sided),
   `--rheology ti` (real fault). Drop the fault flags for the no-fault control.
