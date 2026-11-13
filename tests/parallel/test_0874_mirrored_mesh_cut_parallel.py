@@ -50,3 +50,17 @@ def test_a_mirrored_box_is_cut_as_the_mirror_image(snap_frac):
     expected = _vertices(plain) * np.array([-1.0, 1.0])
     expected = expected[np.lexsort((expected[:, 1], expected[:, 0]))]
     np.testing.assert_array_equal(_vertices(mirrored), expected)
+
+
+@pytest.mark.tier_b
+def test_a_tie_or_no_cells_gives_no_flip():
+    """The convention when the vote is even, or there is nothing to vote:
+    no flip, on every rank alike (read on this rank's own communicator)."""
+    from petsc4py import PETSc
+    from underworld3.utilities import line_cut
+
+    a = np.array([[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]])
+    tie = np.array([a, a[[0, 2, 1]]])                     # one each way
+    assert line_cut._global_flip(tie, PETSc.COMM_SELF) is False
+    assert line_cut._global_flip(np.zeros((0, 3, 2)), PETSc.COMM_SELF) is False
+    assert line_cut._global_flip(np.array([a[[0, 2, 1]]] * 2), PETSc.COMM_SELF) is True
