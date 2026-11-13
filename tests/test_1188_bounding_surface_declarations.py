@@ -50,19 +50,41 @@ def _radial_metric(mesh, name):
 # ----- operations that keep the declaration ---------------------------------
 
 
+def _moved_on(mesh, label, before):
+    """The largest displacement of the vertices of boundary ``label`` from
+    ``before``, over every rank."""
+    on_label = _pinned_mask(mesh.dm, (label,))
+    shift = np.asarray(mesh.X.coords, dtype=float)[on_label] - before[on_label]
+    return uw.mpi.comm.allreduce(
+        float(np.max(np.linalg.norm(shift, axis=1), initial=0.0)), op=MPI.MAX)
+
+
 @pytest.mark.tier_b
-@pytest.mark.parametrize("with_metric", [True, False], ids=["metric_mover", "plain_smoothing"])
-def test_the_mover_with_slip_keeps_both_annulus_walls_on_their_circles(with_metric):
+def test_the_mover_with_slip_keeps_both_annulus_walls_on_their_circles():
+    """The walls' own vertices slide (measured 6.5e-4 on Upper and 4.2e-4 on Lower,
+    2026-11-14) and are restored onto the circles."""
     mesh = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.5, cellSize=0.1)
     before = np.array(mesh.X.coords)
-    metric = _radial_metric(mesh, f"SlipMetric{int(with_metric)}") if with_metric else None
     uw.meshing.smooth_mesh_interior(
-        mesh, metric=metric, method="mmpde", slip_surfaces=True,
+        mesh, metric=_radial_metric(mesh, "SlipMetric"), method="mmpde", slip_surfaces=True,
         method_kwargs=dict(n_outer=6, step_frac=0.2, tol=5.0e-3))
+    for label in ("Lower", "Upper"):
+        assert _moved_on(mesh, label, before) > 1.0e-4, f"{label} did not slide"
+        assert _distance_off(mesh, label, mesh.analytic_surface(label)) < ON_SURFACE
+
+
+@pytest.mark.tier_b
+def test_plain_smoothing_holds_the_pinned_walls_where_they_were():
+    """Without a metric the smoother pins every boundary it is not told to free,
+    so the walls keep their declaration because no wall vertex moves."""
+    mesh = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.5, cellSize=0.1)
+    before = np.array(mesh.X.coords)
+    uw.meshing.smooth_mesh_interior(mesh)
     moved = uw.mpi.comm.allreduce(
         float(np.max(np.abs(np.asarray(mesh.X.coords) - before), initial=0.0)), op=MPI.MAX)
-    assert moved > 1.0e-4
+    assert moved > 1.0e-4, "the smoother moved nothing"
     for label in ("Lower", "Upper"):
+        assert _moved_on(mesh, label, before) == 0.0
         assert _distance_off(mesh, label, mesh.analytic_surface(label)) < ON_SURFACE
 
 
@@ -87,15 +109,20 @@ def test_constructor_refinement_keeps_each_declared_surface(build, labels):
 @pytest.mark.tier_b
 def test_adapt_puts_each_generation_on_the_parent_surfaces():
     """An adapted child does not carry the parent's declarations (it refuses), but
-    its wall vertices are snapped onto the parent's surfaces."""
+    its wall vertices are snapped onto the parent's surfaces. The metric refines
+    at the outer wall, so the child has wall vertices the parent did not: left on
+    the parent's chords they would be 1.8e-3 of the radius inside the circle."""
     base = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.5, cellSize=0.25, refinement=1,
                               qdegree=2)
 
     def metric(centroids):
-        d = np.abs(np.linalg.norm(np.asarray(centroids), axis=1) - 0.75)
+        d = np.abs(np.linalg.norm(np.asarray(centroids), axis=1) - 1.0)
         return 1.0 / np.minimum(np.sqrt(0.05 ** 2 + (2.0 * d) ** 2), 0.3) ** 2
 
     child = base.adapt(metric, max_levels=2)
+    on_wall = lambda mesh: uw.mpi.comm.allreduce(
+        int(_pinned_mask(mesh.dm, ("Upper",)).sum()), op=MPI.SUM)
+    assert on_wall(child) > on_wall(base), "adapt added no vertex on the outer wall"
     for label in ("Lower", "Upper"):
         assert _distance_off(child, label, base.analytic_surface(label)) < ON_SURFACE
 
@@ -127,15 +154,48 @@ def test_a_mover_run_with_a_free_surface_leaves_it_released_and_the_other_wall_d
 
 @pytest.mark.tier_b
 def test_refinement_that_leaves_wall_vertices_off_the_surface_releases_that_wall():
-    """On this cubed sphere the callback would invert cells at three Lower vertices,
-    which therefore stay where refinement put them, 4e-2 inside the wall (#949)."""
+    """On this cubed sphere the callback would invert cells at a few Lower vertices,
+    which therefore stay where refinement put them, inside the wall (#949). How many
+    depends on the host's triangulation: three, 4e-2 of the radius inside, on Linux;
+    one, 8e-2 inside, on macOS."""
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", UserWarning)
         mesh = uw.meshing.CubedSphere(radiusOuter=1.0, radiusInner=0.547, numElements=3,
                                       simplex=True, refinement=1)
+    assert "Lower" in mesh._refinement_left_off_surface, (
+        "on this host's triangulation refinement held back no Lower vertex of this "
+        "cubed sphere, so the test has nothing to release: choose another fixture")
     with pytest.raises(ValueError, match="'Lower' was released"):
         mesh.analytic_surface("Lower")
     assert _distance_off(mesh, "Upper", mesh.analytic_surface("Upper")) < ON_SURFACE
+
+
+@pytest.mark.tier_b
+@pytest.mark.parametrize("with_metric, pinned, drifting", [
+    (False, ["Upper"], ["Lower"]),
+    (False, [], ["Lower", "Upper"]),
+    (True, ["Upper"], ["Lower"]),
+], ids=["smoother_upper_pinned", "smoother_nothing_pinned", "metric_mover_upper_pinned"])
+def test_a_mover_releases_each_wall_it_neither_pins_nor_restores(with_metric, pinned, drifting):
+    """A wall left out of ``pinned_labels`` moves with the interior (measured: the
+    inner wall 13 % of its radius off its circle), so it is no longer declared.
+    A pinned wall stays declared, and on its circle."""
+    mesh = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.5, cellSize=0.1)
+    metric = _radial_metric(mesh, f"DriftMetric{len(pinned)}") if with_metric else None
+    uw.meshing.smooth_mesh_interior(mesh, metric=metric, pinned_labels=pinned)
+    for label in drifting:
+        with pytest.raises(ValueError, match=f"'{label}' was released: a mesh mover"):
+            mesh.analytic_surface(label)
+    for label in pinned:
+        assert _distance_off(mesh, label, mesh.analytic_surface(label)) < ON_SURFACE
+
+
+@pytest.mark.tier_b
+def test_restoring_slip_on_a_released_surface_warns_that_nothing_is_restored():
+    mesh = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.5, cellSize=0.1)
+    mesh.boundary_slip({"Upper": False, "Lower": True})
+    with pytest.warns(UserWarning, match="'Upper'.*released.*not restored"):
+        mesh.boundary_slip(True)
 
 
 @pytest.mark.tier_b
@@ -145,6 +205,20 @@ def test_a_write_to_the_coordinates_of_a_mesh_without_variables_releases_every_s
     for label in ("Lower", "Upper"):
         with pytest.raises(ValueError, match=f"'{label}' was released"):
             mesh.analytic_surface(label)
+
+
+@pytest.mark.tier_b
+def test_after_a_direct_write_points_return_to_the_walls_the_mesh_now_has():
+    """The annulus is scaled to 0.9 of its size, so it spans radii 0.45 to 0.90. A
+    point at radius 0.95 is outside and returns to the outer wall (its facets, so
+    within a chord's sagitta, 1.3e-3, of 0.90); a point at radius 0.47 is inside
+    and stays. The circles of the constructor, 0.5 and 1.0, give neither answer."""
+    mesh = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.5, cellSize=0.1)
+    mesh.X.coords[...] = 0.9 * np.array(mesh.X.coords)
+    points = np.array([[0.95, 0.0], [0.0, 0.47]])
+    returned = np.asarray(mesh.return_coords_to_bounds(points.copy()))
+    assert 0.898 < np.linalg.norm(returned[0]) <= 0.9 * (1.0 + ON_SURFACE)
+    assert np.array_equal(returned[1], points[1])
 
 
 @pytest.mark.tier_b
