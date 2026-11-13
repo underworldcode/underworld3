@@ -551,8 +551,9 @@ def _global_evaluate_impl(
     )
     if not check_extrapolated:
         raw_result, extrapolated = raw_result
-        if coords_for_cython is not None:
-            _refuse_points_far_outside(expr, coords_for_cython, extrapolated, collective=True)
+        # Every rank calls this, whatever its own points: it is collective, and a
+        # rank with no points (or coords=None) contributes none.
+        _refuse_points_far_outside(expr, coords_for_cython, extrapolated, collective=True)
 
     # Step 2: Re-dimensionalize and wrap with units (GATEWAY PRINCIPLE)
     # global_evaluate() ALWAYS returns dimensional values when units are known,
@@ -922,15 +923,27 @@ def _refuse_points_far_outside(expr, coords_nd, extrapolated, collective):
     lo = nodes.min(axis=0) if nodes.size else np.full(mesh.cdim, np.inf)
     hi = nodes.max(axis=0) if nodes.size else np.full(mesh.cdim, -np.inf)
     if collective and uw.mpi.size > 1:
-        lo = uw.mpi.comm.allreduce(lo, op=MPI.MIN)
-        hi = uw.mpi.comm.allreduce(hi, op=MPI.MAX)
+        # Buffer form: elementwise. The pickled form compares whole arrays.
+        lo = np.ascontiguousarray(lo, dtype=np.float64)
+        hi = np.ascontiguousarray(hi, dtype=np.float64)
+        lo_g, hi_g = np.empty_like(lo), np.empty_like(hi)
+        uw.mpi.comm.Allreduce(lo, lo_g, op=MPI.MIN)
+        uw.mpi.comm.Allreduce(hi, hi_g, op=MPI.MAX)
+        lo, hi = lo_g, hi_g
     largest_cell = mesh.get_max_radius() if collective else float(
         np.max(np.asarray(mesh._cell_radii))
     )
-    mask = np.asarray(extrapolated, dtype=bool).reshape(-1)
-    pts = np.asarray(coords_nd, dtype=np.float64).reshape(mask.size, -1)[:, : mesh.cdim]
-    beyond = np.maximum(np.maximum(lo - pts, pts - hi), 0.0).max(axis=1)
-    far = mask & (beyond > largest_cell)
+    if coords_nd is None or extrapolated is None or np.size(extrapolated) == 0:
+        mask = np.zeros(0, dtype=bool)
+        pts = np.zeros((0, mesh.cdim))
+    else:
+        mask = np.asarray(extrapolated, dtype=bool).reshape(-1)
+        pts = np.asarray(coords_nd, dtype=np.float64).reshape(mask.size, -1)[:, : mesh.cdim]
+    if pts.shape[0]:
+        beyond = np.maximum(np.maximum(lo - pts, pts - hi), 0.0).max(axis=1)
+        far = mask & (beyond > largest_cell)
+    else:
+        far = np.zeros(0, dtype=bool)
     n_far = int(np.count_nonzero(far))
     if collective and uw.mpi.size > 1:
         n_far = uw.mpi.comm.allreduce(n_far, op=MPI.SUM)
