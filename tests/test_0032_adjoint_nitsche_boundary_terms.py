@@ -116,5 +116,12 @@ def test_a_normal_datum_needs_the_pressure_adjoint():
     u_adj = uw.discretisation.MeshVariable("UQ", mesh, 2, degree=2)
     p_adj = uw.discretisation.MeshVariable("PQ", mesh, 1, degree=1)
     stokes.adjoint_solve(-stokes.dual_of(v.sym), target=(u_adj, p_adj))
-    with pytest.raises(ValueError, match="pressure adjoint"):
+    with pytest.raises(ValueError, match=r"m_q enters the continuity-row term of the Nitsche condition on 'Right'"):
         stokes.sensitivity(u_adj, m)
+    # A parameter the continuity-row term does not read is not refused for it:
+    # the viscosity enters the flux term only.
+    eta = uw.expression(r"\eta_q", 1.0, "viscosity")
+    stokes.constitutive_model.Parameters.shear_viscosity_0 = eta
+    stokes.solve(zero_init_guess=True)
+    stokes.adjoint_solve(-stokes.dual_of(v.sym), target=(u_adj, p_adj))
+    stokes.sensitivity(u_adj, eta)

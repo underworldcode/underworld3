@@ -2844,7 +2844,8 @@ class SolverBaseClass(uw_object):
                     f"also carries a {kind} constraint whose tangent the reaction "
                     f"term does not include yet")
         for bc in (getattr(self, "natural_bcs", None) or []):
-            for fn in (getattr(bc, "fn_f", None), getattr(bc, "fn_F", None)):
+            for fn in (getattr(bc, "fn_f", None), getattr(bc, "fn_F", None),
+                       getattr(bc, "fn_p", None)):
                 if fn is None:
                     continue
                 import sympy
@@ -3036,7 +3037,10 @@ class SolverBaseClass(uw_object):
         (:meth:`_essential_datum_sensitivity`), which for a saddle point
         needs the pressure adjoint ``lam`` as well, and the misfit's own
         dual on every node, ``misfit_dual``, where the misfit reads the
-        prescribed values.
+        prescribed values. A parameter in a Stokes Nitsche datum needs
+        ``lam`` too: it enters the condition's continuity-row term, which is
+        tested against the pressure adjoint, and ``sensitivity`` refuses
+        without it.
         """
         from underworld3.adjoint import integral
         total = integral(self.mesh, self.adjoint_integrand(mu, wrt))
@@ -3079,12 +3083,19 @@ class SolverBaseClass(uw_object):
                 if not dp.is_zero_matrix:
                     # Decided from the condition and the arguments alone, the
                     # same on every rank.
+                    # A tangential datum with the default (field) normal reaches
+                    # this too: n.d is zero in value but not symbolically, so the
+                    # derivative cannot be shown zero here. Passing lam gives the
+                    # right answer in every case.
                     if lam is None:
+                        name = getattr(wrt, "name", None) or str(wrt)
                         raise ValueError(
-                            f"sensitivity: {wrt} enters the continuity-row term of the "
+                            f"sensitivity: {name} enters the continuity-row term of the "
                             f"Nitsche condition on {bc.boundary!r}, which is tested against "
                             "the pressure adjoint: pass lam=, the pressure part of the "
-                            "adjoint_solve target.")
+                            "adjoint_solve target. (A tangential datum with the default "
+                            "normal also needs it: its continuity-row derivative is zero in "
+                            "value but not symbolically.)")
                     total += integral(self.mesh, list(dp)[0] * lam.sym[0], bc.boundary)
         return total
 
