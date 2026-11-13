@@ -584,6 +584,11 @@ if [ $PARALLEL_RANKS -gt 0 ] && shard_owns 4; then
     OMPI_MCA_rmaps_base_oversubscribe=1 $SUPERVISE mpirun -n 3 python -m pytest --with-mpi \
       tests/parallel/test_1084_rotated_datum_collectives.py || status=1
 
+    # At two ranks the triangle of cells in this file is skipped (one cell, nothing
+    # to solve for), so the solve on it with a rank without cells runs at np 3 always.
+    OMPI_MCA_rmaps_base_oversubscribe=1 $SUPERVISE mpirun -n 3 python -m pytest --with-mpi \
+      tests/parallel/test_0786_stokes_rank_without_cells_parallel.py || status=1
+
     # Four ranks give a rank that shares an interface vertex and holds none of the
     # interface's facets, which the pressure split must still be told about: with
     # that exchange skipped these cases pass at one and two ranks and fail at four.

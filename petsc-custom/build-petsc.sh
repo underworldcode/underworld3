@@ -38,6 +38,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PETSC_DIR="${SCRIPT_DIR}/petsc"
 VERSION_FILE="${SCRIPT_DIR}/.petsc-version"
+PETSC_CLONE_TAG="v3.25.3"
 
 # ── PETSc version detection ──────────────────────────────────────────────────
 # Read version from .petsc-version file, or detect from the git checkout.
@@ -56,7 +57,7 @@ petsc_version_short() {
             ver=$(echo "${tag}" | sed -E 's/^v([0-9]+)\.([0-9]+).*/\1\2/')
         fi
     fi
-    echo "${ver:-324}"  # default to 324 if detection fails
+    echo "${ver:-325}"  # default to 325 if detection fails
 }
 
 PETSC_VER=$(petsc_version_short)
@@ -335,8 +336,10 @@ clone_petsc() {
         return 0
     fi
 
-    echo "Cloning PETSc release branch..."
-    git clone -b release https://gitlab.com/petsc/petsc.git "${_clone_target}"
+    # A release the Underworld3 build accepts: petsc_compat.h stops the build on any
+    # PETSc outside 3.25.x (#962), and the `release` branch follows the newest release.
+    echo "Cloning PETSc ${PETSC_CLONE_TAG}..."
+    git clone -b "${PETSC_CLONE_TAG}" https://gitlab.com/petsc/petsc.git "${_clone_target}"
     echo "Clone complete."
 }
 
@@ -640,7 +643,6 @@ show_help() {
         echo "Version switching:"
         echo "  $0 checkout v3.25.0   # switch source to 3.25.0"
         echo "  $0                     # build (creates petsc-325-uw-openmpi)"
-        echo "  $0 checkout v3.24.2   # switch back (existing build reused)"
         echo ""
         echo "MPI variants co-exist. To build both:"
         echo "  pixi run -e amr         ./petsc-custom/build-petsc.sh"

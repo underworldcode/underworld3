@@ -9,8 +9,6 @@ import numpy as np
 import pytest
 import underworld3 as uw
 
-from empty_rank_fixtures import cells_per_rank
-
 pytestmark = [
     pytest.mark.level_2,
     pytest.mark.tier_b,
@@ -166,10 +164,6 @@ def test_stokes_on_submesh_parallel():
     import sympy
 
     full, rock = _make_meshes()
-    counts = cells_per_rank(rock)
-    if 0 in counts:
-        pytest.skip(f"np {uw.mpi.size}: cells of the region per rank {counts}, and a Stokes "
-                    f"solve is refused while a rank holds none (#962)")
 
     v = uw.discretisation.MeshVariable("V", rock, rock.dim, degree=2)
     p = uw.discretisation.MeshVariable("P", rock, 1, degree=1, continuous=True)
