@@ -25,7 +25,7 @@ TRACE = np.array([[0.3, 0.45], [0.7, 0.55]])
 
 def _captured_transfer_call():
     """The arguments of the first parallel cell-located transfer a split-level
-    hierarchy builds (W1's fixture: a fault cut into an adapt child)."""
+    hierarchy builds (a fault cut into an adapt child)."""
     calls = []
     original = fault_mg.cell_located_transfer_parallel
 
@@ -93,15 +93,27 @@ def _cap_triangle(centre_angle, inverted):
     return P[[0, 2, 1]] if inverted else P
 
 
+def _planar_triangle(k, rank, inverted):
+    """A small planar triangle, wound anticlockwise (or clockwise if
+    ``inverted``)."""
+    o = np.array([0.1 * k, float(rank)])
+    P = np.array([o, o + [0.05, 0.0], o + [0.0, 0.05]])
+    return P[[0, 2, 1]] if inverted else P
+
+
+@pytest.mark.parametrize("geometry", ["surface", "planar"])
 @pytest.mark.parametrize("majority", ["outward", "inward"])
-def test_the_inversion_count_uses_a_global_winding_vote(majority):
+def test_the_inversion_count_uses_a_global_winding_vote(majority, geometry):
     # rank 0 holds enough cells to set the global majority; every other rank
     # holds three, two of them wound against that majority, so its own
     # majority is the opposite one
     against = majority == "outward"           # the minority's winding
     mine = ([not against] * (3 * uw.mpi.size) if uw.mpi.rank == 0
             else [not against, against, against])
-    P = np.array([_cap_triangle(0.1 * k + uw.mpi.rank, inv) for k, inv in enumerate(mine)])
+    if geometry == "surface":
+        P = np.array([_cap_triangle(0.1 * k + uw.mpi.rank, inv) for k, inv in enumerate(mine)])
+    else:
+        P = np.array([_planar_triangle(k, uw.mpi.rank, inv) for k, inv in enumerate(mine)])
     # the collective path's convention (before #874 there was only the
     # rank-local vote, which is what this falls back to)
     vote = getattr(line_cut, "_global_flip", None)

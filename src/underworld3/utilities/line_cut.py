@@ -551,12 +551,12 @@ def _global_flip(P, comm):
     communicator; ``P`` is this rank's cells): True when most cells are wound
     against the positive sense (inward on a surface mesh, clockwise in the
     plane). A count, not a distance: each cell votes with the sign of its
-    own area. A tie or no cells at all gives no flip. A rank-local vote let a
-    rank whose cells were mostly inverted flip its own convention and
-    undercount them; in the plane there was no vote, so a mesh wound
-    clockwise throughout read every cell as inverted (#874). COLLECTIVE on
-    ``comm``: only on the collective paths (the snapping loop, the inversion
-    count after a cut, pull_vertex_onto)."""
+    own area. A tie or no cells at all gives no flip. Every rank gets the
+    same answer, so a rank whose own cells are mostly wound against the
+    majority still reads them as inverted, and a mesh wound clockwise
+    throughout reads none as inverted (#874). COLLECTIVE on ``comm``: only on
+    the collective paths (the snapping loop, the inversion count after a cut,
+    pull_vertex_onto)."""
     if not len(P):
         signed = np.zeros(0)
     elif P.shape[2] == 2:
