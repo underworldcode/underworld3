@@ -99,6 +99,19 @@ def _solve_freeslip_box(method, res=8, reasons=None):
     return v.data.copy(), p.data.copy(), v.coords.copy()
 
 
+def _relative_l2_difference(reference, other):
+    """The L2 difference of two nodal fields over every rank, relative to the first.
+
+    Both sums are taken over every rank's nodes, so each rank asserts the same
+    number. A node held by two ranks is counted by both.
+    """
+    from mpi4py import MPI
+
+    difference = uw.mpi.comm.allreduce(float(np.sum((reference - other) ** 2)), op=MPI.SUM)
+    size = uw.mpi.comm.allreduce(float(np.sum(reference ** 2)), op=MPI.SUM)
+    return np.sqrt(difference / size)
+
+
 def _velocity_and_pressure_unknowns(stokes):
     """The index sets of the velocity and the pressure unknowns of a solved solver."""
     _, index_sets, _ = stokes.dm.createFieldDecomposition()
@@ -179,7 +192,11 @@ def test_the_boundary_residual_diagnostic_returns_the_continuity_row_term():
     For the velocity (0, x(1-x)), which the quadratic elements hold exactly and
     which is zero on the no-slip sides, the continuity-row term of a free-slip
     wall sums to minus the flow out through it: -1/6 on Top and +1/6 on Bottom.
+    The sum is over every rank: a rank that holds no facet of the wall returns
+    zeros, and takes part in the call and in the reduction.
     """
+    from mpi4py import MPI
+
     stokes, v, _ = _build_freeslip_box("nitsche")
     x = v.coords[:, 0]
     v.array[:, 0, 0] = 0.0
@@ -187,9 +204,12 @@ def test_the_boundary_residual_diagnostic_returns_the_continuity_row_term():
 
     for wall, flow_out in (("Top", 1.0 / 6.0), ("Bottom", -1.0 / 6.0)):
         rows = stokes.compute_boundary_residual_fields(wall, residual_field_id=1)
-        assert np.abs(rows["velocity"]).max() == 0.0
-        assert abs(rows["pressure"].sum() + flow_out) < 1.0e-12, (
-            f"{wall}: the continuity-row term sums to {rows['pressure'].sum():.15e}"
+        momentum = uw.mpi.comm.allreduce(
+            float(np.abs(rows["velocity"]).max(initial=0.0)), op=MPI.MAX)
+        continuity = uw.mpi.comm.allreduce(float(rows["pressure"].sum()), op=MPI.SUM)
+        assert momentum == 0.0
+        assert abs(continuity + flow_out) < 1.0e-12, (
+            f"{wall}: the continuity-row term sums to {continuity:.15e}"
         )
 
 
@@ -223,7 +243,7 @@ class TestNitscheFreeslip:
         assert not np.any(np.isnan(v))
 
     def test_nitsche_matches_essential(self, solutions):
-        """The Nitsche velocity is within 2e-3 of the essential one at this resolution.
+        """The Nitsche velocity is within 1.5e-3 of the essential one at this resolution.
 
         Measured 1.17e-3 at the default penalty (gamma 12.5). Without the
         Nitsche term in the continuity rows it is 3.36e-3 (#1072), and at
@@ -232,8 +252,7 @@ class TestNitscheFreeslip:
         v_ess, _, _ = solutions["essential"]
         v_nit, _, _ = solutions["nitsche"]
 
-        # L2 relative difference
-        diff = np.sqrt(np.sum((v_ess - v_nit) ** 2)) / np.sqrt(np.sum(v_ess ** 2))
+        diff = _relative_l2_difference(v_ess, v_nit)
         print(f"Nitsche vs essential: relative L2 diff = {diff:.4e}")
         assert diff < 1.5e-3, f"Nitsche differs from essential by {diff:.4e}"
 
@@ -242,7 +261,7 @@ class TestNitscheFreeslip:
         v_ess, _, _ = solutions["essential"]
         v_pen, _, _ = solutions["penalty"]
 
-        diff = np.sqrt(np.sum((v_ess - v_pen) ** 2)) / np.sqrt(np.sum(v_ess ** 2))
+        diff = _relative_l2_difference(v_ess, v_pen)
         print(f"Penalty vs essential: relative L2 diff = {diff:.4e}")
         assert diff < 0.01, f"Penalty differs from essential by {diff:.4e}"
 
