@@ -113,12 +113,12 @@ cd underworld3
 
 If your HPC provides a PETSc module, you can build against it. Requirements:
 
-- PETSc 3.21 or higher
+- PETSc 3.25.x (the build stops on any other release)
 - petsc4py matching your PETSc version
 - Python 3.10+
 
 ```bash
-module load petsc/3.21   # (example - check your system)
+module load petsc/3.25   # (example - check your system)
 
 git clone https://github.com/underworldcode/underworld3
 cd underworld3

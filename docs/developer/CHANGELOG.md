@@ -27,6 +27,25 @@ semi-Lagrangian `monotone_mode="clamp"`, which the free-surface solver's composi
 transport sets, and `REMESH_MONOTONE=clamp` (off by default).
 `UW_MONOTONE_CLAMP_BOUND=nearest` restores the earlier bound. `"pick"` is unchanged.
 
+### A Stokes solve completes on a mesh with a rank that holds no cells (November 2026, #962)
+
+A Stokes or constrained solve assembles two matrices, the Jacobian and the one its
+preconditioner is built from. PETSc assembles both in one pass, and on a rank with
+no cells that pass leaves early and skips an assembly of the Jacobian that every
+other rank makes: the solve stopped in MPI or hung. A small mesh on many ranks
+and a region extracted from a parent can both leave a rank without cells. The
+solvers now hand PETSc one matrix and one set of kernels to a call, which every
+rank assembles alike; on one rank both matrices are bit for bit the ones PETSc's
+single pass gives. The refusal that stood in front of the defect is removed. A
+constrained solve and a multigrid hierarchy with such a rank have no test yet.
+
+This is a workaround for a defect in PETSc (3.25.0 to 3.26.1 and `main`), and it
+reads tables PETSc keeps private, so the build now stops on any PETSc outside
+3.25.x and every stated requirement says 3.25.x: the pixi environments,
+`pyproject.toml`, `setup.cfg`, the conda recipe, `uw doctor`, the custom PETSc
+build script and the install page. The workaround goes when PETSc assembles alike
+on every rank.
+
 ### An adapted mesh keeps the same multigrid levels at any rank count (November 2026, #865)
 
 `Mesh.adapt` keeps one refinement generation per halving of the cell size as a
