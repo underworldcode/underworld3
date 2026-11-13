@@ -38,3 +38,24 @@ def test_points_inside_are_answered_wherever_they_are_owned(field):
     pts = np.array([[0.1, 0.1], [0.9, 0.9], [1.0, 0.5], [0.5, 0.0]])
     vals = np.asarray(uw.function.global_evaluate(field.sym[0], pts)).ravel()
     assert vals == pytest.approx(pts[:, 0], abs=1e-12)
+
+
+@pytest.mark.parametrize("kind", ["scalar_derivative", "gradient"])
+def test_a_derivative_at_a_far_point_is_refused_at_any_rank_count(kind):
+    """#999's case: P2 V = (x^2, xy), one of three points outside the mesh. It used
+    to raise NotImplementedError at np >= 2 for the gradient, and give 2.000, 1.830
+    and 1.834 at np 1, 2 and 3 for dVx/dx at the outside point. Refused with the
+    same error at every rank count now."""
+    mesh = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.2
+    )
+    x, y = mesh.X
+    V = uw.discretisation.MeshVariable(f"V_999_{kind}", mesh, 2, degree=2)
+    c = np.asarray(V.coords_nd)
+    V.data[:, 0] = c[:, 0] ** 2
+    V.data[:, 1] = c[:, 0] * c[:, 1]
+    expr = V.sym[0].diff(x) if kind == "scalar_derivative" else V.sym.jacobian(mesh.X[:2])
+    pts = np.array([[0.3, 0.4], [0.6, 0.7], [1.5, 0.5]])
+    with pytest.raises(ValueError, match="outside"):
+        uw.function.global_evaluate(expr, pts)
+    assert uw.mpi.comm.allgather(True) == [True] * uw.mpi.size

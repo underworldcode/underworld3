@@ -283,6 +283,11 @@ def _evaluate_impl(
     if coords_for_eval.ndim == 1:
         coords_for_eval = np.atleast_2d(coords_for_eval)
 
+    # Serial only: a rank-local evaluate in parallel does not know the global
+    # extent without a collective; global_evaluate does the same check there.
+    if uw.mpi.size == 1 and not check_extrapolated:
+        _refuse_points_far_outside(expr, coords_for_eval, collective=False)
+
     # Step 3: Call Cython implementation with plain non-dimensional arrays
     # NOTE: Returns NON-DIMENSIONAL values [0-1] since we queried
     # the KDTree with non-dimensional coordinates
@@ -310,10 +315,6 @@ def _evaluate_impl(
     raw_values, extrapolated = raw_result_nondim
 
     _warn_if_points_are_not_owned(extrapolated)
-    # Serial only: rank-local evaluate in parallel cannot tell a point owned by
-    # another rank from one outside the domain (#606); global_evaluate can.
-    if uw.mpi.size == 1 and not check_extrapolated:
-        _refuse_points_far_outside(expr, coords_for_eval, extrapolated, collective=False)
 
     # Step 5: Re-dimensionalize and wrap with units
     # GATEWAY PRINCIPLE: evaluate() ALWAYS returns dimensional values when units are known
@@ -532,6 +533,10 @@ def _global_evaluate_impl(
     scaling_is_active = uw.is_nondimensional_scaling_active()
     _, result_dimensionality = unwrap_for_evaluate(expr, scaling_active=scaling_is_active)
 
+    # Every rank calls this, whatever its own points: it is collective (#786).
+    if not check_extrapolated:
+        _refuse_points_far_outside(expr, coords_for_cython, collective=True)
+
     # Call the original Cython implementation with all parameters
     # Note: Pass original expr, not unwrapped - _global_evaluate_nd handles the expression directly
     raw_result = _global_evaluate_nd(
@@ -544,16 +549,11 @@ def _global_evaluate_impl(
         evalf=evalf,
         rbf=rbf_flag,
         data_layout=data_layout,
-        check_extrapolated=True,      # always: needed for the #786 refusal
+        check_extrapolated=check_extrapolated,
         force_l2=force_l2_flag,
         smoothing=smoothing,
         local_fallback=local_fallback,
     )
-    if not check_extrapolated:
-        raw_result, extrapolated = raw_result
-        # Every rank calls this, whatever its own points: it is collective, and a
-        # rank with no points (or coords=None) contributes none.
-        _refuse_points_far_outside(expr, coords_for_cython, extrapolated, collective=True)
 
     # Step 2: Re-dimensionalize and wrap with units (GATEWAY PRINCIPLE)
     # global_evaluate() ALWAYS returns dimensional values when units are known,
@@ -901,24 +901,26 @@ def _refuse_mixed_unit_leaves(expr):
         )
 
 
-def _refuse_points_far_outside(expr, coords_nd, extrapolated, collective):
-    """Refuse query points that no cell contains and that lie further outside the
-    mesh than its largest cell (#786).
+def _refuse_points_far_outside(expr, coords_nd, collective):
+    """Refuse query points further outside the mesh than its largest cell (#786).
 
-    Which points are outside is the locator's answer, not a new geometric test.
-    The distance only separates a wholesale mistake (coordinates in metres on a
-    model-unit mesh, say) from a point just past a curved boundary, which
-    semi-Lagrangian and remesh callers ask about routinely and which is
-    extrapolated as before. The scale is the mesh's largest cell radius, so it
-    means the same on any mesh. COLLECTIVE when ``collective`` is True.
+    A point further outside the node bounding box than the mesh's largest cell
+    radius lies in no cell, so this needs no point location and runs before any
+    evaluation: the refusal is the same whatever the expression (a derivative
+    included, #999) and whatever the rank count. The distance separates a
+    wholesale mistake (coordinates in metres on a model-unit mesh, say) from a
+    point just past a curved boundary, which semi-Lagrangian and remesh callers
+    ask about routinely and which is extrapolated as before. The scale is the
+    mesh's own, so it means the same on any mesh. Only expressions that read
+    mesh data are checked. COLLECTIVE when ``collective`` is True: every rank
+    calls it, a rank with no points contributing none.
     """
     from mpi4py import MPI
-    from .expressions import extract_meshes
+    from .expressions import mesh_vars_in_expression
 
-    meshes = extract_meshes(expr)
-    if len(meshes) != 1:
+    mesh = mesh_vars_in_expression(expr)[0]
+    if mesh is None:
         return
-    mesh = next(iter(meshes))
     nodes = np.asarray(mesh._coords, dtype=np.float64).reshape(-1, mesh.cdim)
     lo = nodes.min(axis=0) if nodes.size else np.full(mesh.cdim, np.inf)
     hi = nodes.max(axis=0) if nodes.size else np.full(mesh.cdim, -np.inf)
@@ -933,34 +935,30 @@ def _refuse_points_far_outside(expr, coords_nd, extrapolated, collective):
     largest_cell = mesh.get_max_radius() if collective else float(
         np.max(np.asarray(mesh._cell_radii))
     )
-    if coords_nd is None or extrapolated is None or np.size(extrapolated) == 0:
-        mask = np.zeros(0, dtype=bool)
+    if coords_nd is None or np.size(coords_nd) == 0:
         pts = np.zeros((0, mesh.cdim))
     else:
-        mask = np.asarray(extrapolated, dtype=bool).reshape(-1)
-        pts = np.asarray(coords_nd, dtype=np.float64).reshape(mask.size, -1)[:, : mesh.cdim]
+        pts = np.asarray(coords_nd, dtype=np.float64)
+        pts = pts.reshape(-1, pts.shape[-1])[:, : mesh.cdim]
     if pts.shape[0]:
         beyond = np.maximum(np.maximum(lo - pts, pts - hi), 0.0).max(axis=1)
-        far = mask & (beyond > largest_cell)
+        far = beyond > largest_cell
     else:
         far = np.zeros(0, dtype=bool)
-    n_far = int(np.count_nonzero(far))
+    n_far, n_all = int(np.count_nonzero(far)), int(pts.shape[0])
     if collective and uw.mpi.size > 1:
         n_far = uw.mpi.comm.allreduce(n_far, op=MPI.SUM)
+        n_all = uw.mpi.comm.allreduce(n_all, op=MPI.SUM)
     if n_far == 0:
         return
-    q_lo = pts[far].min(axis=0) if far.any() else lo
-    q_hi = pts[far].max(axis=0) if far.any() else hi
     raise ValueError(
-        f"evaluate: {n_far} of {mask.size} query points lie outside the mesh, "
-        f"further than its largest cell ({largest_cell:.3g} model units). Mesh "
-        f"extent {np.round(lo, 6).tolist()} to {np.round(hi, 6).tolist()}; those "
-        f"points span {np.round(q_lo, 6).tolist()} to {np.round(q_hi, 6).tolist()}. "
-        "Coordinates are model coordinates unless they carry units (pass "
-        "mesh.X.coords, or a unit-aware array). Pass check_extrapolated=True to get "
-        "the extrapolation mask instead of this error (#786)."
+        f"evaluate: {n_far} of {n_all} query points lie outside the mesh, further "
+        f"than its largest cell ({largest_cell:.3g} model units). Mesh extent "
+        f"{np.round(lo, 6).tolist()} to {np.round(hi, 6).tolist()}. Coordinates "
+        "are model coordinates unless they carry units (pass mesh.X.coords, or a "
+        "unit-aware array). Pass check_extrapolated=True to get the extrapolation "
+        "mask instead of this error (#786)."
     )
-
 
 def evaluate(
     expr,

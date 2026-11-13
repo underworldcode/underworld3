@@ -23,20 +23,18 @@ import pytest
 
 import underworld3 as uw
 
-pytestmark = [pytest.mark.level_2, pytest.mark.tier_b]
-
 _PTS = np.array([[0.5, 0.5]])
 
 
 @pytest.fixture
 def units_model():
-    model = uw.get_default_model()
-    model.set_reference_quantities(
+    orchestration_model = uw.get_default_model()
+    orchestration_model.set_reference_quantities(
         length=uw.quantity(30, "km"),
         viscosity=uw.quantity(1e24, "Pa*s"),
         velocity=uw.quantity(2.5, "mm/year"),
     )
-    yield model
+    yield orchestration_model
     uw.reset_default_model()
 
 
@@ -60,6 +58,8 @@ def _E01(mesh, v):
 # --- the gateway and the refusal (#771, #904) -------------------------------------
 
 
+@pytest.mark.level_2
+@pytest.mark.tier_b
 def test_a_unitless_field_times_a_dimensional_constant_is_refused(units_model):
     mesh = _box()
     v = uw.discretisation.MeshVariable("v_nu_760", mesh, 2, degree=2)  # no units
@@ -72,6 +72,8 @@ def test_a_unitless_field_times_a_dimensional_constant_is_refused(units_model):
     assert r"\eta_{760}" in str(raised.value)
 
 
+@pytest.mark.level_2
+@pytest.mark.tier_b
 def test_the_refusal_also_holds_in_global_evaluate(units_model):
     mesh = _box()
     T = uw.discretisation.MeshVariable("T_nu_760", mesh, 1, degree=1)  # no units
@@ -81,6 +83,8 @@ def test_the_refusal_also_holds_in_global_evaluate(units_model):
         uw.function.global_evaluate(T.sym[0] * eta, _PTS)
 
 
+@pytest.mark.level_2
+@pytest.mark.tier_b
 def test_a_unitless_field_alone_is_a_pure_number(units_model):
     mesh = _box()
     v = uw.discretisation.MeshVariable("v_alone_760", mesh, 2, degree=2)
@@ -90,6 +94,8 @@ def test_a_unitless_field_alone_is_a_pure_number(units_model):
     assert np.asarray(r).ravel()[0] == pytest.approx(0.5)
 
 
+@pytest.mark.level_2
+@pytest.mark.tier_b
 def test_with_units_on_every_leaf_the_gateway_is_dimensional(units_model):
     mesh = _box()
     v = uw.discretisation.MeshVariable("v_u_760", mesh, 2, degree=2, units="m/s")
@@ -102,6 +108,8 @@ def test_with_units_on_every_leaf_the_gateway_is_dimensional(units_model):
     assert float(np.asarray(tau.to("Pa")).ravel()[0]) == pytest.approx(1e24 * scale, rel=1e-6)
 
 
+@pytest.mark.level_2
+@pytest.mark.tier_b
 def test_two_dimensions_each_come_back_in_their_own_units(units_model):
     """A single uniform factor cannot pass this: viscosity and density have
     different reference scales."""
@@ -115,6 +123,8 @@ def test_two_dimensions_each_come_back_in_their_own_units(units_model):
 # --- solver fields carry units, and a field passed in is kept (#844) --------------
 
 
+@pytest.mark.level_2
+@pytest.mark.tier_b
 def test_stokes_creates_its_fields_with_units_in_a_units_model(units_model):
     mesh = _box()
     st = uw.systems.Stokes(mesh)
@@ -123,6 +133,8 @@ def test_stokes_creates_its_fields_with_units_in_a_units_model(units_model):
     assert uw.quantity(1, st.Unknowns.p.units).to("Pa").magnitude > 0
 
 
+@pytest.mark.level_2
+@pytest.mark.tier_b
 def test_stokes_default_stress_evaluates_in_pascal(units_model):
     mesh = _box()
     st = uw.systems.Stokes(mesh)
@@ -134,31 +146,96 @@ def test_stokes_default_stress_evaluates_in_pascal(units_model):
     assert float(np.asarray(tau.to("Pa")).ravel()[0]) == pytest.approx(1e24 * scale, rel=1e-6)
 
 
+@pytest.mark.level_2
+@pytest.mark.tier_b
 def test_stokes_without_units_creates_fields_without_units():
     mesh = _box()
     st = uw.systems.Stokes(mesh)
     assert st.Unknowns.u.units is None and st.Unknowns.p.units is None
 
 
+def _solve_cavity(st):
+    st.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    st.constitutive_model.Parameters.shear_viscosity_0 = 1.0
+    st.add_dirichlet_bc((1.0, 0.0), "Top")
+    for wall in ("Bottom", "Left", "Right"):
+        st.add_dirichlet_bc((0.0, 0.0), wall)
+    st.petsc_use_pressure_nullspace = True
+    st.solve()
+
+
+@pytest.mark.level_2
+@pytest.mark.tier_b
 def test_stokes_keeps_a_velocity_passed_without_a_pressure():
     mesh = _box()
     v = uw.discretisation.MeshVariable("v_844", mesh, 2, degree=2)
     st = uw.systems.Stokes(mesh, velocityField=v)
     assert st.Unknowns.u is v
     assert st.Unknowns.p.degree == 1
+    _solve_cavity(st)
+    assert float(np.abs(np.asarray(v.data)).max()) == pytest.approx(1.0)
 
 
+@pytest.mark.level_2
+@pytest.mark.tier_b
 def test_stokes_keeps_a_pressure_passed_without_a_velocity():
     mesh = _box()
     p = uw.discretisation.MeshVariable("p_844", mesh, 1, degree=1)
     st = uw.systems.Stokes(mesh, pressureField=p)
     assert st.Unknowns.p is p
     assert st.Unknowns.u.degree == 2
+    _solve_cavity(st)
+    assert float(np.abs(np.asarray(p.data)).max()) > 0.0
+
+
+@pytest.mark.level_2
+@pytest.mark.tier_b
+def test_a_passed_field_of_the_wrong_degree_is_refused():
+    """The field created beside it takes its degree from ``degree``: a P1
+    velocity would get a P1 pressure, and a P2 pressure a P2 velocity with a
+    continuous pressure, both unstable pairs that still converge."""
+    mesh = _box()
+    v1 = uw.discretisation.MeshVariable("v1_844", mesh, 2, degree=1)
+    with pytest.raises(ValueError, match="degree=1"):
+        uw.systems.Stokes(mesh, velocityField=v1)
+    p2 = uw.discretisation.MeshVariable("p2_844", mesh, 1, degree=2)
+    with pytest.raises(ValueError, match="degree=3"):
+        uw.systems.Stokes(mesh, pressureField=p2)
+    # A degree that fits is accepted.
+    assert uw.systems.Stokes(mesh, velocityField=v1, degree=1).Unknowns.u is v1
+
+
+@pytest.mark.level_2
+@pytest.mark.tier_b
+def test_without_reference_quantities_the_solve_stores_what_it_did():
+    """The baseline: no units model, so nothing about the stored values changes."""
+    mesh = _box()
+    st = uw.systems.Stokes(mesh)
+    _solve_cavity(st)
+    assert st.Unknowns.u.units is None
+    assert float(np.abs(np.asarray(st.Unknowns.u.data)).max()) == pytest.approx(1.0)
+
+
+@pytest.mark.level_2
+@pytest.mark.tier_b
+def test_stokes_is_refused_in_a_kinematic_model():
+    """Length and time but no mass: purely kinematic, so a solver that needs
+    stress is refused, naming the missing scale (ruling, 2026-11-13)."""
+    uw.get_default_model().set_reference_quantities(
+        length=uw.quantity(30, "km"), time=uw.quantity(1, "Myr"))
+    try:
+        mesh = _box()
+        with pytest.raises(ValueError, match="mass"):
+            uw.systems.Stokes(mesh)
+    finally:
+        uw.reset_default_model()
 
 
 # --- no reference quantities: no units on parameter defaults (#881) ---------------
 
 
+@pytest.mark.level_2
+@pytest.mark.tier_b
 def test_viscoplastic_stress_is_plain_without_reference_quantities():
     mesh = _box()
     st = uw.systems.Stokes(mesh)
@@ -173,6 +250,8 @@ def test_viscoplastic_stress_is_plain_without_reference_quantities():
 # --- points outside the domain (#786) ----------------------------------------------
 
 
+@pytest.mark.level_2
+@pytest.mark.tier_b
 def test_a_point_far_outside_the_mesh_is_refused():
     mesh = _box()
     T = uw.discretisation.MeshVariable("T_786", mesh, 1, degree=1)
@@ -181,6 +260,8 @@ def test_a_point_far_outside_the_mesh_is_refused():
         uw.function.evaluate(T.sym[0], np.array([[6.0e4, -3.0e4], [0.5, 0.5]]))
 
 
+@pytest.mark.level_2
+@pytest.mark.tier_b
 def test_a_point_on_or_just_past_the_boundary_is_answered():
     mesh = _box()
     T = uw.discretisation.MeshVariable("T_786b", mesh, 1, degree=1)
@@ -190,6 +271,8 @@ def test_a_point_on_or_just_past_the_boundary_is_answered():
     assert vals == pytest.approx([1.0, 1.0, 0.5], abs=1e-6)
 
 
+@pytest.mark.level_2
+@pytest.mark.tier_b
 def test_a_caller_that_asks_for_the_extrapolation_mask_gets_it_instead():
     mesh = _box()
     T = uw.discretisation.MeshVariable("T_786c", mesh, 1, degree=1)
@@ -198,3 +281,23 @@ def test_a_caller_that_asks_for_the_extrapolation_mask_gets_it_instead():
         T.sym[0], np.array([[6.0e4, -3.0e4], [0.5, 0.5]]), check_extrapolated=True
     )
     assert list(np.asarray(mask).ravel()) == [True, False]
+
+
+@pytest.mark.level_2
+@pytest.mark.tier_b
+def test_a_derivative_at_a_point_far_outside_is_refused():
+    """#999's case, serial: the velocity gradient and one of its components with
+    one point outside the mesh. The refusal comes before any evaluation, so it is
+    the same for a derivative as for a field."""
+    mesh = _box(0.2)
+    x, y = mesh.X
+    V = uw.discretisation.MeshVariable("V_999", mesh, 2, degree=2)
+    c = np.asarray(V.coords_nd)
+    V.data[:, 0] = c[:, 0] ** 2
+    V.data[:, 1] = c[:, 0] * c[:, 1]
+    pts = np.array([[0.3, 0.4], [0.6, 0.7], [1.5, 0.5]])
+    for expr in (V.sym.jacobian(mesh.X[:2]), V.sym[0].diff(x)):
+        with pytest.raises(ValueError, match="outside"):
+            uw.function.evaluate(expr, pts)
+        with pytest.raises(ValueError, match="outside"):
+            uw.function.global_evaluate(expr, pts)
