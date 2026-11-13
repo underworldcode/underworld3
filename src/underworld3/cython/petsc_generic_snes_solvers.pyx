@@ -5188,6 +5188,26 @@ class SolverBaseClass(uw_object):
         else:
             raise TypeError("Unsupported BC 'components' argument")
 
+        # The value holds one entry per field component, the free ones None:
+        # a component named by `components` must have its entry. A shorter
+        # value (the deprecated `components=` form with only the named values,
+        # e.g. add_dirichlet_bc(0.05, "Left", 1)) prescribed garbage on the
+        # wall: the generated function writes slot 0 only and PETSc reads the
+        # constrained slot, never written (#1129). Refused here, for essential
+        # and natural conditions alike, before anything is recorded.
+        n_entries = len(conds)
+        missing = [int(c) for c in components if int(c) >= n_entries]
+        if missing:
+            example = tuple(["None"] * max(int(c) for c in components)
+                            + [repr(list(conds)[0]) if n_entries else "value"])
+            raise ValueError(
+                f"add_condition: the value has {n_entries} entr"
+                f"{'y' if n_entries == 1 else 'ies'} but names component "
+                f"{', '.join(str(c) for c in missing)}, which has none. Give one "
+                f"entry per field component, None for the free ones, e.g. "
+                f"({', '.join(example)}) rather than a short value with "
+                f"components=.")
+
         # ======================================================================
         # Apply non-dimensional scaling to BC values if ND is enabled
         # IMPORTANT: Only scale numeric values (floats, UWQuantity), NOT symbolic
