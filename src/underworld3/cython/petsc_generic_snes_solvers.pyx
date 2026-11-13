@@ -3621,6 +3621,7 @@ class SolverBaseClass(uw_object):
         if stages and "tangent" in config:
             config["tangent"]["alpha_end"] = float(stages["final_alpha"])
             config["tangent"]["stages"] = dict(stages)
+        self._note_hierarchy_build(config)
         _kcfg = config.get("ksp")
         # Only once a linear solve has run: before that the PC is not set up, and
         # PCFieldSplitGetSubKSP errors — printing to stderr even when caught (measured on
@@ -3662,6 +3663,18 @@ class SolverBaseClass(uw_object):
         self._solve_history.append(report)
         self._record_solve_outcome(report)
         return report
+
+    def _note_hierarchy_build(self, config):
+        """Add to a report's ``config`` what the custom multigrid hierarchy's
+        install did to its coarse levels: coarse unknowns sharing their fine
+        images with others, merged exactly where a coarse level is not nested
+        in the level above (#1101). A note of the build, not a preconditioner
+        fallback: the hierarchy requested is the one installed."""
+        merged = getattr(self, "_mg_merged_coarse_unknowns", None)
+        if merged and merged["levels"]:
+            config["multigrid_hierarchy"] = {
+                "merged_coarse_unknowns": dict(merged["levels"]),
+                "installs_with_merges": merged["installs_with_merges"]}
 
     def _capture_rotated_report(self, info):
         """Record a SolveReport for a rotated-free-slip solve, which runs its own
@@ -3707,6 +3720,7 @@ class SolverBaseClass(uw_object):
         except Exception:
             # Sanctioned: formulation facts are a record; none is recorded on failure
             pass
+        self._note_hierarchy_build(config)
         self._emit_solve_notes(config.pop("_warnings", ()))
         report = SolveReport(
             reason=reason, reason_str=ksp_reason_string(reason), converged=converged,
@@ -9545,6 +9559,68 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         # this attrib records if we need to re-setup
         self.is_setup = False
 
+    def pressure_split(self, *, jumps, normals, tolerance=1e-10):
+        r"""Lift prescribed pressure jumps on fitted triangle/tetrahedron facets.
+
+        .. note::
+           Experimental and opt-in. No convergence theorem is claimed. The
+           split is built once from the mesh geometry and must be built again
+           after the mesh geometry or topology changes; a solve warns when the
+           geometry has changed since the split was built.
+
+        Parameters
+        ----------
+        jumps : mapping
+            Interface name to scalar :math:`[p]=p^+-p^-`. Each value is a
+            SymPy expression, continuous scalar MeshVariable on this mesh,
+            constant, or callable taking an ``(N, dim)`` coordinate array.
+            Values are sampled at interface vertices and interpolated P1.
+        normals : mapping
+            Matching names to vectors pointing from the minus to plus side.
+            Expressions, constant vectors and coordinate callables are accepted.
+            These select the side orientation; the extracted sheet is normal
+            to the fitted facets, with no tangential sheet-force extraction.
+        tolerance : float
+            Relative tolerance for jump compatibility around vertex-star cycles.
+
+        Returns
+        -------
+        named tuple
+            ``pressure_jump`` (:math:`p_J`), ``pressure_jump_field`` (DG P1),
+            ``regular_force`` (DG P0), ``natural_datum``, ``physical_pressure``,
+            ``pressure_jump_integral`` and ``checks``.
+
+        Notes
+        -----
+        Call collectively, with the same interface names on every rank, before
+        solving. Continuous P1 pressure represents :math:`q` in :math:`p=q+p_J`.
+        Replace the prescribed normal sheet load :math:`[p]n\delta_\Gamma`
+        by ``split.regular_force.sym`` added to any regular body force. Do not
+        retain that sheet load. Add ``split.natural_datum`` to the original
+        UW3 exterior natural datum on natural components; prescribed velocity
+        needs no traction correction. Use ``split.physical_pressure`` for
+        total-pressure diagnostics and include its lift integral in the gauge.
+
+        Affine interface-fitted simplices and nondimensional data are required.
+        Closed, boundary-to-boundary, finite and intersecting interfaces use
+        the same nodal construction. Finite tips/rims and junction cycles must
+        have compatible jumps; incompatible data are rejected collectively.
+        Geometry cutting through cells and unknown flow-dependent jumps require
+        additional interface discretisation/coupling and are not inferred here.
+        This lifts a pressure discontinuity with continuous velocity, not slip.
+        The lift is defined up to a continuous P1 field absorbed by q; no
+        harmonic extension or convergence rate is assumed.
+
+        References
+        ----------
+        Chang and Kwak (2009), "Extraction method for Stokes Flow with jumps
+        in the pressure", https://arxiv.org/abs/0911.4769, Sections 2--3.
+        Their extraction principle motivates this API; its vertex-star DG P1
+        lift differs from their harmonic extension and CR discretisation.
+        """
+        from underworld3.utilities._pressure_split import _create_pressure_split
+        return _create_pressure_split(self, jumps, normals, tolerance)
+
     def add_nitsche_bc(self, conds=None, boundary=None, direction=None, normal=None,
                        gamma=12.5, theta=1, mask=None, local_h=True, g=None):
         r"""Add Nitsche weak enforcement of a velocity constraint along a direction.
@@ -10532,6 +10608,14 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                 f"surface or traction boundary, in which case turn the nullspace flag off; "
                 f"a pressure Dirichlet BC for a closed box). Recorded in "
                 f"solve_report.config['gauge'].")
+        geometry_version = getattr(self.mesh, "_geometry_version", 0)
+        for interfaces, built_at in getattr(self, "_pressure_split_geometry", {}).items():
+            if built_at != geometry_version:
+                notes.append(
+                    f"[{self.name}] the pressure split on {', '.join(interfaces)} was built "
+                    f"before the mesh geometry last changed: its lift and regular force are "
+                    f"those of the earlier mesh. Call pressure_split again and use the new "
+                    f"fields.")
         if notes:
             cfg["_warnings"] = notes
         cfg["gauge"] = dict(
@@ -13009,6 +13093,10 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         # before any setup reads either list, so an unsupported pair costs
         # nothing before it is refused.
         self._reject_mixed_constraint_mechanisms("solve")
+        # a split fault this solver neither ties nor constrains is an open
+        # crack: said, not refused (#1099)
+        from underworld3.utilities.fault_contact import warn_unpaired_split_faults
+        warn_unpaired_split_faults(self)
 
         _check_homotopy_value(homotopy)
         if homotopy:

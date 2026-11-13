@@ -130,6 +130,9 @@ def test_fac_keys_leave_the_database_and_the_blocks_keep_lu():
     assert its[0] == its[1] == its[2], its
 
 
+# the fault is left a traction-free crack on purpose: the test is about the
+# custom multigrid, and a law would change its baselines
+@pytest.mark.filterwarnings("ignore:split fault")
 @pytest.mark.parametrize("build", [_poisson, _stokes], ids=["poisson", "stokes_velocity"])
 def test_a_deform_kills_the_fac_patch_and_says_so(build):
     s, mesh, managed_pc = build()

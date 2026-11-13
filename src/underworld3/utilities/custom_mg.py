@@ -2625,8 +2625,10 @@ class CustomMGHierarchy:
             # a coarse level the restriction renumbered (it dropped unreached
             # columns) loses its recorded FAC patch rows; a level it left whole,
             # and the finest, keep theirs
-            from underworld3.utilities.fault_mg import restrict_unreached
-            restricted = restrict_unreached(Ps, solver.dm.comm)
+            from underworld3.utilities.fault_mg import record_repairs, restrict_unreached
+            repairs = []
+            restricted = restrict_unreached(Ps, solver.dm.comm, repairs)
+            record_repairs(solver, repairs)
             if patch_rows is not None:
                 patch_rows = [
                     None if level < len(Ps)
