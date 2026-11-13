@@ -405,6 +405,8 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   batch 3 tests/parallel/test_1103_split_fault_slip_parallel.py
   # So is the merge of coarse unknowns sharing one fine image (#1101).
   batch 3 tests/parallel/test_1101_custom_mg_dependent_columns_parallel.py
+  # So is a fault cut into a moved adapt child under the #1101 guard (#1111).
+  batch 3 tests/parallel/test_1111_custom_mg_cut_of_a_moved_child_parallel.py
   # Shell Inner/Outer cell labels follow the Internal surface, not a radius test:
   # the same assertions hold on one rank, so the file also runs serially.
   batch 3 tests/parallel/test_1175_shell_region_labels.py
@@ -576,6 +578,13 @@ if [ $PARALLEL_RANKS -gt 0 ] && shard_owns 4; then
     # (The variable lets Open MPI start three ranks on a two-slot host; MPICH ignores it.)
     OMPI_MCA_rmaps_base_oversubscribe=1 $SUPERVISE mpirun -n 3 python -m pytest --with-mpi \
       tests/parallel/test_1084_rotated_datum_collectives.py || status=1
+
+    # Four ranks give a rank that shares an interface vertex and holds none of the
+    # interface's facets, which the pressure split must still be told about: with
+    # that exchange skipped these cases pass at one and two ranks and fail at four.
+    # The np 4 pass below is opt-in, so this one file runs at np 4 always.
+    OMPI_MCA_rmaps_base_oversubscribe=1 $SUPERVISE mpirun -n 4 python -m pytest --with-mpi \
+      tests/test_1184_general_pressure_split.py || status=1
 
     # Further passes at three and four ranks, because two is a special case:
     # the failure this suite exists to catch is a collective entered by some

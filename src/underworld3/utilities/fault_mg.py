@@ -626,8 +626,9 @@ def split_tail_levels(levels, fault_specs, verbose=False):
 
     The replay runs from the finest level down. A level the faults cannot be
     carried onto — a network whose one-cell ligament closes at the coarser
-    spacing, so two labels meet; a sheet the placement refuses — is left WELDED,
-    and so is every level beneath it (a split level under a welded one would
+    spacing, so two labels meet; a sheet the placement refuses — is left WELDED
+    there (it keeps the faults an earlier call split into it), and so is every
+    level beneath it (a split level under a welded one would
     hand the welded level's single trace node one side's value). The hierarchy
     then has split levels down to the finest coarsening the geometry allows,
     and a warning says where the replay stopped and why.
@@ -667,10 +668,11 @@ def split_tail_levels(levels, fault_specs, verbose=False):
             _collective_raise(problem)
         except RuntimeError as exc:
             warnings.warn(
-                f"fault_mg: the fault(s) could not be carried onto add-on "
-                f"level {k} of {len(levels)} ({exc}); that level and the "
-                f"levels beneath it stay welded, the {len(levels) - 1 - k} "
-                f"finer add-on level(s) are split.")
+                f"fault_mg: the fault(s) {[e[0] for e in entries]} could "
+                f"not be carried onto add-on level {k} of {len(levels)} "
+                f"({exc}); that level and the levels beneath it stay welded "
+                f"there, the {len(levels) - 1 - k} finer add-on level(s) are "
+                f"split.")
             break
         split._custom_mg_coarse_meshes = None
         out[k] = split
@@ -946,6 +948,21 @@ def _reached_columns(T, rel=None):
 
 
 _SMALL_SUPPORT = 4      # columns with at most this many fine images are checked
+_DEPENDENT_REL = 1e-10  # a column within this relative residual of the span is dependent
+
+
+import scipy.linalg
+
+
+def _route(m4, dest, *arrays):
+    """Send row ``k`` of each array to rank ``dest[k]``; returns the arrays
+    each rank received, concatenated (one alltoall)."""
+    size = m4.Get_size()
+    order = np.argsort(dest, kind="stable")
+    bounds = np.searchsorted(dest[order], np.arange(size + 1))
+    send = [[a[order[bounds[r]:bounds[r + 1]]] for a in arrays] for r in range(size)]
+    got = m4.alltoall(send)
+    return [np.concatenate([g[k] for g in got]) for k in range(len(arrays))]
 
 
 def _dependent_columns(T):
@@ -953,102 +970,143 @@ def _dependent_columns(T):
     returns the same ``(drop, keep, ratio)`` arrays on every rank: global
     column ``drop[i]`` of ``T`` is ``ratio[i]`` times column ``keep[i]``.
 
-    Columns supported on the same single fine row are proportional, so their
-    Galerkin rows are, and the coarse operator is singular: SOR's inode blocks
-    then hit a zero pivot (#1101). This happens when the fine level has moved
-    under coarse levels that did not, leaving two coarse unknowns whose only
-    fine image is one shared fine node. In each such group the column of
-    largest weight is kept (ties to the lowest global column, so every rank
-    keeps the same one) and the others are dropped; the range of P is
-    unchanged.
+    Columns with the same small support (the same fine rows, at most
+    ``_SMALL_SUPPORT`` of them) span at most as many dimensions as there are
+    rows; when there are more columns than that, or they are otherwise
+    dependent, their Galerkin rows are too, and the coarse operator is
+    singular: SOR's inode blocks then hit a zero pivot (#1101). It can happen
+    whenever a coarse level and the level above it are not nested (a placed,
+    cut or add-on level over a base it was not refined from; any pair whose
+    transfer is built by locating one level's nodes in the other); a mesh move
+    under coarse levels that are not moved with it makes it more likely. Seen:
+    two columns on one fine row, and (rotated transfers, which mix a node's
+    components) three columns on one fine node's two component rows.
 
-    Limits: only columns with at most ``_SMALL_SUPPORT`` fine images are
-    examined. Among those, k columns on one shared row are repaired; a support
-    of s > 1 rows shared by more than s columns is also rank-deficient and is
-    refused (it has not been seen: in W1's scan every group was 2 columns on 1
-    row). Columns on fewer rows than there are of them but with different
-    supports, or with wider supports, are not detected.
+    In each group (columns ordered largest norm first, ties to the lowest
+    global column) a pivoted QR keeps the most independent columns, as many as
+    the group's rank (a pivot's residual above ``_DEPENDENT_REL`` of its own
+    norm), never more than its rows; every other column is dropped and written
+    as their combination, ``ratio`` holding each coefficient. On one row the
+    largest column is kept. The range of P is
+    unchanged, and :func:`_fold_rows` folds each dropped unknown's row of the
+    level below into the kept ones with the same coefficients, so the
+    composite transfer is unchanged. A group is decided on one rank, so every
+    rank applies the same decision.
+
+    This removes the dependent groups with small support; it does not make
+    the Galerkin operator nonsingular in general. Dependent columns with
+    different or wider supports are not detected and can remain (on a fault
+    cut into a moved child: +-1-proportional pairs with 5 to 54 fine rows), and
+    the solve tolerates them as it did before the guard.
+
+    Distributed: each entry goes to its column's owner, which finds the small
+    columns; each small column's support goes to the owner of its first row,
+    which groups them. Only the (rare) decisions are gathered to every rank.
     """
     comm = T.comm
     m4 = comm.tompi4py()
     indptr, indices, data = T.getValuesCSR()
     rstart = T.getOwnershipRange()[0]
-    rows = rstart + np.repeat(np.arange(len(indptr) - 1), np.diff(indptr))
+    rows = (rstart + np.repeat(np.arange(len(indptr) - 1), np.diff(indptr))).astype(np.int64)
     nz = data != 0.0
-    count_vec = T.createVecRight()
-    count_vec.set(0.0)
-    if nz.any():
-        count_vec.setValues(indices[nz].astype(PETSc.IntType), np.ones(int(nz.sum())),
-                            addv=PETSc.InsertMode.ADD_VALUES)
-    count_vec.assemblyBegin()
-    count_vec.assemblyEnd()
-    count = np.asarray(count_vec.array).round().astype(np.int64)
-    count_vec.destroy()
-    cstart = T.getOwnershipRangeColumn()[0]
-    small = cstart + np.flatnonzero((count >= 1) & (count <= _SMALL_SUPPORT))
-    small = np.concatenate(m4.allgather(small))
-    none = (np.zeros(0, dtype=np.int64),) * 2 + (np.zeros(0),)
-    if not small.size:
-        return none
-    # every rank's entries in those columns: (column, fine row, weight)
-    pick = nz & np.isin(indices, small)
-    mine = np.column_stack([indices[pick], rows[pick], data[pick]])
-    parts = [e for e in m4.allgather(mine) if len(e)]
-    entries = np.concatenate(parts) if parts else np.zeros((0, 3))
-    support = {}
-    for col, row, w in entries:
-        support.setdefault(int(col), []).append((int(row), float(w)))
-    groups = {}
-    for col, items in support.items():
-        groups.setdefault(tuple(sorted(r for r, _w in items)), []).append(col)
-    drop, keep, ratio, refused = [], [], [], []
-    for rows_of, cols in sorted(groups.items()):
-        if len(rows_of) == 1 and len(cols) > 1:
-            weight = {col: support[col][0][1] for col in cols}
-            cols.sort(key=lambda col: (-abs(weight[col]), col))
-            for col in cols[1:]:
-                drop.append(col)
-                keep.append(cols[0])
-                ratio.append(weight[col] / weight[cols[0]])
-        elif len(rows_of) > 1 and len(cols) > len(rows_of):
-            refused.append((rows_of, sorted(cols)))
-    if refused:
-        raise RuntimeError(
-            f"custom_mg: {len(refused)} group(s) of coarse unknowns share fewer "
-            f"fine images than there are of them (e.g. columns {refused[0][1]} on "
-            f"fine rows {list(refused[0][0])}): the Galerkin coarse operator would "
-            f"be singular. The fine level has moved too far from its coarse "
-            f"levels (#1101).")
-    if not drop:
-        return none
-    order = np.argsort(drop)
-    return (np.asarray(drop, dtype=np.int64)[order], np.asarray(keep, dtype=np.int64)[order],
-            np.asarray(ratio)[order])
+    cols, rows, data = indices[nz].astype(np.int64), rows[nz], data[nz]
+
+    # 1. every entry to its column's owner: (column, row, weight)
+    col_ranges = np.asarray(T.getOwnershipRangesColumn(), dtype=np.int64)
+    dest = np.searchsorted(col_ranges, cols, side="right") - 1
+    cols, rows, data = _route(m4, dest, cols, rows, data)
+    order = np.lexsort((rows, cols))
+    cols, rows, data = cols[order], rows[order], data[order]
+    ucol, start, count = np.unique(cols, return_index=True, return_counts=True)
+    small = (count >= 1) & (count <= _SMALL_SUPPORT)
+    ucol, start, count = ucol[small], start[small], count[small]
+    # each small column's support, padded with -1, and its weights (0-padded)
+    keys = np.full((ucol.size, _SMALL_SUPPORT), -1, dtype=np.int64)
+    weight = np.zeros((ucol.size, _SMALL_SUPPORT))
+    for k in range(_SMALL_SUPPORT):
+        has = count > k
+        keys[has, k] = rows[start[has] + k]
+        weight[has, k] = data[start[has] + k]
+
+    # 2. every small column's support to the owner of its first row
+    row_ranges = np.asarray(T.getOwnershipRanges(), dtype=np.int64)
+    dest = np.searchsorted(row_ranges, keys[:, 0], side="right") - 1
+    keys, ucol, count, weight = _route(m4, dest, keys, ucol, count, weight)
+    keys = keys.reshape(-1, _SMALL_SUPPORT)
+    weight = weight.reshape(-1, _SMALL_SUPPORT)
+
+    drop, keep, ratio = [], [], []
+    if keys.size:
+        _, group, members = np.unique(keys, axis=0, return_inverse=True, return_counts=True)
+        group = np.ravel(group)
+        for g in np.flatnonzero(members > 1):
+            sel = np.flatnonzero(group == g)
+            nrows = int(count[sel[0]])
+            W = weight[sel, :nrows].T                    # nrows x columns
+            norms = np.linalg.norm(W, axis=0)
+            order = np.lexsort((ucol[sel], -norms))      # largest first, then lowest column
+            if nrows == 1:
+                # one row: every column is a multiple of the first
+                for k in order[1:]:
+                    drop.append(int(ucol[sel[k]]))
+                    keep.append(int(ucol[sel[order[0]]]))
+                    ratio.append(float(W[0, k] / W[0, order[0]]))
+                continue
+            # Pivoted QR picks the most independent columns, so a column that
+            # is dropped is written in a well-conditioned basis: greedy by
+            # norm could keep two nearly parallel columns and write the third
+            # with coefficients of 1/(their angle). Rank: the leading pivots
+            # whose residual is above _DEPENDENT_REL of their own norm; never
+            # more than the rows.
+            _q, R, piv = scipy.linalg.qr(W[:, order], mode="economic", pivoting=True)
+            rank = 0
+            while rank < min(R.shape) and \
+                    abs(R[rank, rank]) > _DEPENDENT_REL * norms[order[piv[rank]]]:
+                rank += 1
+            kept = order[piv[:rank]]
+            for k in order[piv[rank:]]:
+                coef = np.linalg.lstsq(W[:, kept], W[:, k], rcond=None)[0]
+                for kk, c in zip(kept, coef):
+                    if c != 0.0:
+                        drop.append(int(ucol[sel[k]]))
+                        keep.append(int(ucol[sel[kk]]))
+                        ratio.append(float(c))
+    found = [d for part in m4.allgather(list(zip(drop, keep, ratio))) for d in part]
+    if not found:
+        return (np.zeros(0, dtype=np.int64),) * 2 + (np.zeros(0),)
+    found.sort()
+    drop, keep, ratio = zip(*found)
+    return (np.asarray(drop, dtype=np.int64), np.asarray(keep, dtype=np.int64),
+            np.asarray(ratio))
 
 
-def _drop_dependent_columns(T, comm, level):
+def _drop_dependent_columns(T, comm, level, repairs=None):
     """Merge the :func:`_dependent_columns` of one level into the columns they
-    are multiples of, and warn when it fires. Collective.
+    are combinations of, and warn when it fires. Collective.
 
     The dropped columns leave ``T``; the level below must fold each dropped
-    unknown's row into its kept twin's (:func:`_fold_rows`), so the composite
+    unknown's row into the kept ones' (:func:`_fold_rows`), so the composite
     coarse functions, and the constants they reproduce through the shared fine
-    row, are unchanged. Returns ``(T, keep_mask, fold)``: ``keep_mask`` over
+    rows, are unchanged. Returns ``(T, keep_mask, fold)``: ``keep_mask`` over
     ``T``'s owned columns and ``fold`` the ``(drop, keep, ratio)`` arrays in
     ``T``'s global column numbering, both None when nothing is dropped (``T``
     untouched, so a hierarchy that needs no repair is unchanged)."""
     drop, keep, ratio = _dependent_columns(T)
     if not drop.size:
         return T, None, None
+    merged = int(np.unique(drop).size)
+    if repairs is not None:
+        repairs.append((level, merged))
     if comm.getRank() == 0:
         import warnings
 
         warnings.warn(
-            f"custom_mg: coarse level {level}: {drop.size} coarse unknown(s) had "
-            f"the same single fine image as another and were merged into it "
-            f"(#1101). The fine level has moved far from coarse levels that did "
-            f"not move with it; those levels no longer match it. Only coarse "
-            f"unknowns with at most {_SMALL_SUPPORT} fine images are checked.",
+            f"custom_mg: coarse level {level} and the level above it are not "
+            f"nested, and {merged} coarse unknown(s) on level {level} were "
+            f"combinations of others with the same fine images; each was merged "
+            f"into them, which keeps the coarse space (#1101). Only coarse "
+            f"unknowns with at most {_SMALL_SUPPORT} fine images are checked; "
+            f"dependent ones with wider support can remain.",
             stacklevel=3)
     cols = np.arange(*T.getOwnershipRangeColumn())
     keep_mask = ~np.isin(cols, drop)
@@ -1090,7 +1148,25 @@ def _fold_rows(T, fold, comm):
     return out
 
 
-def restrict_unreached(Ps, comm):
+def record_repairs(solver, repairs):
+    """Record what one install's #1101 merges did, on the solver.
+
+    Not a preconditioner fallback: the merge is an exact change of basis, and
+    the hierarchy requested is the one installed. ``solver.solve_report``
+    reports it under ``config["multigrid_hierarchy"]`` (the merged unknowns by
+    coarse level for the latest install, and how many installs of this solver
+    merged any). An install with nothing to merge clears the per-level counts.
+    The warning is printed once per Python session; this is per install.
+    ``repairs`` is the ``(level, unknowns)`` list the transfer builders filled,
+    the same on every rank."""
+    previous = getattr(solver, "_mg_merged_coarse_unknowns", None) or {}
+    installs = previous.get("installs_with_merges", 0) + (1 if repairs else 0)
+    solver._mg_merged_coarse_unknowns = {
+        "levels": {int(level): int(n) for level, n in sorted(repairs)},
+        "installs_with_merges": installs}
+
+
+def restrict_unreached(Ps, comm, repairs=None):
     """The prolongation list with every coarse unknown no fine unknown reaches
     dropped, fine to coarse, each level's rows restricted to the set the level
     above kept. The unrotated twin of :func:`rotated_split_transfers`, for the
@@ -1115,7 +1191,7 @@ def restrict_unreached(Ps, comm):
                 _owned_is(np.arange(*T.getOwnershipRange()), comm),
                 _owned_is(cols[reached], comm))
             kept[l] = cols[reached]
-        T, keep_mask, merged = _drop_dependent_columns(T, comm, l)
+        T, keep_mask, merged = _drop_dependent_columns(T, comm, l, repairs)
         if keep_mask is not None:
             fold[l] = _renumber_fold(merged, kept[l], comm)
             kept[l] = (kept[l] if kept[l] is not None else cols)[keep_mask]
@@ -1171,6 +1247,7 @@ def rotated_split_transfers(solver, hierarchy, Ps, Q, normal_rows):
         rot[l] = level_rotation(levels[l], solver, hierarchy.field_id)
 
     kept = [None] * nlev              # owned kept global indices per coarse level
+    repairs = []                      # the #1101 merges, (level, unknowns)
     fold = [None] * nlev              # merges per coarse level, in its full numbering
     out = [None] * (nlev - 1)
     for l in range(nlev - 2, -1, -1):
@@ -1206,13 +1283,14 @@ def rotated_split_transfers(solver, hierarchy, Ps, Q, normal_rows):
                 _owned_is(np.arange(*T.getOwnershipRange()), comm),
                 _owned_is(np.arange(*T.getOwnershipRangeColumn())[reached], comm))
         # and merge the unknowns that share a single fine image with another (#1101)
-        T, keep_mask, merged = _drop_dependent_columns(T, comm, l)
+        T, keep_mask, merged = _drop_dependent_columns(T, comm, l, repairs)
         if keep_mask is not None:
             fold[l] = _renumber_fold(merged, adm, comm)
             adm = adm[keep_mask]
         kept[l] = adm
         out[l] = T
     Qv.destroy()                    # only the products are kept
+    record_repairs(solver, repairs)
     hierarchy.level_kept = kept
     # The restriction renumbers every coarse level, so any FAC patch rows the
     # builder recorded for them (keyed to the unrestricted layouts) no longer
