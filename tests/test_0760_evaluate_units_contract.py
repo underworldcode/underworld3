@@ -180,8 +180,9 @@ def test_stokes_keeps_a_velocity_passed_without_a_pressure():
 @pytest.mark.tier_b
 def test_a_pressure_passed_without_a_velocity_is_refused():
     """The velocity Stokes would create comes after the passed pressure, and the
-    solver takes the first of the pair as the velocity, so the velocity boundary
-    conditions would land on the pressure. Refused, naming the fix."""
+    pressure-nullspace guard finds the pressure by creation order, so it would
+    refuse the problem with a misleading message (#1147). Refused here instead,
+    naming the fix."""
     mesh = _box()
     p = uw.discretisation.MeshVariable("p_844", mesh, 1, degree=1)
     with pytest.raises(ValueError, match="velocity created first"):
