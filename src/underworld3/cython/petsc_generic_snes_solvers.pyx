@@ -3041,21 +3041,38 @@ class SolverBaseClass(uw_object):
         from underworld3.adjoint import integral
         total = integral(self.mesh, self.adjoint_integrand(mu, wrt))
         total += self._essential_datum_sensitivity(mu, wrt, lam, misfit_dual)
-        # A parameter that enters through a natural condition — a prescribed
-        # traction or flux — has a facet part: (d bd_F0 / dm) . mu on that boundary.
+        # A parameter that enters through a natural or Nitsche condition has a
+        # facet part, from every boundary term the condition assembles: the
+        # value term fn_f tested against mu, and the flux term fn_F tested
+        # against grad(mu). Reading fn_f alone missed a Nitsche condition's
+        # symmetric term: a datum imposed by Nitsche then had the wrong sign
+        # (#1143). The continuity-row term fn_p of a Stokes Nitsche condition
+        # is not assembled by the forward operator yet (#1072), so it has no
+        # part here; when it is, it is tested against the pressure adjoint lam.
         import sympy
         mu_sym = mu.sym
+        comps = getattr(mu, "num_components", 1)
+        cdim = self.mesh.cdim
+        grad_mu = None
         for bc in (getattr(self, "natural_bcs", None) or []):
             fn = getattr(bc, "fn_f", None)
-            if fn is None:
-                continue
-            d = diff_wrt_field(self._peel_except(sympy.Matrix(fn), wrt), wrt)
-            if d.is_zero_matrix:
-                continue
-            values = list(d)
-            comps = getattr(mu, "num_components", 1)
-            integrand = sum(values[i] * mu_sym[i] for i in range(min(len(values), comps)))
-            total += integral(self.mesh, integrand, bc.boundary)
+            if fn is not None:
+                d = diff_wrt_field(self._peel_except(sympy.Matrix(fn), wrt), wrt)
+                if not d.is_zero_matrix:
+                    values = list(d)
+                    integrand = sum(values[i] * mu_sym[i] for i in range(min(len(values), comps)))
+                    total += integral(self.mesh, integrand, bc.boundary)
+            flux = getattr(bc, "fn_F", None)
+            if flux is not None:
+                dF = sympy.Matrix(diff_wrt_field(self._peel_except(sympy.Matrix(flux), wrt), wrt))
+                if not dF.is_zero_matrix:
+                    if grad_mu is None:
+                        grad_mu = (sympy.Matrix(self.mesh.vector.gradient(mu_sym[0])).reshape(1, cdim)
+                                   if comps == 1 else sympy.Matrix(self.mesh.vector.jacobian(mu_sym)))
+                    dF = dF.reshape(grad_mu.shape[0], grad_mu.shape[1])
+                    integrand = sum(dF[c, k] * grad_mu[c, k]
+                                    for c in range(grad_mu.shape[0]) for k in range(grad_mu.shape[1]))
+                    total += integral(self.mesh, integrand, bc.boundary)
         return total
 
     def _constraint_mechanisms(self):
