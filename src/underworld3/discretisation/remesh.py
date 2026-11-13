@@ -507,6 +507,20 @@ def remap_var_set(mesh, vars_, old_X, new_X, old_data, *, verbose=False):
         except Exception:
             new_dof_coords[var] = None
 
+    # A variable whose new DOF coordinates could not be read on SOME rank is
+    # skipped on EVERY rank. Skipped on one rank only, that rank would leave
+    # out the collective evaluation the others enter, and the next variable's
+    # evaluation would pair with this one's (#960). Decided once, before any
+    # collective of the evaluation starts; the callers pass a list, so the
+    # order of ``vars_`` is the same on every rank.
+    missing = np.array([new_dof_coords[var] is None for var in vars_], dtype=np.int32)
+    uw.mpi.comm.Allreduce(uw.MPI.IN_PLACE, missing, op=uw.MPI.MAX)
+    skipped = {var for var, gone in zip(vars_, missing) if gone}
+    if skipped and verbose:
+        uw.pprint(
+            f"  remap_var_set: skipping on every rank (coordinates unavailable "
+            f"on some rank): {[getattr(v, 'name', v) for v in vars_ if v in skipped]}")
+
     # Deform back to the old coords, restore data so global_evaluate
     # sees the old field, evaluate at each var's new DOF coords,
     # then deform forward and write the resampled values back.
@@ -516,26 +530,27 @@ def remap_var_set(mesh, vars_, old_X, new_X, old_data, *, verbose=False):
 
     resampled = {}
     for var in vars_:
-        target = new_dof_coords.get(var, None)
+        if var in skipped:
+            continue
         # A rank with no DOFs of this variable still enters the collective below.
-        if target is None:
-            continue
+        target = new_dof_coords[var]
+        # global_evaluate resolves off-rank targets via swarm migration.
+        # REMESH_MONOTONE (module constant, see its comment) is off by default.
+        # Any other exception propagates. It used to be caught here and the
+        # variable skipped on the rank that raised, while the other ranks were
+        # inside this evaluation's collectives: the ranks then evaluated
+        # different variables against each other and hung (#960). A rank-local
+        # raise inside global_evaluate still leaves the other ranks waiting in
+        # it; agreeing on a failure there is global_evaluate's to do.
         try:
-            # global_evaluate resolves off-rank targets via swarm migration.
-            # REMESH_MONOTONE (module constant, see its comment) is off by default.
-            try:
-                val = uw.function.global_evaluate(
-                    var.sym, target, monotone=REMESH_MONOTONE)
-            except (ValueError, NotImplementedError):
-                # monotone needs a single-MeshVariable expr; composite /
-                # unsupported vars fall back to plain FE (still transferred).
-                val = uw.function.global_evaluate(var.sym, target)
-        except Exception as exc:
-            if verbose:
-                uw.pprint(
-                    f"  remap_var_set: skipping "
-                    f"{getattr(var, 'name', var)!r} ({exc})")
-            continue
+            val = uw.function.global_evaluate(
+                var.sym, target, monotone=REMESH_MONOTONE)
+        except (ValueError, NotImplementedError):
+            # monotone needs a single-MeshVariable expr; composite /
+            # unsupported vars fall back to plain FE (still transferred).
+            # The refusal depends on the expression alone, so every rank
+            # takes this branch alike.
+            val = uw.function.global_evaluate(var.sym, target)
         # Laid out by _data_layout, which a flat reshape is not for a MATRIX or a
         # symmetric tensor. var.data holds non-dimensional values, and the helper
         # reduces a dimensional evaluation to them.
