@@ -2417,6 +2417,15 @@ class _BaseMeshVariable(Stateful, uw_object):
                     var._lvec.array[...] = var_data_backup[var.clean_name]
 
             self.field_id = field_id
+
+            # The released DM and vectors are, in parallel, put on petsc4py's
+            # deferred-destroy list, which only a collective cleanup empties; a
+            # run on one fixed mesh that keeps adding variables never reached
+            # one (#868). Every rank rebuilds here, so the call is collective.
+            # Only wrappers Python has already collected are destroyed, so a
+            # handle a user still holds is untouched (#492).
+            from underworld3.mpi import _free_petsc_garbage
+            _free_petsc_garbage(dm_new.getComm())
         else:
             # First field - normal fast path
             self.field_id = self.mesh.dm.getNumFields()
