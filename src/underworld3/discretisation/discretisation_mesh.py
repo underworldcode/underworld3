@@ -759,9 +759,11 @@ def _labels_holding_vertices(dm, vertices):
 
     names = sorted(name for name in (dm.getLabelName(i) for i in range(dm.getNumLabels()))
                    if name not in ("depth", "celltype"))
-    local = [bool(numpy.any(_pinned_mask(dm, (name,)) & vertices)) for name in names]
-    anywhere = dm.comm.tompi4py().allreduce(numpy.array(local, dtype=int), op=MPI.MAX)
-    return {name for name, held in zip(names, numpy.atleast_1d(anywhere)) if held}
+    local = numpy.array([numpy.any(_pinned_mask(dm, (name,)) & vertices) for name in names],
+                        dtype=numpy.int32)
+    anywhere = numpy.zeros_like(local)
+    dm.comm.tompi4py().Allreduce(local, anywhere, op=MPI.MAX)
+    return {name for name, held in zip(names, anywhere) if held}
 
 
 def _sum_over_sharers(dm, values):
