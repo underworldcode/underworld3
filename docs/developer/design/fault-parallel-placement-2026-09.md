@@ -748,7 +748,7 @@ The rig's fine profiles sit within 2% of serial everywhere along the
 Main (the fill's noise at the crossing) and within 0.1% along Cont, where
 the ligament had lost 8-10% and shifted the partition onto the Branch.
 The repeat solve on the fine rig is 5.0 s at np=2 against 7.4 s serial.
-`ptest_0864` pins the long fault at np=2 and np=3; the rig case's README
+`ptest_0864` pins the long fault at np=2 (on development 01dec8d2 it fails at np=3 and np=4, #956); the rig case's README
 carries the profiles and `sf_partition_fine_conform_np2.png` the
 partition, with the seam running through the Main's band along its own
 edges at the junction.
@@ -966,7 +966,7 @@ junction 0.17 below it, h = 0.03) gives the same result:
 | 2 | 346 / 280 | 0.3438 | 0.2130 | 0.0433 |
 | 3 | 127 / 224 / 265 | 0.3438 | 0.2130 | 0.0433 |
 
-`ptest_0865` pins the long fault at np=2 and 3 (owned pairs equal the
+`ptest_0865` pins the long fault at np=2 (it fails at np=3 and np=4 on development 01dec8d2, #956) (owned pairs equal the
 serial count, the seam pair owned by one rank, star forest consistent,
 the owned-point Euler characteristic of a slit disc, the contact solve
 converged with no opening and the gathered peak within 3%) and a

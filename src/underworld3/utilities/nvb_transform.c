@@ -13,7 +13,7 @@
   reproduces `refine_sbr` byte-for-byte on a serial mesh (validated: identical
   triangulation for every marking pattern incl. full uniform refine) and matches
   it under the parallel closure. It depends only on:
-    - exported libpetsc symbols (DMPlexPointQueue*, DMLabelPropagate*, the
+    - exported libpetsc symbols (DMLabelPropagate*, the
       Identity cell-transform / orientation helpers, registration, plus the
       ordinary DMPlex / DMLabel / PetscSection API);
     - static-inline header helpers (DMPolytopeTypeGetArrangement,
@@ -40,6 +40,121 @@ typedef struct {
   PetscSection secEdgeLen;  /* section for the edge-length field */
   PetscReal   *edgeLen;     /* lazily-computed edge lengths */
 } DMPlexRefine_UWNVB;
+
+/* ======================================================================== */
+/* A first-in first-out queue of mesh points, owned here.                   */
+/*                                                                          */
+/* PETSc's DMPlexPointQueue (3.25.3) returns values that were never         */
+/* enqueued, and loses entries, once an enqueue grows it while its contents */
+/* wrap its buffer (#1140: a spherical shell adapt read an edge number of   */
+/* -1230142544 from it and crashed). This queue never wraps: points are     */
+/* appended at the tail of one array and taken from the head; when the tail */
+/* reaches the end, the live range is moved to the front, and the array is  */
+/* doubled if it is still more than half full.                              */
+/* ======================================================================== */
+typedef struct {
+  PetscInt *points;
+  PetscInt  head, tail, capacity; /* live range is points[head .. tail) */
+} UWNVBPointQueue;
+
+static PetscErrorCode UWNVBPointQueueCreate(PetscInt capacity, UWNVBPointQueue *queue)
+{
+  PetscFunctionBegin;
+  queue->head = queue->tail = 0;
+  queue->capacity           = capacity > 0 ? capacity : 1;
+  PetscCall(PetscMalloc1(queue->capacity, &queue->points));
+  PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+static PetscErrorCode UWNVBPointQueueDestroy(UWNVBPointQueue *queue)
+{
+  PetscFunctionBegin;
+  PetscCall(PetscFree(queue->points));
+  queue->head = queue->tail = queue->capacity = 0;
+  PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+static inline PetscBool UWNVBPointQueueEmpty(const UWNVBPointQueue *queue)
+{
+  return queue->head == queue->tail ? PETSC_TRUE : PETSC_FALSE;
+}
+
+static PetscErrorCode UWNVBPointQueueEnqueue(UWNVBPointQueue *queue, PetscInt p)
+{
+  PetscFunctionBegin;
+  if (queue->tail == queue->capacity) {
+    const PetscInt live = queue->tail - queue->head;
+
+    if (2 * live > queue->capacity) {
+      PetscInt *grown;
+
+      PetscCall(PetscMalloc1(2 * queue->capacity, &grown));
+      PetscCall(PetscArraycpy(grown, queue->points + queue->head, live));
+      PetscCall(PetscFree(queue->points));
+      queue->points    = grown;
+      queue->capacity *= 2;
+    } else {
+      PetscCall(PetscArraymove(queue->points, queue->points + queue->head, live));
+    }
+    queue->head = 0;
+    queue->tail = live;
+  }
+  queue->points[queue->tail++] = p;
+  PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+static PetscErrorCode UWNVBPointQueueDequeue(UWNVBPointQueue *queue, PetscInt *p)
+{
+  PetscFunctionBegin;
+  PetscCheck(queue->head < queue->tail, PETSC_COMM_SELF, PETSC_ERR_ARG_WRONGSTATE, "Dequeue from an empty point queue");
+  *p = queue->points[queue->head++];
+  PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+/* Whether the queue is empty on every rank of the object's communicator. COLLECTIVE. */
+static PetscErrorCode UWNVBPointQueueEmptyCollective(PetscObject obj, const UWNVBPointQueue *queue, PetscBool *empty)
+{
+  PetscMPIInt local = queue->head == queue->tail ? 1 : 0, global = 0;
+
+  PetscFunctionBegin;
+  PetscCallMPI(MPI_Allreduce(&local, &global, 1, MPI_INT, MPI_LAND, PetscObjectComm(obj)));
+  *empty = global ? PETSC_TRUE : PETSC_FALSE;
+  PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+/* Test entry (called from the Cython module): start at `capacity`, then, `rounds`
+   times, enqueue `burst` consecutive integers and dequeue half of what is queued,
+   so the live range keeps reaching the end of the array and the array has to move
+   and grow. Then drain. Every value must come back once, in the order it went in.
+   `mismatches` counts values that did not; `returned` counts values dequeued. */
+PetscErrorCode UWNVBPointQueueSelfTest(PetscInt capacity, PetscInt burst, PetscInt rounds, PetscInt *returned, PetscInt *mismatches)
+{
+  UWNVBPointQueue queue;
+  PetscInt        next_in = 0, next_out = 0, r, i, p;
+
+  PetscFunctionBegin;
+  *returned = *mismatches = 0;
+  PetscCall(UWNVBPointQueueCreate(capacity, &queue));
+  for (r = 0; r < rounds; ++r) {
+    PetscInt take;
+
+    for (i = 0; i < burst; ++i) PetscCall(UWNVBPointQueueEnqueue(&queue, next_in++));
+    take = (queue.tail - queue.head) / 2;
+    for (i = 0; i < take; ++i) {
+      PetscCall(UWNVBPointQueueDequeue(&queue, &p));
+      if (p != next_out++) ++*mismatches;
+      ++*returned;
+    }
+  }
+  while (!UWNVBPointQueueEmpty(&queue)) {
+    PetscCall(UWNVBPointQueueDequeue(&queue, &p));
+    if (p != next_out++) ++*mismatches;
+    ++*returned;
+  }
+  if (next_out != next_in) ++*mismatches;
+  PetscCall(UWNVBPointQueueDestroy(&queue));
+  PetscFunctionReturn(PETSC_SUCCESS);
+}
 
 /* ======================================================================== */
 /* Reimplemented PETSc helpers that libpetsc does not export.               */
@@ -199,19 +314,19 @@ static PetscErrorCode UWNVBGetEdgeLen(DMPlexTransform tr, PetscInt edge, PetscRe
 /* Mark local edges that should be split.
    STAGE 2a: pick the longest edge of each marked cell (== SBR). STAGE 2b picks
    the newest-vertex refinement edge instead. */
-static PetscErrorCode UWNVBSplitLocalEdges(DMPlexTransform tr, DMPlexPointQueue queue)
+static PetscErrorCode UWNVBSplitLocalEdges(DMPlexTransform tr, UWNVBPointQueue *queue)
 {
   DMPlexRefine_UWNVB *nvb = (DMPlexRefine_UWNVB *)tr->data;
   DM                  dm;
 
   PetscFunctionBegin;
   PetscCall(DMPlexTransformGetDM(tr, &dm));
-  while (!DMPlexPointQueueEmpty(queue)) {
+  while (!UWNVBPointQueueEmpty(queue)) {
     PetscInt        p = -1;
     const PetscInt *support;
     PetscInt        supportSize, s;
 
-    PetscCall(DMPlexPointQueueDequeue(queue, &p));
+    PetscCall(UWNVBPointQueueDequeue(queue, &p));
     PetscCall(DMPlexGetSupport(dm, p, &support));
     PetscCall(DMPlexGetSupportSize(dm, p, &supportSize));
     for (s = 0; s < supportSize; ++s) {
@@ -237,7 +352,7 @@ static PetscErrorCode UWNVBSplitLocalEdges(DMPlexTransform tr, DMPlexPointQueue 
       PetscCall(DMLabelGetValue(nvb->splitPoints, maxedge, &eval));
       if (eval != 1) {
         PetscCall(DMLabelSetValue(nvb->splitPoints, maxedge, 1));
-        PetscCall(DMPlexPointQueueEnqueue(queue, maxedge));
+        PetscCall(UWNVBPointQueueEnqueue(queue, maxedge));
       }
       PetscCall(DMLabelSetValue(nvb->splitPoints, cell, 2));
     }
@@ -247,10 +362,10 @@ static PetscErrorCode UWNVBSplitLocalEdges(DMPlexTransform tr, DMPlexPointQueue 
 
 static PetscErrorCode UWNVBSplitPoint(PETSC_UNUSED DMLabel label, PetscInt p, PETSC_UNUSED PetscInt val, void *ctx)
 {
-  DMPlexPointQueue queue = (DMPlexPointQueue)ctx;
+  UWNVBPointQueue *queue = (UWNVBPointQueue *)ctx;
 
   PetscFunctionBegin;
-  PetscCall(DMPlexPointQueueEnqueue(queue, p));
+  PetscCall(UWNVBPointQueueEnqueue(queue, p));
   PetscFunctionReturn(PETSC_SUCCESS);
 }
 
@@ -297,7 +412,7 @@ static PetscErrorCode DMPlexTransformSetUp_UWNVB(DMPlexTransform tr)
   DM                  dm;
   DMLabel             active;
   PetscSF             pointSF;
-  DMPlexPointQueue    queue = NULL;
+  UWNVBPointQueue     queue;
   IS                  refineIS;
   const PetscInt     *refineCells;
   PetscInt            pStart, pEnd, p, eStart, eEnd, e, edgeLenSize, Nc, c;
@@ -318,7 +433,7 @@ static PetscErrorCode DMPlexTransformSetUp_UWNVB(DMPlexTransform tr)
   /* Add edges of cells that are marked for refinement to edge queue */
   PetscCall(DMPlexTransformGetActive(tr, &active));
   PetscCheck(active, PetscObjectComm((PetscObject)tr), PETSC_ERR_ARG_WRONGSTATE, "DMPlexTransform must have an adaptation label in order to use UWNVB algorithm");
-  PetscCall(DMPlexPointQueueCreate(1024, &queue));
+  PetscCall(UWNVBPointQueueCreate(1024, &queue));
   PetscCall(DMLabelGetStratumIS(active, DM_ADAPT_REFINE, &refineIS));
   PetscCall(DMLabelGetStratumSize(active, DM_ADAPT_REFINE, &Nc));
   if (refineIS) PetscCall(ISGetIndices(refineIS, &refineCells));
@@ -329,7 +444,7 @@ static PetscErrorCode DMPlexTransformSetUp_UWNVB(DMPlexTransform tr)
     PetscCall(DMPlexGetPointDepth(dm, cell, &depth));
     if (depth == 1) {
       PetscCall(DMLabelSetValue(nvb->splitPoints, cell, 1));
-      PetscCall(DMPlexPointQueueEnqueue(queue, cell));
+      PetscCall(UWNVBPointQueueEnqueue(&queue, cell));
     } else {
       PetscInt *closure = NULL;
       PetscInt  Ncl, cl;
@@ -341,7 +456,7 @@ static PetscErrorCode DMPlexTransformSetUp_UWNVB(DMPlexTransform tr)
 
         if (edge >= eStart && edge < eEnd) {
           PetscCall(DMLabelSetValue(nvb->splitPoints, edge, 1));
-          PetscCall(DMPlexPointQueueEnqueue(queue, edge));
+          PetscCall(UWNVBPointQueueEnqueue(&queue, edge));
         }
       }
       PetscCall(DMPlexRestoreTransitiveClosure(dm, cell, PETSC_TRUE, &Ncl, &closure));
@@ -354,11 +469,11 @@ static PetscErrorCode DMPlexTransformSetUp_UWNVB(DMPlexTransform tr)
   PetscCall(DMLabelPropagateBegin(nvb->splitPoints, pointSF));
   /* While edge queue is not empty (collective): split locally, then push the
      newly-marked edges across the point SF, repeat until globally empty. */
-  PetscCall(DMPlexPointQueueEmptyCollective((PetscObject)dm, queue, &empty));
+  PetscCall(UWNVBPointQueueEmptyCollective((PetscObject)dm, &queue, &empty));
   while (!empty) {
-    PetscCall(UWNVBSplitLocalEdges(tr, queue));
-    PetscCall(DMLabelPropagatePush(nvb->splitPoints, pointSF, UWNVBSplitPoint, queue));
-    PetscCall(DMPlexPointQueueEmptyCollective((PetscObject)dm, queue, &empty));
+    PetscCall(UWNVBSplitLocalEdges(tr, &queue));
+    PetscCall(DMLabelPropagatePush(nvb->splitPoints, pointSF, UWNVBSplitPoint, &queue));
+    PetscCall(UWNVBPointQueueEmptyCollective((PetscObject)dm, &queue, &empty));
   }
   PetscCall(DMLabelPropagateEnd(nvb->splitPoints, pointSF));
   /* Calculate refineType for each cell */
@@ -408,7 +523,7 @@ static PetscErrorCode DMPlexTransformSetUp_UWNVB(DMPlexTransform tr)
     PetscCall(DMLabelGetValue(nvb->splitPoints, p, &val));
   }
   /* Cleanup */
-  PetscCall(DMPlexPointQueueDestroy(&queue));
+  PetscCall(UWNVBPointQueueDestroy(&queue));
   PetscFunctionReturn(PETSC_SUCCESS);
 }
 
@@ -1247,7 +1362,7 @@ static PetscErrorCode uwnvb_grow_closure(DM work, PetscInt dim, DMLabel slot, DM
   IS               cis;
   const PetscInt  *ccells;
   DMLabel          req;
-  DMPlexPointQueue queue;
+  UWNVBPointQueue  queue;
   PetscSF          pointSF;
   PetscInt         n, i;
   PetscBool        empty;
@@ -1255,7 +1370,7 @@ static PetscErrorCode uwnvb_grow_closure(DM work, PetscInt dim, DMLabel slot, DM
   PetscFunctionBegin;
   PetscCall(DMGetPointSF(work, &pointSF));
   PetscCall(DMLabelCreate(PETSC_COMM_SELF, "uwnvb_req", &req));
-  PetscCall(DMPlexPointQueueCreate(1024, &queue));
+  PetscCall(UWNVBPointQueueCreate(1024, &queue));
   PetscCall(DMLabelGetStratumIS(C, 1, &cis));
   PetscCall(DMLabelGetStratumSize(C, 1, &n));
   if (cis) {
@@ -1266,18 +1381,18 @@ static PetscErrorCode uwnvb_grow_closure(DM work, PetscInt dim, DMLabel slot, DM
       PetscCall(DMLabelGetValue(req, refedge, &rv));
       if (rv != 1) {
         PetscCall(DMLabelSetValue(req, refedge, 1));
-        PetscCall(DMPlexPointQueueEnqueue(queue, refedge));
+        PetscCall(UWNVBPointQueueEnqueue(&queue, refedge));
       }
     }
     PetscCall(ISRestoreIndices(cis, &ccells));
   }
   PetscCall(ISDestroy(&cis));
   PetscCall(DMLabelPropagateBegin(req, pointSF));
-  PetscCall(DMPlexPointQueueEmptyCollective((PetscObject)work, queue, &empty));
+  PetscCall(UWNVBPointQueueEmptyCollective((PetscObject)work, &queue, &empty));
   while (!empty) {
-    while (!DMPlexPointQueueEmpty(queue)) {
+    while (!UWNVBPointQueueEmpty(&queue)) {
       PetscInt e = -1, star[128], ns, s;
-      PetscCall(DMPlexPointQueueDequeue(queue, &e));
+      PetscCall(UWNVBPointQueueDequeue(&queue, &e));
       PetscCall(uwnvb_edge_star_cells(work, dim, e, star, 128, &ns));
       for (s = 0; s < ns; ++s) {
         PetscInt d = star[s], de, cv, rv;
@@ -1288,19 +1403,19 @@ static PetscErrorCode uwnvb_grow_closure(DM work, PetscInt dim, DMLabel slot, DM
           PetscCall(DMLabelGetValue(req, de, &rv));
           if (rv != 1) {
             PetscCall(DMLabelSetValue(req, de, 1));
-            PetscCall(DMPlexPointQueueEnqueue(queue, de));
+            PetscCall(UWNVBPointQueueEnqueue(&queue, de));
           }
         }
       }
     }
     /* exchange newly-requested edges across ranks; the callback enqueues any
        that arrive here so their incident cells are processed next round */
-    PetscCall(DMLabelPropagatePush(req, pointSF, UWNVBSplitPoint, queue));
-    PetscCall(DMPlexPointQueueEmptyCollective((PetscObject)work, queue, &empty));
+    PetscCall(DMLabelPropagatePush(req, pointSF, UWNVBSplitPoint, &queue));
+    PetscCall(UWNVBPointQueueEmptyCollective((PetscObject)work, &queue, &empty));
   }
   PetscCall(DMLabelPropagateEnd(req, pointSF));
   PetscCall(DMLabelDestroy(&req));
-  PetscCall(DMPlexPointQueueDestroy(&queue));
+  PetscCall(UWNVBPointQueueDestroy(&queue));
   PetscFunctionReturn(PETSC_SUCCESS);
 }
 

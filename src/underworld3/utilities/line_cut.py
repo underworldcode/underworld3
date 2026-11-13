@@ -251,21 +251,36 @@ def _crossing_parameters(X, ends, lines, on_line):
     the child point star-forest conforming.
     """
     P, Q = X[ends[:, 0]], X[ends[:, 1]]
-    touches = on_line[ends[:, 0]] | on_line[ends[:, 1]]
     t = np.full(len(P), np.nan)
     multiply_crossed = np.zeros(len(P), dtype=bool)
-    for seg in _segments(lines):
-        sP, sQ = seg.side(P), seg.side(Q)
-        straddles = (sP * sQ < 0.0) & ~touches
-        with np.errstate(invalid="ignore", divide="ignore"):
-            tk = np.where(straddles, sP / (sP - sQ), np.nan)
-        # The crossing must lie between the segment's ends, not merely on the
-        # infinite line (or great circle) through them.
-        foot = P + np.where(straddles, tk, 0.0)[:, None] * (Q - P)
-        hit = straddles & seg.within(foot)
-        multiply_crossed |= hit & np.isfinite(t)
-        t = np.where(hit, tk, t)
+    # "Already on a line" is per line: an edge with an endpoint on line A is
+    # still crossed by line B, and skipping it left B's chain with a gap where
+    # the two lines run within an edge of each other (#494). A vertex on both
+    # (a junction) counts for both. Snapped vertices lie exactly on their line.
+    tol = 1e-12 * max(float(np.ptp(X, axis=0).max()) if len(X) else 1.0, 1.0)
+    for pts in lines:
+        on_this = on_line & (_distance_to_lines(X, [pts]) < tol)
+        touches = on_this[ends[:, 0]] | on_this[ends[:, 1]]
+        for seg in _segments([pts]):
+            t, multiply_crossed = _cross_one_segment(seg, P, Q, touches, t,
+                                                     multiply_crossed)
     return t, np.flatnonzero(multiply_crossed)
+
+
+def _cross_one_segment(seg, P, Q, touches, t, multiply_crossed):
+    """One segment's crossings of the edges ``P-Q`` (see
+    :func:`_crossing_parameters`)."""
+    sP, sQ = seg.side(P), seg.side(Q)
+    straddles = (sP * sQ < 0.0) & ~touches
+    with np.errstate(invalid="ignore", divide="ignore"):
+        tk = np.where(straddles, sP / (sP - sQ), np.nan)
+    # The crossing must lie between the segment's ends, not merely on the
+    # infinite line (or great circle) through them.
+    foot = P + np.where(straddles, tk, 0.0)[:, None] * (Q - P)
+    hit = straddles & seg.within(foot)
+    multiply_crossed = multiply_crossed | (hit & np.isfinite(t))
+    t = np.where(hit, tk, t)
+    return t, multiply_crossed
 
 
 def _vertex_h(X, ends):
@@ -279,8 +294,80 @@ def _vertex_h(X, ends):
     return total / np.maximum(count, 1.0)
 
 
+_UNPROTECTED_LABELS = {"depth", "celltype", "dim", "Elements", "Cell Sets",
+                       "Face Sets", "Vertex Sets", "Edge Sets"}
+
+
+def _owned_vertices(dm):
+    """This rank's owned vertices (not leaves of the point star-forest)."""
+    vS, vE = dm.getDepthStratum(0)
+    owned = np.ones(vE - vS, dtype=bool)
+    if dm.getComm().getSize() == 1:
+        return owned                     # serial: the point SF has no graph
+    leaves = dm.getPointSF().getGraph()[1]
+    if leaves is not None and len(leaves):
+        lv = np.asarray(leaves)
+        lv = lv[(lv >= vS) & (lv < vE)]
+        owned[lv - vS] = False
+    return owned
+
+
+def _internal_label_vertices(dm, exclude):
+    """Vertices on a labelled facet inside the domain: a region boundary such
+    as a placed band's skin (#595). Snapping one onto a cut moves that
+    boundary, silently, so the snap is refused. An interface is a label
+    stratum holding facets only; a stratum that also holds cells (a region
+    label, gmsh's ``Elements``) marks no interface and is skipped, as are the
+    topology and set labels and the cut's own label. Facets on the domain
+    boundary are left out (PETSc's boundary marking skips partition-seam
+    facets, so this is the same on any partition). COLLECTIVE: the mask is
+    OR-reduced over the ranks sharing each vertex."""
+    vS, vE = dm.getDepthStratum(0)
+    fS, fE = dm.getHeightStratum(1)
+    bname = "__line_cut_domain_boundary__"
+    dm.createLabel(bname)
+    dm.markBoundaryFaces(bname, 1)
+    bnd = dm.getLabel(bname)
+    mask = np.zeros(vE - vS, dtype=bool)
+    cS, cE = dm.getHeightStratum(0)
+    names = [dm.getLabelName(i) for i in range(dm.getNumLabels())]
+    names = [n for n in names
+             if n not in _UNPROTECTED_LABELS and n != exclude and n != bname]
+
+    def strata(name):
+        lab = dm.getLabel(name)
+        values = lab.getValueIS()
+        for v in (values.getIndices() if values.getSize() else []):
+            pts = lab.getStratumIS(int(v))
+            yield (np.asarray(pts.getIndices()) if pts is not None and pts.getSize()
+                   else np.zeros(0, dtype=np.int64))
+
+    # A label that holds cells on ANY rank is a region, not an interface; the
+    # verdict is agreed over the ranks so every rank protects the same set.
+    region = {n for n in names
+              if any(((pts >= cS) & (pts < cE)).any() for pts in strata(n))}
+    region = set().union(*uw.mpi.comm.allgather(region))
+    for name in names:
+        if name in region:
+            continue
+        for pts in strata(name):
+            for p in pts:
+                p = int(p)
+                if not fS <= p < fE or bnd.getValue(p) == 1:
+                    continue
+                for q in dm.getTransitiveClosure(p)[0]:
+                    if vS <= q < vE:
+                        mask[q - vS] = True
+    dm.removeLabel(bname)
+    pStart, pEnd = dm.getChart()
+    flag = np.zeros(pEnd - pStart, dtype=np.int32)
+    flag[np.flatnonzero(mask) + vS - pStart] = 1
+    _sf_logical_or(dm, flag)
+    return flag[np.arange(vE - vS) + vS - pStart] == 1
+
+
 def _resolve_snapping(dm, X, ends, lines, snap_frac, scale, snap_quality=0.5,
-                      snap_dist=0.0):
+                      snap_dist=0.0, protected=None):
     """Which vertices to move onto the line, and where the crossings then land.
 
     A crossing at parameter ``t`` on an edge sits ``t`` of the way along it, so
@@ -337,6 +424,12 @@ def _resolve_snapping(dm, X, ends, lines, snap_frac, scale, snap_quality=0.5,
     # terminating chain legal.
     fixed = _distance_to_lines(X, lines) < 1e-12 * scale
     vetoed = np.zeros(len(X), dtype=bool)
+    # A vertex on a labelled internal boundary (a band's skin) never moves: its
+    # crossings are split instead (#595). `refused` records the ones snapping
+    # wanted, for the caller's warning.
+    if protected is not None:
+        vetoed |= protected & ~fixed
+    refused = np.zeros(len(X), dtype=bool)
     # Distance from each vertex to the line, in units of the local h. The
     # along-edge criterion cannot see this: a vertex can sit a fraction of an
     # element from the line while every edge meeting it is crossed near its
@@ -380,9 +473,13 @@ def _resolve_snapping(dm, X, ends, lines, snap_frac, scale, snap_quality=0.5,
         pick = ends[rows, np.where(t[rows] < 0.5, 0, 1)]
         proposed = on_line.copy()
         proposed[pick[~vetoed[pick]]] = True
+        if protected is not None:
+            refused[pick[protected[pick] & ~fixed[pick]]] = True
         if reach is not None:
-            close = (_distance_to_lines(X, lines) < reach) & ~vetoed
-            proposed |= close
+            close_any = _distance_to_lines(X, lines) < reach
+            if protected is not None:
+                refused |= close_any & protected & ~fixed
+            proposed |= close_any & ~vetoed
 
         # COLLECTIVE, so every rank must reach it — including one that proposes
         # nothing. An early `if not near.any(): return` here deadlocked at np=3:
@@ -417,6 +514,9 @@ def _resolve_snapping(dm, X, ends, lines, snap_frac, scale, snap_quality=0.5,
         settled = uw.mpi.comm.allreduce(
             int(np.array_equal(proposed, on_line)), op=MPI.MIN)
         if settled:
+            if protected is not None:
+                _resolve_snapping.refused = int(uw.mpi.comm.allreduce(
+                    int((refused & _owned_vertices(dm)).sum())))
             return on_line, X_snapped, t, multiply_crossed
         on_line = proposed
 
@@ -496,6 +596,24 @@ def _minimal_face_vertices(X, cell_verts, point):
     c = int(inside[0])
     on = np.array([la[c] > tol, lb[c] > tol, lc[c] > tol])
     return cell_verts[c][on]
+
+
+def _face_is_on_the_domain_boundary(dm, face, on_wall, shared):
+    """Whether a mesh face, given by its vertices, lies on the domain boundary.
+
+    A vertex is on the boundary when ``on_wall`` says so. An edge is on it
+    when it has one cell and is not ``shared``: an edge of a partition seam
+    also has one cell locally, and an interior edge can join two boundary
+    vertices across a corner of the domain. A cell never is.
+    """
+    if len(face) == 1:
+        return bool(on_wall[face[0]])
+    if len(face) != 2 or not on_wall[face].all():
+        return False
+    vS, _vE = dm.getDepthStratum(0)
+    pStart, _pEnd = dm.getChart()
+    edge = int(dm.getJoin([int(v) + vS for v in face])[0])
+    return len(dm.getSupport(edge)) == 1 and not shared[edge - pStart]
 
 
 def _cell_quality(X, cell_verts):
@@ -781,8 +899,18 @@ def cut_along_lines(dm, lines, snap_frac=0.10, label=CUT_LABEL, label_value=1,
     # number is valid for the child meshes the pass loop produces.
     scale = _global_extent(dm)
 
+    protected = _internal_label_vertices(dm, label)
+    _resolve_snapping.refused = 0
     on_line, X_snapped, t, multiply_crossed = _resolve_snapping(
-        dm, X, ends, lines, snap_frac, scale, snap_quality, snap_dist)
+        dm, X, ends, lines, snap_frac, scale, snap_quality, snap_dist,
+        protected=protected)
+    if _resolve_snapping.refused and uw.mpi.rank == 0:
+        import warnings
+
+        warnings.warn(
+            f"cut_along_lines: {_resolve_snapping.refused} vertex(es) on a labelled "
+            f"internal boundary were not snapped onto the cut; their crossings are "
+            f"split instead, so the boundary keeps its shape (#595).", stacklevel=2)
     eS, _eE = dm.getDepthStratum(1)
     crossed = np.flatnonzero(np.isfinite(t)) + eS
 
@@ -939,7 +1067,7 @@ def cut_along_lines(dm, lines, snap_frac=0.10, label=CUT_LABEL, label_value=1,
     }
 
 
-def pull_vertex_onto(dm, targets):
+def pull_vertex_onto(dm, targets, min_quality=0.1):
     """Move the nearest mesh vertex onto each target point; return a new mesh.
 
     COLLECTIVE. This is how a fault TIP or a network JUNCTION is placed, and both
@@ -962,11 +1090,31 @@ def pull_vertex_onto(dm, targets):
     targets : array_like
         An ``(N, cdim)`` array of points, or one point — three coordinates on
         a sphere surface mesh.
+    min_quality : float or None
+        Floor on the quality (1 equilateral, 0 flat) of the cells around an
+        interior vertex that is taken IN PLACE OF a nearer boundary vertex.
+        Such a corner is passed over when it would invert a cell or leave one
+        below the floor (or below its present quality, when that is already
+        lower), and the next nearest interior corner of the cell is tried;
+        the call raises when none is left. The floor is not a floor on the
+        mesh returned: the nearest corner itself is taken with no such test,
+        as it always was, and so is an interior corner exactly as near as
+        the boundary corner. ``None`` disables the test.
 
     Returns
     -------
     PETSc.DMPlex
         A copy with one vertex moved onto each target.
+
+    Raises
+    ------
+    ValueError
+        A target inside the mesh that no vertex can be put on: every corner
+        of the cell or edge holding it is on the boundary of the mesh, or
+        each interior corner that could take it would ruin a cell (see
+        ``min_quality``). Raised on every rank.
+    ValueError
+        The mesh is distributed with an overlap. Raised on every rank.
 
     Notes
     -----
@@ -983,6 +1131,83 @@ def pull_vertex_onto(dm, targets):
     choice to the containment relation the cut actually tests. A target outside
     the mesh falls back to the nearest vertex anywhere.
 
+    A target INSIDE the mesh never takes a vertex of the mesh boundary.
+    For a target on a boundary edge the candidates are that edge's two ends,
+    and the one taken slides along the edge; for a target inside the mesh
+    they are the INTERIOR corners of the face holding it, however close a
+    boundary corner is. Moving a boundary vertex inward dents the domain, and
+    turns a fault tip that is clear of the boundary into a boundary vertex,
+    which the split refuses. A target whose face has no interior corner is
+    refused with ``ValueError``.
+
+    The boundary is every edge with one cell, so the two sides of a fault
+    already split into the mesh are boundary as the walls of the domain are.
+    A target beside an earlier fault takes an interior vertex and leaves the
+    fault's own vertices where they are, or is refused as it would be under a
+    wall.
+
+    The mesh must be distributed WITHOUT overlap, as ``Mesh.dm`` is. In an
+    overlap a boundary edge is held by two ranks and cannot be told from an
+    edge of a partition seam, and the call raises. Measured before the
+    refusal, on two ranks with an overlap of one cell: 91 of 2376 interior
+    targets took a boundary vertex, where none did on one rank.
+
+    A target is read as ON an edge when it is within 1e-9 of the cell's
+    height of it (the containment tolerance, in barycentric coordinates), so
+    a target that close under a boundary edge takes one of the edge's ends.
+
+    An interior corner pulled close under the boundary leaves a thin cell
+    between itself and the boundary, as thin as the target is close: the
+    quality is 1.1 to 2.3 times the target's height above the boundary edge
+    as a fraction of the cell's. ``min_quality`` is the limit: at the default
+    0.1 a target in a cell with an edge on the boundary is refused when it is
+    closer to that edge than about a twentieth to a tenth of the cell's
+    height. Measured over every such cell: 0.043 to 0.068 on a regular 1/12
+    box, 0.045 to 0.083 on an irregular one, 0.047 to 0.087 on an annulus of
+    cell size 0.1.
+
+    In a cell that touches the boundary at one corner the two interior
+    corners are tried in turn, and the target is refused only close beside
+    that corner (within 0.16 of the shorter edge from it, on the same
+    meshes). A cell at a corner of the domain can have two boundary corners
+    and no boundary edge: the edge joining them is interior and runs from one
+    wall to the other, and a target close to it is refused wherever it is
+    along that edge, since the one interior corner put there flattens the
+    cell against it.
+
+    On a curved boundary the boundary is the mesh's own chords. A point of
+    the true curve on a concave wall falls inside a cell, a sagitta from the
+    chord, and is an interior target, refused on the same ground where the
+    sagitta is below that limit. On an inner radius of 0.5 every point of
+    the circle tried was refused at cell size 0.15 and finer; at 0.175 to
+    0.25 the point over the middle of each chord was placed, by the interior
+    corner, and those over its quarter points refused; at 0.3 the quarter
+    points were placed too. The cells left had a quality of 0.10 to 0.15.
+
+    Where a split fault has to end closer under the boundary than this, a
+    welded fault zone with a transverse-isotropic rheology carries it with
+    no vertex at the tip.
+
+    Two cases still move a boundary vertex off the boundary. A target OUTSIDE
+    the mesh takes the nearest vertex anywhere, which is usually a boundary
+    vertex. And a vertex where the boundary turns slides along one boundary
+    edge and off the other when it is the nearer end of the edge holding the
+    target. A box corner is such a vertex, and so is every vertex of a curved
+    wall: a target on a chord moves an end of that chord off the curve, and
+    the domain gains or loses the sliver between the old chord and the new.
+
+    Two targets of one call can still choose the same vertex, and the later one
+    then takes it from the earlier, which is left with no vertex (issue #559).
+    The boundary rule makes this easier to reach beside a boundary: two targets
+    in neighbouring boundary cells that share their one interior corner collide
+    at one cell spacing, and a target whose nearer interior corner is passed
+    over takes the further one, which an earlier or a later target may hold.
+    Keep targets further apart than the longest edge of the cells they sit
+    in: of 1375 calls so spaced, each of four to six random targets beside
+    the boundary of the three meshes above, none left a target without a
+    vertex, where 14 to 25 of 150 calls did at one cell spacing on the
+    irregular box.
+
     The choice is made from the coordinates alone and reduced globally, so every
     rank moves the same vertex: a rank-local nearest-vertex search picks a
     different one on each rank, which is how the mesh stops being
@@ -990,10 +1215,34 @@ def pull_vertex_onto(dm, targets):
     two distinct vertices at bit-identical distance would be arbitrary, and that
     is measure-zero rather than handled.
     """
+    # place_surface imports this module, so its boundary mask is imported here
+    from underworld3.utilities.place_surface import _true_wall_vertex_mask
+    from underworld3.utilities.reconnect import _shared_points
+
     X = _coords(dm)
     arr = X.copy()
     scale = _global_extent(dm)
     cell_verts = _cell_vertices(dm)
+    on_wall = _true_wall_vertex_mask(dm, len(X))
+    shared = _shared_points(dm)
+    # A boundary edge is one with a single cell that no other rank holds. In
+    # an overlap a boundary edge is held by two ranks and reads as interior,
+    # so the boundary cannot be told from a partition seam there. Cells are
+    # held by more than one rank only when the mesh has an overlap.
+    cS, cE = dm.getHeightStratum(0)
+    pStart, _pEnd = dm.getChart()
+    if uw.mpi.comm.allreduce(int(shared[cS - pStart:cE - pStart].any()),
+                             op=MPI.MAX):
+        raise ValueError(
+            "pull_vertex_onto: the mesh is distributed with an overlap (some "
+            "cell is held by more than one rank). The domain boundary is read "
+            "from the edges that have one cell and are held by one rank, and "
+            "in an overlap a boundary edge is held by two, so a target inside "
+            "the mesh could take a boundary vertex. Pass the mesh without "
+            "overlap; `Mesh.dm` has none.")
+    # the way each cell is wound, read from the mesh as given: a cell that an
+    # earlier target of this call turned over is inverted, not wound backwards
+    wound = np.where(_cell_quality(X, cell_verts) < 0.0, -1.0, 1.0)
 
     cdim = X.shape[1]
     for t in np.atleast_2d(np.asarray(targets, dtype=float))[:, :cdim]:
@@ -1008,29 +1257,132 @@ def pull_vertex_onto(dm, targets):
         # of the two cells sharing that edge won by 0.4% at 9.963e-03.
         face = _minimal_face_vertices(X, cell_verts, t)
         held = len(face) > 0
-        candidates = face if held else np.arange(len(X))
-        d = np.linalg.norm(X[candidates] - t, axis=1)
-        # Reduced as (outside, distance, x, y) so both decisions ride one
-        # reduction: tuples compare lexicographically, so MIN prefers ANY rank
-        # that holds a containing cell over every rank that does not, then the
-        # closest corner, then the one lowest in coordinate order. The
-        # outside-flag has to lead: a rank with no part of the containing cell
-        # proposes its own nearest vertex, which can easily be closer than the
-        # right answer, and a reduction on distance alone would take it.
+        # A boundary vertex may take a target on the boundary, and no other:
+        # moved inward it dents the domain. Every rank holding the target
+        # reads the same face, so they agree on which corners are left.
+        # TODO(BUG): a boundary vertex where the boundary turns (a box corner,
+        # any vertex of a curved wall) still slides along one boundary edge
+        # and off the other when it is the nearer end of the edge holding the
+        # target. See issue #1089.
+        if not held:
+            candidates = np.arange(len(X))
+        elif _face_is_on_the_domain_boundary(dm, face, on_wall, shared):
+            candidates = face
+        else:
+            candidates = face[~on_wall[face]]
+        # Reduced as (flag, distance, x, y, note) so every decision rides one
+        # reduction: tuples compare lexicographically, so MIN takes the lowest
+        # flag, then the closest corner, then the one lowest in coordinate
+        # order. The flags, in the order they must win:
         #
-        # All ranks flagging 1 means the target lies outside the mesh, and the
-        # fallback is the nearest vertex anywhere — the behaviour before the
-        # containment rule, kept because a target off the mesh still has to
-        # land somewhere.
-        local = ((0 if held else 1, float(d.min()),
-                  *X[candidates[int(d.argmin())]])
-                 if d.size else (1, np.inf, *([np.inf] * cdim)))
-        reduced = uw.mpi.comm.allreduce(local, op=MPI.MIN)
+        #    0  the target is held and a corner may take it. The note is 0
+        #       when that corner is interior and a boundary corner of the
+        #       face is strictly nearer: it stands in for the boundary corner.
+        #       It is 1 when the corner is the nearest of its face. Two ranks
+        #       can read the face differently within the containment
+        #       tolerance, and MIN then keeps the reading that is tested.
+        #    1  the target is held and every corner of its face is on the
+        #       domain boundary: the refusal. It carries the nearest of them
+        #       for the message. It ranks after 0 so that a rank reading the
+        #       target inside a cell is believed over one reading it on that
+        #       cell's edge, the two differing only within the containment
+        #       tolerance.
+        #    2  this rank holds no cell containing the target. A rank with no
+        #       part of the containing cell proposes its own nearest vertex,
+        #       which can easily be closer than the right answer, so the flag
+        #       has to lead the distance. All ranks flagging 2 means the
+        #       target lies outside the mesh, and the fallback is the nearest
+        #       vertex anywhere — the behaviour before the containment rule,
+        #       kept because a target off the mesh still has to land
+        #       somewhere.
+        #
+        # An interior corner that stands in for a boundary corner is taken
+        # only when the cells around it stay sound (min_quality). One that
+        # fails is set aside, on every rank, and the next nearest interior
+        # corner of the face is proposed: the target can lie close to an edge
+        # of its own cell and well clear of the boundary, where one corner
+        # flattens a cell and another does not.
+        refused = []
+        while True:
+            for corner, _n, _worst in refused:
+                candidates = candidates[
+                    np.linalg.norm(X[candidates] - corner, axis=1)
+                    >= 1e-12 * scale]
+            if candidates.size:
+                d = np.linalg.norm(X[candidates] - t, axis=1)
+                nearest = np.linalg.norm(X[face] - t, axis=1).min() if held else d.min()
+                local = (0 if held else 2, float(d.min()),
+                         *X[candidates[int(d.argmin())]],
+                         int(d.min() <= nearest + 1e-12 * scale))
+            elif held:
+                d = np.linalg.norm(X[face] - t, axis=1)
+                local = (1, float(d.min()), *X[face[int(d.argmin())]], 0)
+            else:
+                local = (2, np.inf, *([np.inf] * cdim), 0)
+            flag, distance, *where, is_nearest = uw.mpi.comm.allreduce(
+                local, op=MPI.MIN)
+            where = np.array(where)
+            if refused and flag != 0:
+                # every interior corner of the face has been set aside
+                corner, n_ruined, worst = refused[0]
+                raise ValueError(
+                    f"pull_vertex_onto: the target {tuple(float(x) for x in t)} "
+                    "is inside the mesh and the nearest corner of its cell is "
+                    "a boundary vertex, which a target inside the mesh never "
+                    f"takes. None of the {len(refused)} interior corner(s) of "
+                    "the cell can take it: the nearest, at "
+                    f"{tuple(float(x) for x in corner)}, would leave "
+                    f"{n_ruined} cell(s) below min_quality={min_quality} "
+                    f"(worst {worst:.3g}; negative is inverted). The "
+                    "boundary here is the domain boundary or a side of a "
+                    "fault already split into the mesh. The target is too "
+                    "close to it, or to an edge of its cell that runs to it, "
+                    "to carry a vertex of its own, or an earlier target of "
+                    "this call has already moved a corner. Put the target on "
+                    "the boundary, move it further from the boundary, or "
+                    "refine the mesh there. A fault that has to end this "
+                    "close under the boundary need not be split there: a "
+                    "welded fault zone with a transverse-isotropic rheology "
+                    "carries it.")
+            if flag == 1:
+                raise ValueError(
+                    f"pull_vertex_onto: the target {tuple(float(x) for x in t)} is "
+                    "inside the mesh and every corner of the cell or edge holding "
+                    "it is on the domain boundary or on a side of a fault already "
+                    "split into the mesh (the nearest, "
+                    f"{tuple(float(x) for x in where)}, is {distance:.3e} away). A "
+                    "target inside the mesh never takes a boundary vertex, so no "
+                    "vertex can be put on this target. Move the target further "
+                    "from the boundary, or refine the mesh there.")
 
-        # Move it by POSITION, not by index: the chosen vertex may be a ghost
-        # here and an owned point there, and both copies have to end up in the
-        # same place without a star-forest exchange.
-        hit = np.flatnonzero(np.linalg.norm(X - np.array(reduced[2:]), axis=1) < 1e-12 * scale)
+            # Move it by POSITION, not by index: the chosen vertex may be a
+            # ghost here and an owned point there, and both copies have to end
+            # up in the same place without a star-forest exchange.
+            hit = np.flatnonzero(np.linalg.norm(X - where, axis=1) < 1e-12 * scale)
+            if min_quality is None:
+                break
+            if flag != 0 or is_nearest:
+                break
+            # The interior corner comes from further away than the boundary
+            # corner it stands in for, and can land close under the boundary:
+            # the test is made on the mesh as the earlier targets of this call
+            # have left it. The cells around a vertex are spread across the
+            # ranks sharing it, so the count is reduced, on every rank: the
+            # note is the same on all.
+            before = _cell_quality(arr, cell_verts) * wound
+            moved = arr.copy()
+            moved[hit] = t
+            after = _cell_quality(moved, cell_verts) * wound
+            ruined = (np.isin(cell_verts, hit).any(axis=1)
+                      & ((after <= 0.0)
+                         | (after < np.minimum(min_quality, before))))
+            n_ruined = uw.mpi.comm.allreduce(int(ruined.sum()), op=MPI.SUM)
+            if not n_ruined:
+                break
+            worst = uw.mpi.comm.allreduce(
+                float(after[ruined].min()) if ruined.any() else np.inf,
+                op=MPI.MIN)
+            refused.append((where, n_ruined, worst))
         arr[hit] = t
 
     out = dm.clone()
