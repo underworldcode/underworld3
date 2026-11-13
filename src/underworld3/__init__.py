@@ -664,11 +664,13 @@ def unwrap(fn, keep_constants=True, return_self=True, apply_scaling=False):
     """
     from .function.expressions import unwrap as _unwrap
 
+    # By keyword: the second positional parameter of expressions.unwrap is
+    # `depth`, so positional forwarding expanded one level, or none (#824).
     if apply_scaling:
         with _apply_scaling():
-            return _unwrap(fn, keep_constants, return_self)
+            return _unwrap(fn, keep_constants=keep_constants, return_self=return_self)
     else:
-        return _unwrap(fn, keep_constants, return_self)
+        return _unwrap(fn, keep_constants=keep_constants, return_self=return_self)
 
 
 # Enhanced variables with units and mathematical operations (internal use only)
