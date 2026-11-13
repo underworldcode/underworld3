@@ -74,6 +74,7 @@ class BoundingSurface:
         # boundary's vertices may have left it by.
         self._prev_kind = None
         self.release_reason = None
+        self._restore_warning_given = False
         # An INTERIOR surface (an embedded interface such as the Internal
         # circle/sphere of the *InternalBoundary meshes) is snapped-to by
         # adapt() so refinement follows its true geometry, but is NOT
@@ -248,7 +249,7 @@ def _release_if_refinement_left_it(mesh, surface):
     a boundary where refinement placed them (moving them onto the surface would
     have turned cells inside out), the boundary is not on the surface being
     registered, so its declaration is released at once."""
-    if surface.label in getattr(mesh, "_refinement_left_off_surface", ()):
+    if surface.label in mesh._refinement_left_off_surface:
         surface.release(
             "refinement left some of its vertices where the refinement callback could "
             "not move them onto the surface without turning a cell inside out")
