@@ -4419,7 +4419,10 @@ class Mesh(Stateful, uw_object):
         if facets is None or not len(facets):
             return facets
         vS = dm.getDepthStratum(0)[0]
-        keep = numpy.array([not shared.intersection(int(q) for q in dm.getJoin(
+        # the FULL join: getJoin walks one level up, so the three vertices of
+        # a tet facet have no common edge and joined to nothing (3-D seam
+        # facets were never dropped)
+        keep = numpy.array([not shared.intersection(int(q) for q in dm.getFullJoin(
                              [int(v) + vS for v in facet]))
                          for facet in facets], dtype=bool)
         return facets[keep]

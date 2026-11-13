@@ -38,6 +38,8 @@ CASES = {
     # pinned; a partition seam along it must not give it any (H1, #1109)
     "internal_2d": (2, None, (2, 4), False),
     "internal_2d_scattered": (2, None, (4,), True),
+    # the 3-D seam test: a tet facet's point is its vertices' FULL join
+    "internal_3d_scattered": (3, None, (2,), True),
 }
 
 
@@ -75,7 +77,11 @@ def _move(case, out):
     dmod = uw.discretisation.discretisation_mesh
     original = _scatter_cells(dmod) if scatter and uw.mpi.size > 1 else None
     try:
-        if case.startswith("internal"):
+        if case.startswith("internal") and dim == 3:
+            mesh = uw.meshing.BoxInternalBoundary(
+                elementRes=(4, 4, 4), zelementRes=(2, 2), minCoords=(0.0, 0.0, 0.0),
+                maxCoords=(1.0, 1.0, 1.0), zintCoord=0.5, simplex=True)
+        elif case.startswith("internal"):
             mesh = uw.meshing.BoxInternalBoundary(
                 elementRes=(8, 8), zelementRes=(4, 4), minCoords=(0.0, 0.0),
                 maxCoords=(1.0, 1.0), zintCoord=0.5, simplex=True)
