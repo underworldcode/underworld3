@@ -321,10 +321,10 @@ stokes.penalty = 0.1
 
 # Velocity boundary conditions
 stokes.add_dirichlet_bc(1.0, "Left", 0)
-stokes.add_dirichlet_bc(0, "Left", 1)
+stokes.add_dirichlet_bc((None, 0), "Left")
 stokes.add_dirichlet_bc(-1.0, "Right", 0)
-stokes.add_dirichlet_bc(0, "Right", 1)
-stokes.add_dirichlet_bc((0.0), "Bottom", (1))
+stokes.add_dirichlet_bc((None, 0), "Right")
+stokes.add_dirichlet_bc((None, 0.0), "Bottom")
 # stokes.add_dirichlet_bc((0.0), "Top", (1))
 
 
