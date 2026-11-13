@@ -2098,8 +2098,12 @@ class SNES_Stokes(_StressHistoryMixin, _ConstitutiveModelStateMixin, SNES_Stokes
         timestep : float, optional
             Advection timestep. Required when stress history is active.
         time : float or Quantity, optional
-            Physical evaluation time for expressions using ``mesh.t``. This is
-            distinct from the viscoelastic integration ``timestep``.
+            Physical time for this solve, set as PETSc's time on the solver's
+            DM. This is distinct from the viscoelastic integration
+            ``timestep``. Expressions written with ``mesh.t`` do not follow
+            it: ``mesh.t`` carries the model clock
+            (``uw.get_default_model().tracker.time``), in source terms and
+            in essential conditions alike (#410). Set the clock.
         _force_setup : bool
             Force rebuild of pointwise functions.
         verbose : bool
@@ -5652,7 +5656,8 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
         self._penalty = expression(R"{\uplambda}", 0, "Incompressibility Penalty")
 
         self.restore_points_to_domain_func = restore_points_func
-        self._bodyforce = sympy.Matrix([[0] * self.mesh.dim]).T
+        # a row, as the setter stores it and F0's time term is (#1034)
+        self._bodyforce = sympy.Matrix([[0] * self.mesh.dim])
         self._constitutive_model = None
 
         # self._E = self.mesh.vector.strain_tensor(self.u.sym)

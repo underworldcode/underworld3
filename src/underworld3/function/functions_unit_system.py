@@ -670,7 +670,7 @@ def _apply_monotone_limit(
             "Composite expressions such as `a*T.sym + b` cannot be bounded "
             "against a single source field."
         )
-    var, _comp = hit  # use the full var.data (matches the SL limiter)
+    var, _comp = hit  # the whole variable (-1) or one of its components
 
     # --- Convert coords to the ND space of the source DOF cloud ----------
     # In unit-aware runs `coords` is dimensional (e.g. metres) while
@@ -720,6 +720,13 @@ def _apply_monotone_limit(
     # symmetric tensor stores one column for two entries.
     rows, columns = var.sym.shape
     stored_column = [var._data_layout(i, j) for i in range(rows) for j in range(columns)]
+    if _comp >= 0:
+        # One component of the variable: ``value`` holds that entry alone, so its
+        # bound is that entry's stored column, not the whole variable's (#1000).
+        entry = var.sym_1d[_comp]
+        i, j = next((i, j) for i in range(rows) for j in range(columns)
+                    if var.sym[i, j] == entry)
+        stored_column = [var._data_layout(i, j)]
     nbr_min = nbr_vals.min(axis=1)[:, stored_column]
     nbr_max = nbr_vals.max(axis=1)[:, stored_column]
 

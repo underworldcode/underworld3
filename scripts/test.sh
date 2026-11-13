@@ -345,6 +345,7 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   batch 4 tests/test_005[1-9]*py tests/test_00[6-7]*py
   batch 4 tests/test_01*py
   batch 4 tests/test_02*py tests/test_03*py
+  batch 4 tests/test_04*py
 
   # Intermediate tests (0500-0799: data structures, transformations, enhanced interfaces)
   # test_06*py was disabled as "potentially problematic" and stayed that way. The
@@ -401,6 +402,8 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   batch 3 tests/parallel/test_1152_fac_zone_survives_a_mover_parallel.py
   # So is the boundary-slip classification of seam vertices (#1086).
   batch 3 tests/parallel/test_1086_boundary_slip_classification_parallel.py
+  # So is a split fault's sides slipping as in serial (#1103).
+  batch 3 tests/parallel/test_1103_split_fault_slip_parallel.py
   # So is the merge of coarse unknowns sharing one fine image (#1101).
   batch 3 tests/parallel/test_1101_custom_mg_dependent_columns_parallel.py
   # So is a fault cut into a moved adapt child under the #1101 guard (#1111).
@@ -410,6 +413,8 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   batch 3 tests/parallel/test_1175_shell_region_labels.py
   # So is the line cut on a mesh wound clockwise throughout (#874).
   batch 3 tests/parallel/test_0874_mirrored_mesh_cut_parallel.py
+  # So are the multigrid levels an adapt keeps, the same at any rank count (#865).
+  batch 3 tests/parallel/test_1177_mg_levels_same_at_any_rank_count_parallel.py
   # test_106*/test_107* were held back pending "a triage/deselect decision". That
   # decision is made: the band is not the unit of exclusion. Of the 243 tests in
   # the deferred bands only 26 are level_3 or tier_c; 55 are level_1 AND tier_a —

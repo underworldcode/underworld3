@@ -251,21 +251,36 @@ def _crossing_parameters(X, ends, lines, on_line):
     the child point star-forest conforming.
     """
     P, Q = X[ends[:, 0]], X[ends[:, 1]]
-    touches = on_line[ends[:, 0]] | on_line[ends[:, 1]]
     t = np.full(len(P), np.nan)
     multiply_crossed = np.zeros(len(P), dtype=bool)
-    for seg in _segments(lines):
-        sP, sQ = seg.side(P), seg.side(Q)
-        straddles = (sP * sQ < 0.0) & ~touches
-        with np.errstate(invalid="ignore", divide="ignore"):
-            tk = np.where(straddles, sP / (sP - sQ), np.nan)
-        # The crossing must lie between the segment's ends, not merely on the
-        # infinite line (or great circle) through them.
-        foot = P + np.where(straddles, tk, 0.0)[:, None] * (Q - P)
-        hit = straddles & seg.within(foot)
-        multiply_crossed |= hit & np.isfinite(t)
-        t = np.where(hit, tk, t)
+    # "Already on a line" is per line: an edge with an endpoint on line A is
+    # still crossed by line B, and skipping it left B's chain with a gap where
+    # the two lines run within an edge of each other (#494). A vertex on both
+    # (a junction) counts for both. Snapped vertices lie exactly on their line.
+    tol = 1e-12 * max(float(np.ptp(X, axis=0).max()) if len(X) else 1.0, 1.0)
+    for pts in lines:
+        on_this = on_line & (_distance_to_lines(X, [pts]) < tol)
+        touches = on_this[ends[:, 0]] | on_this[ends[:, 1]]
+        for seg in _segments([pts]):
+            t, multiply_crossed = _cross_one_segment(seg, P, Q, touches, t,
+                                                     multiply_crossed)
     return t, np.flatnonzero(multiply_crossed)
+
+
+def _cross_one_segment(seg, P, Q, touches, t, multiply_crossed):
+    """One segment's crossings of the edges ``P-Q`` (see
+    :func:`_crossing_parameters`)."""
+    sP, sQ = seg.side(P), seg.side(Q)
+    straddles = (sP * sQ < 0.0) & ~touches
+    with np.errstate(invalid="ignore", divide="ignore"):
+        tk = np.where(straddles, sP / (sP - sQ), np.nan)
+    # The crossing must lie between the segment's ends, not merely on the
+    # infinite line (or great circle) through them.
+    foot = P + np.where(straddles, tk, 0.0)[:, None] * (Q - P)
+    hit = straddles & seg.within(foot)
+    multiply_crossed = multiply_crossed | (hit & np.isfinite(t))
+    t = np.where(hit, tk, t)
+    return t, multiply_crossed
 
 
 def _vertex_h(X, ends):
@@ -279,8 +294,80 @@ def _vertex_h(X, ends):
     return total / np.maximum(count, 1.0)
 
 
+_UNPROTECTED_LABELS = {"depth", "celltype", "dim", "Elements", "Cell Sets",
+                       "Face Sets", "Vertex Sets", "Edge Sets"}
+
+
+def _owned_vertices(dm):
+    """This rank's owned vertices (not leaves of the point star-forest)."""
+    vS, vE = dm.getDepthStratum(0)
+    owned = np.ones(vE - vS, dtype=bool)
+    if dm.getComm().getSize() == 1:
+        return owned                     # serial: the point SF has no graph
+    leaves = dm.getPointSF().getGraph()[1]
+    if leaves is not None and len(leaves):
+        lv = np.asarray(leaves)
+        lv = lv[(lv >= vS) & (lv < vE)]
+        owned[lv - vS] = False
+    return owned
+
+
+def _internal_label_vertices(dm, exclude):
+    """Vertices on a labelled facet inside the domain: a region boundary such
+    as a placed band's skin (#595). Snapping one onto a cut moves that
+    boundary, silently, so the snap is refused. An interface is a label
+    stratum holding facets only; a stratum that also holds cells (a region
+    label, gmsh's ``Elements``) marks no interface and is skipped, as are the
+    topology and set labels and the cut's own label. Facets on the domain
+    boundary are left out (PETSc's boundary marking skips partition-seam
+    facets, so this is the same on any partition). COLLECTIVE: the mask is
+    OR-reduced over the ranks sharing each vertex."""
+    vS, vE = dm.getDepthStratum(0)
+    fS, fE = dm.getHeightStratum(1)
+    bname = "__line_cut_domain_boundary__"
+    dm.createLabel(bname)
+    dm.markBoundaryFaces(bname, 1)
+    bnd = dm.getLabel(bname)
+    mask = np.zeros(vE - vS, dtype=bool)
+    cS, cE = dm.getHeightStratum(0)
+    names = [dm.getLabelName(i) for i in range(dm.getNumLabels())]
+    names = [n for n in names
+             if n not in _UNPROTECTED_LABELS and n != exclude and n != bname]
+
+    def strata(name):
+        lab = dm.getLabel(name)
+        values = lab.getValueIS()
+        for v in (values.getIndices() if values.getSize() else []):
+            pts = lab.getStratumIS(int(v))
+            yield (np.asarray(pts.getIndices()) if pts is not None and pts.getSize()
+                   else np.zeros(0, dtype=np.int64))
+
+    # A label that holds cells on ANY rank is a region, not an interface; the
+    # verdict is agreed over the ranks so every rank protects the same set.
+    region = {n for n in names
+              if any(((pts >= cS) & (pts < cE)).any() for pts in strata(n))}
+    region = set().union(*uw.mpi.comm.allgather(region))
+    for name in names:
+        if name in region:
+            continue
+        for pts in strata(name):
+            for p in pts:
+                p = int(p)
+                if not fS <= p < fE or bnd.getValue(p) == 1:
+                    continue
+                for q in dm.getTransitiveClosure(p)[0]:
+                    if vS <= q < vE:
+                        mask[q - vS] = True
+    dm.removeLabel(bname)
+    pStart, pEnd = dm.getChart()
+    flag = np.zeros(pEnd - pStart, dtype=np.int32)
+    flag[np.flatnonzero(mask) + vS - pStart] = 1
+    _sf_logical_or(dm, flag)
+    return flag[np.arange(vE - vS) + vS - pStart] == 1
+
+
 def _resolve_snapping(dm, X, ends, lines, snap_frac, scale, snap_quality=0.5,
-                      snap_dist=0.0):
+                      snap_dist=0.0, protected=None):
     """Which vertices to move onto the line, and where the crossings then land.
 
     A crossing at parameter ``t`` on an edge sits ``t`` of the way along it, so
@@ -340,6 +427,12 @@ def _resolve_snapping(dm, X, ends, lines, snap_frac, scale, snap_quality=0.5,
     # terminating chain legal.
     fixed = _distance_to_lines(X, lines) < 1e-12 * scale
     vetoed = np.zeros(len(X), dtype=bool)
+    # A vertex on a labelled internal boundary (a band's skin) never moves: its
+    # crossings are split instead (#595). `refused` records the ones snapping
+    # wanted, for the caller's warning.
+    if protected is not None:
+        vetoed |= protected & ~fixed
+    refused = np.zeros(len(X), dtype=bool)
     # Distance from each vertex to the line, in units of the local h. The
     # along-edge criterion cannot see this: a vertex can sit a fraction of an
     # element from the line while every edge meeting it is crossed near its
@@ -383,9 +476,13 @@ def _resolve_snapping(dm, X, ends, lines, snap_frac, scale, snap_quality=0.5,
         pick = ends[rows, np.where(t[rows] < 0.5, 0, 1)]
         proposed = on_line.copy()
         proposed[pick[~vetoed[pick]]] = True
+        if protected is not None:
+            refused[pick[protected[pick] & ~fixed[pick]]] = True
         if reach is not None:
-            close = (_distance_to_lines(X, lines) < reach) & ~vetoed
-            proposed |= close
+            close_any = _distance_to_lines(X, lines) < reach
+            if protected is not None:
+                refused |= close_any & protected & ~fixed
+            proposed |= close_any & ~vetoed
 
         # COLLECTIVE, so every rank must reach it — including one that proposes
         # nothing. An early `if not near.any(): return` here deadlocked at np=3:
@@ -420,6 +517,9 @@ def _resolve_snapping(dm, X, ends, lines, snap_frac, scale, snap_quality=0.5,
         settled = uw.mpi.comm.allreduce(
             int(np.array_equal(proposed, on_line)), op=MPI.MIN)
         if settled:
+            if protected is not None:
+                _resolve_snapping.refused = int(uw.mpi.comm.allreduce(
+                    int((refused & _owned_vertices(dm)).sum())))
             return on_line, X_snapped, t, multiply_crossed
         on_line = proposed
 
@@ -841,8 +941,18 @@ def cut_along_lines(dm, lines, snap_frac=0.10, label=CUT_LABEL, label_value=1,
     # number is valid for the child meshes the pass loop produces.
     scale = _global_extent(dm)
 
+    protected = _internal_label_vertices(dm, label)
+    _resolve_snapping.refused = 0
     on_line, X_snapped, t, multiply_crossed = _resolve_snapping(
-        dm, X, ends, lines, snap_frac, scale, snap_quality, snap_dist)
+        dm, X, ends, lines, snap_frac, scale, snap_quality, snap_dist,
+        protected=protected)
+    if _resolve_snapping.refused and uw.mpi.rank == 0:
+        import warnings
+
+        warnings.warn(
+            f"cut_along_lines: {_resolve_snapping.refused} vertex(es) on a labelled "
+            f"internal boundary were not snapped onto the cut; their crossings are "
+            f"split instead, so the boundary keeps its shape (#595).", stacklevel=2)
     eS, _eE = dm.getDepthStratum(1)
     crossed = np.flatnonzero(np.isfinite(t)) + eS
 

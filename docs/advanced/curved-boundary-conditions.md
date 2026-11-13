@@ -66,9 +66,10 @@ stokes.add_nitsche_bc(0.0, "Fault", direction=fault_normal, gamma=10)
 - When you don't want to tune a penalty parameter
 - Basal shear constraints with custom direction
 
-**Accuracy:** Optimal convergence rate. On a Cartesian box test, Nitsche at
-`gamma=10` gives 0.08% velocity error vs the essential BC solution (penalty
-at 1e4 gives 0.15%).
+**Accuracy:** Optimal convergence rate. On a Cartesian box test at cell size
+1/8, the Nitsche velocity differs from the essential BC solution by 0.20% at
+`gamma=10` and by 0.12% at the default `gamma=12.5` (penalty at 1e4 gives
+0.15%).
 
 
 ### 2. Penalty Free-Slip (Simple, and Only With the Node Normal)
