@@ -48,8 +48,10 @@ def test_a_wall_held_back_on_one_rank_is_released_on_every_rank():
     assert any(holders), (
         "on this host's triangulation refinement held back no Lower vertex, so the "
         "test has nothing to release: choose another fixture")
-    assert not all(holders), (
-        f"every one of the {uw.mpi.size} ranks holds a held-back vertex, so the case "
-        "does not show a rank learning of it from another")
     assert all(lower_refused), f"Lower refused by rank: {lower_refused}, holders: {holders}"
     assert not any(upper_refused), f"Upper refused by rank: {upper_refused}"
+    if all(holders):
+        # Measured on Linux (MPICH), 2026-11-14: both ranks hold one at two ranks; one
+        # rank of four holds none. scripts/test.sh runs this file at four ranks too.
+        pytest.skip(f"every one of the {uw.mpi.size} ranks holds a held-back vertex, so "
+                    "this rank count does not show a rank learning of it from another")

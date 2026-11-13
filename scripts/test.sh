@@ -587,6 +587,12 @@ if [ $PARALLEL_RANKS -gt 0 ] && shard_owns 4; then
     OMPI_MCA_rmaps_base_oversubscribe=1 $SUPERVISE mpirun -n 4 python -m pytest --with-mpi \
       tests/test_1184_general_pressure_split.py || status=1
 
+    # A wall that refinement left off its surface is released on every rank, also on
+    # a rank holding none of the held-back vertices. At two ranks both hold one (the
+    # case then skips); at four, one rank holds none. So this file runs at np 4 always.
+    OMPI_MCA_rmaps_base_oversubscribe=1 $SUPERVISE mpirun -n 4 python -m pytest --with-mpi \
+      tests/parallel/test_1189_refinement_release_agrees_across_ranks_parallel.py || status=1
+
     # Further passes at three and four ranks, because two is a special case:
     # the failure this suite exists to catch is a collective entered by some
     # ranks and not others, and with two ranks the mismatched pair often still
