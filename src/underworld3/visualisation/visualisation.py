@@ -1200,7 +1200,7 @@ def plot_scalar(
     mesh,
     scalar,
     scalar_name="",
-    cmap="",
+    cmap=None,
     clim="",
     window_size=(750, 750),
     title="",
@@ -1230,7 +1230,7 @@ def plot_scalar(
 
     cmap : str, optional
         The colormap to be used for visualizing the scalar values. This can be any colormap
-        recognized by PyVista or Matplotlib. Default is an empty string, which uses the default colormap.
+        recognized by PyVista or Matplotlib. Default is None, which uses pyvista's default colormap.
 
     clim : tuple of float, optional
         The scalar range to be used for coloring the mesh (e.g., `(min_value, max_value)`). If not
@@ -1332,7 +1332,7 @@ def plot_vector(
     mesh,
     vector,
     vector_name="",
-    cmap="",
+    cmap=None,
     clim="",
     vmag="",
     vfreq="",
@@ -1367,7 +1367,7 @@ def plot_vector(
 
     cmap : str, optional
         The colormap to be used for visualizing the vector magnitudes. This can be any colormap
-        recognized by PyVista or Matplotlib. Default is an empty string, which uses the default colormap.
+        recognized by PyVista or Matplotlib. Default is None, which uses pyvista's default colormap.
 
     clim : tuple of float, optional
         The scalar range to be used for coloring the mesh based on vector magnitudes (e.g., `(min_value, max_value)`).
