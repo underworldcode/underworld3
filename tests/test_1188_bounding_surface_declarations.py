@@ -149,11 +149,18 @@ def test_a_write_to_the_coordinates_of_a_mesh_without_variables_releases_every_s
 
 @pytest.mark.tier_b
 def test_a_second_release_changes_nothing():
+    """The refusal keeps naming the surface that was declared and the first reason."""
     mesh = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.5, cellSize=0.2)
     mesh.deform(np.array(mesh.X.coords))
     mesh.deform(np.array(mesh.X.coords))
     with pytest.raises(ValueError, match="the radial surface of boundary 'Upper' was released"):
         mesh.analytic_surface("Upper")
+
+    lower = mesh.bounding_surfaces["Lower"]
+    lower.release("a second reason")
+    with pytest.raises(ValueError, match="the radial surface of boundary 'Lower' was released: "
+                                         "the mesh has been deformed"):
+        mesh.analytic_surface("Lower")
 
 
 @pytest.mark.tier_b
