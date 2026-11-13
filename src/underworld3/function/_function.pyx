@@ -1260,7 +1260,7 @@ def evaluate_nd(   expr,
         # so petsc_interpolate does not look those points up again (#551
         # item 2).
         in_or_not, cell_hints = mesh._classify_points_in_domain(
-            coords_array, strict_validation=False)
+            coords_array, strict_validation=False, exact_location=True)
         evaluation_interior = petsc_interpolate( expr,
                                     coords_array[in_or_not],
                                     coord_sys,

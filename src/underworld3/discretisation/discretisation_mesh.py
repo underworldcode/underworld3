@@ -7330,7 +7330,7 @@ class Mesh(Stateful, uw_object):
         """
         return self._classify_points_in_domain(points, strict_validation)[0]
 
-    def _classify_points_in_domain(self, points, strict_validation=True):
+    def _classify_points_in_domain(self, points, strict_validation=True, exact_location=False):
         """In/out classification, keeping the owning cells it had to locate.
 
         ``points_in_domain`` located the near-boundary points and threw the
@@ -7395,6 +7395,17 @@ class Mesh(Stateful, uw_object):
         # surface-mesh contract, query points are assumed to lie on
         # the manifold; the closest-local-cell test is the right
         # filter, not an inside/outside split.
+        if exact_location and self._simplex_locator() is not None:
+            # For evaluation (``exact_location``, passed by evaluate_nd only):
+            # a point is interior when a local cell contains it, or the face
+            # tolerance of _robust_owning_cells claims it. The boundary-sign
+            # test below can call a contained point exterior on a strongly
+            # sheared mesh (#1123). points_in_domain, which the swarm's
+            # migration reads, keeps the boundary-sign test, so no swarm claim
+            # changes here; making the two agree is the follow-up that passes a
+            # particle's previous cell to the walk.
+            cells = numpy.asarray(self._robust_owning_cells(model_points), dtype=numpy.int64)
+            return cells >= 0, cells
         if self.boundary_face_control_points_kdtree is None:
             in_or_not = self._get_closest_local_cells_internal(model_points) != -1
             return in_or_not, cells
@@ -7867,16 +7878,78 @@ class Mesh(Stateful, uw_object):
         coords = numpy.asarray(coords)
         if coords.shape[0] == 0:
             return numpy.array([], dtype=numpy.int64)
-        cells = numpy.asarray(
-            self._get_closest_local_cells_internal(coords, tol=self._EVAL_CONTAIN_TOL),
-            dtype=numpy.int64,
-        )
+        locator = self._simplex_locator()
+        if locator is not None:
+            cells = self._walk_to_owning_cells(locator, coords)
+        else:
+            cells = numpy.asarray(
+                self._get_closest_local_cells_internal(coords, tol=self._EVAL_CONTAIN_TOL),
+                dtype=numpy.int64,
+            )
+        # A point no local cell contains keeps today's claim: the face
+        # tolerance below decides whether this rank answers for it. The set of
+        # points a rank claims is unchanged; only which cell holds a contained
+        # point is decided exactly (the locator rework, register row 14).
         lost = numpy.flatnonzero(cells < 0)
         if lost.shape[0] > 0:
             cells[lost] = numpy.asarray(
                 self._get_closest_local_cells_internal(coords[lost], tol=self._EVAL_FACE_TOL),
                 dtype=numpy.int64,
             )
+        return cells
+
+    def _simplex_locator(self):
+        """The exact barycentric locator for this mesh's local cells, or None
+        where it does not apply (quadrilaterals, hexahedra, curved cells,
+        2-manifolds: they keep the cell-wall test). Rebuilt with the kd-tree,
+        i.e. whenever the coordinates change."""
+        self._build_kd_tree_index()
+        cached = getattr(self, "_simplex_locator_cache", None)
+        if cached is not None and cached[0] is self._index:
+            return cached[1]
+        locator = None
+        if (self._nav_dm is None and self.dm.getDimension() == self.cdim
+                and self.degree == 1):
+            from underworld3.discretisation._simplex_locator import SimplexLocator
+            try:
+                locator = SimplexLocator(
+                    self.dm,
+                    lambda v: self._nav_coords[self._coord_rows_for_points(self.dm, v)])
+            except ValueError:
+                # not simplices, or not straight-sided: the cell-wall test
+                locator = None
+        self._simplex_locator_cache = (self._index, locator)
+        return locator
+
+    def _walk_to_owning_cells(self, locator, coords):
+        """Containing cell per point by the face-crossing walk, from the cell of
+        the nearest control point; a point still lost is walked again from its
+        few nearest centroids (a non-convex local mesh can wall it off). -1 where
+        no local cell contains the point. A point several cells contain gets the
+        lowest-numbered cell in the star of the entity it lies on."""
+        if locator.n_cells == 0:
+            return numpy.full(coords.shape[0], -1, dtype=numpy.int64)
+        distance, nearest = self._index.query(coords, k=1, sqr_dists=False)
+        distance = numpy.asarray(distance).reshape(-1)
+        start = numpy.asarray(self._indexMap[numpy.asarray(nearest).reshape(-1)],
+                              dtype=numpy.int64) - locator.cStart
+        cells = numpy.full(coords.shape[0], -1, dtype=numpy.int64)
+        # A point farther from every control point than any local cell reaches
+        # is in no local cell: it is not walked (the same rejection as the
+        # cell-wall path's, _LOCATOR_REACH_MARGIN).
+        reach = getattr(self, "_local_cell_reach", None)
+        near = (numpy.ones(coords.shape[0], dtype=bool) if not reach
+                else distance <= self._LOCATOR_REACH_MARGIN * reach)
+        cells[near] = locator.locate(coords[near], start[near])
+        lost = numpy.flatnonzero((cells < 0) & near)
+        if lost.shape[0] > 0:
+            k = min(4, locator.n_cells)
+            _, cc = self._centroid_index.query(coords[lost], k=k, sqr_dists=False)
+            cc = numpy.asarray(cc, dtype=numpy.int64).reshape(lost.shape[0], -1)
+            cells[lost] = locator.locate(coords[lost], cc[:, 0],
+                                         restarts=[cc[:, j] for j in range(1, cc.shape[1])])
+        found = cells >= 0
+        cells[found] += locator.cStart
         return cells
 
     def _audit_cell_face_geometry(self):

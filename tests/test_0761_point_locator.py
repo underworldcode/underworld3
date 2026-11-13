@@ -109,10 +109,24 @@ class _CountedContainment:
             return self._wrapped(points, cells, **kwargs)
 
         self.mesh._test_if_points_in_cells_internal = counted
+        # On a straight-sided simplex mesh the exact locator's barycentric
+        # tests are the containment tests (the locator rework, #1123).
+        self._locator = self.mesh._simplex_locator()
+        if self._locator is not None:
+            self._bary = self._locator.barycentric
+
+            def counted_bary(points, cells):
+                self.calls += 1
+                self.points += len(points)
+                return self._bary(points, cells)
+
+            self._locator.barycentric = counted_bary
         return self
 
     def __exit__(self, *exc):
         self.mesh._test_if_points_in_cells_internal = self._wrapped
+        if self._locator is not None:
+            self._locator.barycentric = self._bary
         return False
 
 
@@ -655,6 +669,20 @@ def test_the_classifier_hands_over_the_cells_it_located(located_box):
     # — measured 0 hints for 1465 interior points in serial against 462 of 462
     # at np4, so the guarded version asserted nothing in the default test run.
     offered = in_or_not & (cells >= 0)
+    if mesh._simplex_locator() is not None:
+        # For evaluation the exact locator classifies by locating, at any rank
+        # count, so every interior point comes with a cell that contains it
+        # (#1123). points_in_domain (above) keeps the boundary-sign test.
+        in_or_not, cells = mesh._classify_points_in_domain(
+            query, strict_validation=False, exact_location=True)
+        assert (cells[~in_or_not] == -1).all()
+        offered = in_or_not & (cells >= 0)
+        assert offered.sum() == in_or_not.sum()
+        located = np.flatnonzero(offered)
+        lam = mesh._simplex_locator().barycentric(
+            query[located], cells[located] - mesh.dm.getHeightStratum(0)[0])
+        assert lam.min() >= -1.0e-12, lam.min()
+        return
     if uw.mpi.size == 1:
         assert not mesh._eval_use_robust_location()
         assert not offered.any(), (
