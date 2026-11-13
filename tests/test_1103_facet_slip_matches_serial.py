@@ -30,14 +30,20 @@ import numpy as np
 import pytest
 
 # case -> (dimension, cellSize, rank counts, scatter the cells?)
+# This serial driver runs inside an xdist worker, beside the other workers'
+# tests, so it launches at most three ranks: on a 4-vCPU runner five ranks
+# could go quiet past the supervisor's silence window without being stuck.
+# The np 4 (and, run by hand, np 5) layouts are in
+# tests/parallel/test_1103_facet_slip_against_serial_parallel.py, which runs
+# in the parallel shard at that rank count, without xdist.
 CASES = {
-    "facet_2d": (2, 0.25, (2, 3, 4, 5), False),
-    "facet_2d_scattered": (2, 0.25, (3, 4), True),
+    "facet_2d": (2, 0.25, (2, 3), False),
+    "facet_2d_scattered": (2, 0.25, (3,), True),
     "facet_3d": (3, 0.35, (2, 3), False),
     # an internal surface: no boundary facets in serial, so its vertices are
     # pinned; a partition seam along it must not give it any (H1, #1109)
-    "internal_2d": (2, None, (2, 4), False),
-    "internal_2d_scattered": (2, None, (4,), True),
+    "internal_2d": (2, None, (2, 3), False),
+    "internal_2d_scattered": (2, None, (3,), True),
     # the 3-D seam test: a tet facet's point is its vertices' FULL join
     "internal_3d_scattered": (3, None, (2,), True),
 }

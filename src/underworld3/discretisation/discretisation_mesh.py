@@ -911,14 +911,18 @@ class Mesh(Stateful, uw_object):
         # the move applies again.
         self._move_version = 0
         # The vertex coordinates the mesh was made with, and whether
-        # _deform_mesh has run since: the geometry its cells' parents and its
-        # transfer to the level below are read on (fault_mg.reference_vertices,
-        # #1091). Taken by _record_as_built when the mesh is built. The flag
-        # is set by a call that restores or repeats the coordinates too (a
-        # reload's stamp, ephemeral_coords); the record then equals the
-        # coordinates and reading it costs a search and changes no answer.
+        # _deform_mesh has run since: the geometry its cells' parents on the
+        # level below are read on (fault_mg.reference_vertices, #1091). Taken
+        # by _record_as_built when the mesh is built. The flag is set by a
+        # call that restores or repeats the coordinates too (a reload's stamp,
+        # ephemeral_coords).
         self._as_built_vertices = None
         self._moved_since_built = False
+        # The vertex coordinates the transfers to the level below are built
+        # on once the mesh has moved (fault_mg.as_built_nodes): the as-built
+        # ones, or those a relax of the mesh where it was made left
+        # (_record_transfer_geometry).
+        self._transfer_vertices = None
         # For a mesh made on a moved one: the pair (level, vertices), its
         # vertices in the geometry of that level (addon_partition.inherit_provenance).
         self._addon_reference = None
@@ -4999,8 +5003,10 @@ class Mesh(Stateful, uw_object):
         The coarse levels keep their geometry. For PETSc's geometric
         multigrid that costs nothing: the nested interpolation is topological
         and the coarse operators are Galerkin products. Custom-P transfers are
-        built from coordinates, so after a large move the unmoved coarse
-        levels cost it iterations, though not accuracy.
+        built from coordinates. A moved simplex level is read where it was
+        made (``fault_mg.as_built_nodes``), so its transfers are those of the
+        unmoved mesh as well; a quadrilateral, hexahedral or periodic level is
+        read on the moved coordinates.
 
         The level gets a copy of the global coordinates; its local vector is
         regenerated from them. Its coordinate field (cell geometry, quadrature
@@ -5049,10 +5055,34 @@ class Mesh(Stateful, uw_object):
         coordinates it was given, and reaches the level below through
         ``_addon_reference``. A periodic mesh holds its coordinates cell by
         cell and keeps no record."""
-        self._as_built_vertices = (None if _holds_cell_coordinates(self.dm)
-                                   else _vertex_coordinates(self.dm))
+        self._record_transfer_geometry()
+        self._as_built_vertices = self._transfer_vertices
         self._moved_since_built = False
         self._addon_reference = None
+
+    def _record_transfer_geometry(self):
+        """Keep the vertex coordinates the mesh stands on as the ones its
+        transfers to the level below are built on (``fault_mg.as_built_nodes``).
+
+        For a new DM, and for :meth:`relax` on a mesh that stands where its
+        transfers are built: the relax repairs the shapes the refinement left
+        and is part of making the mesh, so the transfers are built on the
+        relaxed coordinates. A move after it is taken back to this geometry.
+        The parent of a cell is still read on the as-built record
+        (``fault_mg.reference_vertices``), which a relax leaves alone."""
+        self._transfer_vertices = (None if _holds_cell_coordinates(self.dm)
+                                   else _vertex_coordinates(self.dm))
+
+    def _moved_off_transfer_geometry(self):
+        """Do the vertices stand anywhere but on the coordinates the transfers
+        are built on? Collective. The comparison is exact, so coordinates that
+        were written and put back (``ephemeral_coords``, a restore, a deform
+        back to rest) are not a move, and any other change is one."""
+        if self._transfer_vertices is None:
+            return False
+        moved = not numpy.array_equal(_vertex_coordinates(self.dm),
+                                      self._transfer_vertices)
+        return bool(self.dm.comm.tompi4py().allreduce(int(moved)))
 
     def _deform_mesh(self, new_coords: numpy.ndarray, verbose=False,
                      active_vars=None):
@@ -6668,7 +6698,7 @@ class Mesh(Stateful, uw_object):
         self._cell_node_array[key] = rows.reshape(cEnd - cStart, expected)
         return self._cell_node_array[key]
 
-    def _get_coords_for_basis(self, degree, continuous):
+    def _get_coords_for_basis(self, degree, continuous, vertices=None):
         """The coordinates of the nodes of a degree-``degree`` Lagrange field, an
         ``(n, cdim)`` array in the local layout of :meth:`_basis_coordinate_dm`
         (ghost nodes included).
@@ -6676,6 +6706,13 @@ class Mesh(Stateful, uw_object):
         The interpolation matrix comes from UW3's copy of PETSc's nested
         interpolator, which assembles also on a rank that holds cells but owns
         none of their nodes (#902; ``petsc_dm_create_interpolation_within_plex``).
+
+        ``vertices`` reads the nodes on other vertex coordinates than those the
+        mesh stands on: one row per local vertex in point order, as
+        ``_vertex_coordinates`` gives them, each rank's owned rows being the
+        ones read. The matrix holds the place of every node in its cell and no
+        coordinate, so vertices recorded earlier give the nodes of that time
+        bit for bit.
         """
         from underworld3.cython.petsc_discretisation import (
             petsc_dm_create_interpolation_within_plex,
@@ -6685,7 +6722,10 @@ class Mesh(Stateful, uw_object):
         dmnew = self._basis_coordinate_dm(degree, continuous)
 
         matInterp = petsc_dm_create_interpolation_within_plex(dmold, dmnew)
-        coordsOld = self.dm.getCoordinates()
+        if vertices is None:
+            coordsOld = self.dm.getCoordinates()
+        else:
+            coordsOld = self._coordinate_vector_of(vertices)
         coordsNewL = dmnew.getLocalVec()
         coordsNewG = dmnew.getGlobalVec()
         matInterp.mult(coordsOld, coordsNewG)
@@ -6693,6 +6733,8 @@ class Mesh(Stateful, uw_object):
 
         arrcopy = coordsNewL.array.reshape(-1, self.cdim).copy()
 
+        if vertices is not None:
+            coordsOld.destroy()
         dmnew.restoreGlobalVec(coordsNewG)
         dmnew.restoreLocalVec(coordsNewL)
         # Clean up the PETSc interpolation objects built above. Without this
@@ -6702,6 +6744,22 @@ class Mesh(Stateful, uw_object):
         dmnew.destroy()
 
         return arrcopy
+
+    def _coordinate_vector_of(self, vertices):
+        """A global coordinate vector holding ``vertices``, one row per local
+        vertex in point order (``_vertex_coordinates``). Each rank's owned rows
+        are the ones kept. The caller destroys it."""
+        from underworld3.utilities._plex_topology import section_offsets
+
+        dm = self.dm
+        vs, ve = dm.getDepthStratum(0)
+        offsets = section_offsets(dm.getCoordinateSection(), numpy.arange(vs, ve))
+        local = dm.getCoordinatesLocal().duplicate()
+        local.array[offsets[:, None] + numpy.arange(self.cdim)] = vertices
+        held = dm.getCoordinates().duplicate()
+        dm.getCoordinateDM().localToGlobal(local, held)
+        local.destroy()
+        return held
 
     def _coord_rows_for_points(self, nav_dm, points):
         """Row indices into the navigation coordinate array (``_nav_coords``)
@@ -7769,6 +7827,9 @@ class Mesh(Stateful, uw_object):
     # exactly one rank (verified: 360/360, owners==1), and the migration routes
     # it to that owner.
     _EVAL_FACE_TOL = 1.0e-2
+    # Containment to rounding, relative like _EVAL_FACE_TOL. A point some local
+    # cell contains to this tolerance is evaluated in that cell (#1115).
+    _EVAL_CONTAIN_TOL = 1.0e-10
 
     def _robust_owning_cells(self, coords: numpy.ndarray) -> numpy.ndarray:
         """Per-point owning cell for parallel evaluation (coords in model units).
@@ -7793,14 +7854,30 @@ class Mesh(Stateful, uw_object):
         one with the nearest centroid — see the tie-break note on
         :meth:`_get_closest_local_cells_internal` for what that changed and
         why it is visible only to discontinuous fields.
+
+        Two passes (#1115). A point that a local cell contains to rounding
+        (``_EVAL_CONTAIN_TOL``) gets that cell. Only a point no local cell
+        contains is given the face tolerance. With the face tolerance alone, a
+        point just inside one cell, within 1e-2 of a face it shares, could come
+        back in the neighbour: the evaluator then clamped it onto the shared
+        face, an error of about |grad f| times its distance from the face,
+        even for a field the element represents exactly. The set of points a
+        rank claims is unchanged; only which of its cells evaluates them.
         """
         coords = numpy.asarray(coords)
         if coords.shape[0] == 0:
             return numpy.array([], dtype=numpy.int64)
-        return numpy.asarray(
-            self._get_closest_local_cells_internal(coords, tol=self._EVAL_FACE_TOL),
+        cells = numpy.asarray(
+            self._get_closest_local_cells_internal(coords, tol=self._EVAL_CONTAIN_TOL),
             dtype=numpy.int64,
         )
+        lost = numpy.flatnonzero(cells < 0)
+        if lost.shape[0] > 0:
+            cells[lost] = numpy.asarray(
+                self._get_closest_local_cells_internal(coords[lost], tol=self._EVAL_FACE_TOL),
+                dtype=numpy.int64,
+            )
+        return cells
 
     def _audit_cell_face_geometry(self):
         """Measure the two quantities that bound the cell-wall estimator's
@@ -8742,9 +8819,16 @@ class Mesh(Stateful, uw_object):
                 f"method_kwargs['reference']={ref!r} contradicts it. For "
                 "the mesh-reference frame call "
                 "mesh.redistribute_nodes(metric).")
-        return self.redistribute_nodes(
+        # A relax of a mesh that stands where its transfers are built is part
+        # of making it, in the adapt that refined it or in a call of its own.
+        # On a mesh that has moved it is one more move.
+        where_made = not self._moved_off_transfer_geometry()
+        result = self.redistribute_nodes(
             sympy.sympify(1) if metric is None else metric,
             verbose=verbose, method_kwargs=method_kwargs, **kwargs)
+        if where_made:
+            self._record_transfer_geometry()
+        return result
 
     def _boundaries_with(self, name):
         """This mesh's boundary enum, extended with one more named boundary.
@@ -9587,7 +9671,10 @@ class Mesh(Stateful, uw_object):
             per doubling at the same iteration count. ``2.0`` (halve `h` each
             level) is the standard choice and the measured default; raise it for
             fewer, cheaper levels or lower it if a problem needs a gentler
-            sequence.
+            sequence. The cell size of a generation is the 5th percentile of
+            its cell diameters over the whole mesh, so the choice of levels
+            does not depend on the partition: where the refinement gives the
+            same generations at any rank count, the same levels are kept.
         repair : bool, default False
             Run a reconnection (Lawson flip) pass after each ``edge_split``
             generation, repairing the element shapes the split leaves behind. 2-D
@@ -10142,7 +10229,7 @@ class Mesh(Stateful, uw_object):
             # so fewer edges are independent per pass.
             n_pass = 8 * dim * max_levels
             current_dm = base_finest
-            _pct5_of_dm = {}
+            _size_of_dm = {}
             for level in range(n_pass):
                 centroids, _proxy_h, cs = cell_geometry(current_dm)
                 # The topology tables are read ONCE per pass and shared
@@ -10152,24 +10239,26 @@ class Mesh(Stateful, uw_object):
                 # cells" verdict is COLLECTIVE (rank-local branching on
                 # the raw metric is the np>1 deadlock class).
                 _edge_tables = None
+                diameter = numpy.empty(0)
                 M = marking_metric(centroids)
                 if M is not None and centroids.shape[0]:
                     h_target = 1.0 / numpy.sqrt(M)
                     diameter, _edge_tables = edge_split.cell_diameters(
                         current_dm, return_tables=True)
-                    # The marking pass has just measured this dm; the MG
-                    # level selection re-derives the same 5th percentile
-                    # per retained generation, so it is cached here
-                    # rather than re-walking every level's topology.
-                    _pct5_of_dm[id(current_dm)] = (
-                        float(numpy.percentile(diameter, 5))
-                        if diameter.size else float("inf"))
                     sel = numpy.where(diameter > h_target)[0]
                     if node_budget is not None and sel.size > node_budget:
                         order = numpy.argsort(M[sel])[::-1]
                         sel = sel[order[:node_budget]]
                 else:
                     sel = numpy.empty(0, dtype=int)   # rank owns no cells
+                if M is not None:
+                    # The marking pass has just measured this dm, and the MG
+                    # level selection sizes each generation from the same
+                    # diameters, so the size is taken here rather than by
+                    # re-walking every level's topology. Collective: a rank
+                    # with no cells joins with none.
+                    _size_of_dm[id(current_dm)] = edge_split.resolved_cell_size(
+                        current_dm, diameters=diameter)
 
                 marked = [int(cs + j) for j in sel]
                 _coarse_for_P = current_dm
@@ -10410,7 +10499,7 @@ class Mesh(Stateful, uw_object):
             level_dms, _nested_Ps, _nested_parent_cells = self._subsample_mg_levels(
                 base_finest, level_dms, _nested_Ps, _nested_parent_cells,
                 ratio=mg_coarsening_ratio, verbose=verbose,
-                resolution_hint=(_pct5_of_dm if engine == "edge_split"
+                resolution_hint=(_size_of_dm if engine == "edge_split"
                                  else None),
                 repaired=_repaired_passes)
 
@@ -10468,6 +10557,11 @@ class Mesh(Stateful, uw_object):
         the hierarchy; the whole-mesh median `h` is likewise flat and useless. So
         the resolution of the refined region is what decides a level.
 
+        **The measure belongs to the mesh, not to its partition.** It is one
+        percentile over every rank's cells together
+        (:func:`edge_split.resolved_cell_size`), so the generations kept do
+        not depend on how the cells are dealt out.
+
         The exact per-generation prolongations are COMPOSED across the generations
         a level skips, so the recorded transfer stays exact rather than falling
         back to the geometric builder.
@@ -10485,19 +10579,13 @@ class Mesh(Stateful, uw_object):
         def resolution(dm):
             """The size of the cells this level actually resolves with.
 
-            A low percentile rather than the strict minimum, so one thin cell
-            cannot declare a level; reduced with MIN so the finest region counts
-            wherever it happens to live. A caller that already measured a
-            dm during its own pass loop supplies the value through
-            ``resolution_hint`` instead of paying a second topology walk.
+            A caller that already measured a dm during its own pass loop
+            supplies the size through ``resolution_hint`` instead of paying a
+            second topology walk. Every rank holds the same keys.
             """
             if resolution_hint is not None and id(dm) in resolution_hint:
-                local = resolution_hint[id(dm)]
-            else:
-                d = edge_split.cell_diameters(dm)
-                local = (float(numpy.percentile(d, 5)) if d.size
-                         else float("inf"))
-            return uw.mpi.comm.allreduce(local, op=min)
+                return resolution_hint[id(dm)]
+            return edge_split.resolved_cell_size(dm)
 
         # An engine lands near the target, not on it (1.92, 1.97, 2.19 measured),
         # so the test is against a slightly slack ratio; without it a 1.99 step is

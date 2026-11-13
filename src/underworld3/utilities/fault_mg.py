@@ -231,15 +231,60 @@ def _fine_cell_of_node(fn, n_nodes):
     return owner
 
 
+def as_built_nodes(mesh, degree, continuous):
+    """Where the nodes of ``mesh`` at ``degree`` sat when the mesh was made:
+    ``(n_nodes, cdim)`` in the rows of ``mesh._get_coords_for_basis``, or
+    ``None`` when the mesh stands where it was made. Collective.
+
+    A move that keeps the topology keeps every node's place in its cell, so
+    the nodes are read on the vertices the mesh was made with
+    (``Mesh._transfer_vertices``: the as-built ones, or those a relax of the
+    mesh where it was made left) by the interpolation that gives the mesh its
+    nodes where it stands. That is the same operator on the same vertex
+    coordinates as before the move, and the nodes come back bit for bit, at
+    any degree and for a discontinuous space as well. The transfer between
+    the mesh and the level under it is built there
+    (``CustomMGHierarchy.build``), and is then the transfer the pair had
+    before the move. The node-cloud builder needs the nodes to the bit: a
+    node on a face of its triangulation is read in either neighbour, so a
+    change in the last digit can change the row.
+
+    Whether the mesh has moved is read off its coordinates, on every rank at
+    once (``Mesh._moved_off_transfer_geometry``). Coordinates that were
+    written and put back (``ephemeral_coords``, a restore, a deform back to
+    rest) are those the mesh was made with, and the mesh is read on them as
+    one that was never touched.
+
+    Only the record of the mesh's own moves is read. A mesh made on a moved one
+    (a cut, a placement) was built on the moved geometry: a fault cut into it
+    lies on the trace there, as it does on the split level under it, and
+    taking the mesh back through its host's move (``_addon_reference``, which
+    serves the parent lookup) would part the two slits. A quadrilateral or
+    hexahedral mesh answers ``None`` moved or not: the transfers of such a
+    level follow its coordinates. So does a periodic mesh, which keeps no
+    record (#1091)."""
+    if (not mesh._moved_since_built or not mesh.isSimplex
+            or not mesh._moved_off_transfer_geometry()):
+        return None
+    return np.asarray(mesh._get_coords_for_basis(
+        degree, continuous, vertices=mesh._transfer_vertices))
+
+
 # --------------------------------------------------------------------------- #
 #  Serial transfer
 # --------------------------------------------------------------------------- #
 def cell_located_prolongation(coarse, fine, degree, continuous=True,
-                              coarse_coords=None, fine_coords=None):
+                              coarse_coords=None, fine_coords=None,
+                              fine_vertices=None):
     """Side-aware, cell-located node prolongation ``(n_fine_nodes, n_coarse_nodes)``
     as scipy CSR (serial). Exact for nested pairs; on non-nested pairs it
     reproduces the located coarse cell's polynomial, with the evaluation point
-    clamped into the cell."""
+    clamped into the cell.
+
+    ``fine_vertices`` are the fine level's vertices where they are not the
+    DM's: a moved level is located on the geometry it was made in
+    (``Mesh._transfer_vertices``), and ``fine_coords`` are then its nodes on
+    that geometry (:func:`as_built_nodes`)."""
     cn = np.asarray(coarse._cell_node_indices(degree, continuous))
     fn = np.asarray(fine._cell_node_indices(degree, continuous))
     Xc = (np.asarray(coarse_coords) if coarse_coords is not None
@@ -248,6 +293,8 @@ def cell_located_prolongation(coarse, fine, degree, continuous=True,
           else np.asarray(fine._get_coords_for_basis(degree, continuous)))
     vxy_c, cv_c = _cell_vertex_table(coarse)
     vxy_f, cv_f = _cell_vertex_table(fine)
+    if fine_vertices is not None:
+        vxy_f = fine_vertices
     owner = _fine_cell_of_node(fn, Xf.shape[0])
     if (owner < 0).any():
         raise RuntimeError("fault_mg: a fine node belongs to no cell")
@@ -272,7 +319,7 @@ def cell_located_prolongation(coarse, fine, degree, continuous=True,
 # --------------------------------------------------------------------------- #
 def cell_located_transfer_parallel(coarse, fine, degree, continuous,
                                    coarse_coords, fine_coords, coarse_layout,
-                                   fine_layout, ncomp, comm):
+                                   fine_layout, ncomp, comm, fine_vertices=None):
     """The same transfer as :func:`cell_located_prolongation`, reduced->reduced,
     as an MPIAIJ matrix.
 
@@ -284,7 +331,12 @@ def cell_located_transfer_parallel(coarse, fine, degree, continuous,
     largest minimum barycentric coordinate). A query nobody finds — a node outside
     every coarse cell, as at a curved boundary — keeps the asker's own clamped
     best. ``coarse_layout`` / ``fine_layout`` are :class:`custom_mg.LevelLayout`.
+    ``fine_vertices`` and ``fine_coords`` are a moved level's vertices and
+    nodes on the geometry it was made in, as in
+    :func:`cell_located_prolongation`.
     """
+    from underworld3.utilities.fault_contact import _collective_raise
+
     m4 = comm.tompi4py()
     cn = np.asarray(coarse._cell_node_indices(degree, continuous))
     fn = np.asarray(fine._cell_node_indices(degree, continuous))
@@ -292,6 +344,8 @@ def cell_located_transfer_parallel(coarse, fine, degree, continuous,
     Xf = np.asarray(fine_coords)
     vxy_c, cv_c = _cell_vertex_table(coarse)
     vxy_f, cv_f = _cell_vertex_table(fine)
+    if fine_vertices is not None:
+        vxy_f = fine_vertices
     l2g_c = np.asarray(coarse_layout.l2g, dtype=np.int64).reshape(-1, ncomp)
     l2g_f = np.asarray(fine_layout.l2g, dtype=np.int64).reshape(-1, ncomp)
     fstart, fend = fine_layout.rstart, fine_layout.rend
@@ -300,14 +354,22 @@ def cell_located_transfer_parallel(coarse, fine, degree, continuous,
     nb = cn.shape[1]
 
     owner = _fine_cell_of_node(fn, n_f)
-    if (owner < 0).any():
-        raise RuntimeError("fault_mg: a fine node belongs to no cell")
+    # A failure on one rank is raised on every rank, at the next collective
+    # (fault_contact._collective_raise), never alone: a rank-local raise left
+    # the others waiting in the stats allreduce (#874).
+    problem = ("fault_mg: a fine node belongs to no cell"
+               if (owner < 0).any() else None)
     # the fine nodes with at least one owned row (ghost nodes are another rank's)
     mine = np.flatnonzero(((l2g_f >= fstart) & (l2g_f < fend)).any(axis=1))
     fcent = vxy_f[cv_f].mean(axis=1)
-    pcell, lam_c = (locate_in_cells(fcent[owner[mine]], vxy_c, cv_c)
-                    if cv_c.shape[0] else
-                    (np.full(mine.size, -1), np.full((mine.size, cv_c.shape[1]), -np.inf)))
+    pcell = np.full(mine.size, -1)
+    lam_c = np.full((mine.size, cv_c.shape[1]), -np.inf)
+    if cv_c.shape[0] and problem is None:
+        try:
+            pcell, lam_c = locate_in_cells(fcent[owner[mine]], vxy_c, cv_c)
+        except Exception as err:   # sanctioned: raised on every rank just below
+            problem = (f"fault_mg: the cell-located transfer failed: "
+                       f"{type(err).__name__}: {err}")
     inside = lam_c.min(axis=1) >= -_INSIDE_TOL
 
     # --- local hits ------------------------------------------------------- #
@@ -315,10 +377,15 @@ def cell_located_transfer_parallel(coarse, fine, degree, continuous,
     cells = pcell[inside]
     gcols = np.empty((0, nb, ncomp), dtype=np.int64)
     W = np.empty((0, nb))
-    if hit.size:
-        lam = _barycentric(Xf[hit], vxy_c[cv_c[cells]])
-        W = _node_weights(Xf[hit], cells, lam, Xc, cn, vxy_c, cv_c, degree)
-        gcols = l2g_c[cn[cells]]                             # (nh, nb, ncomp)
+    if hit.size and problem is None:
+        try:
+            lam = _barycentric(Xf[hit], vxy_c[cv_c[cells]])
+            W = _node_weights(Xf[hit], cells, lam, Xc, cn, vxy_c, cv_c, degree)
+            gcols = l2g_c[cn[cells]]                         # (nh, nb, ncomp)
+        except Exception as err:   # sanctioned: raised on every rank just below
+            problem = (f"fault_mg: the cell-located transfer failed: "
+                       f"{type(err).__name__}: {err}")
+    _collective_raise(problem)
     hit_nodes, hit_W, hit_cols = [hit], [W], [gcols]
 
     # --- misses: ask the other ranks -------------------------------------- #
@@ -342,24 +409,32 @@ def cell_located_transfer_parallel(coarse, fine, degree, continuous,
               np.zeros((0, Xf.shape[1])))
         Qn = np.vstack(all_node)
         offs = np.concatenate([[0], np.cumsum(counts)])
+        qcell = np.full(total, -1)
+        qlam = np.full((total, cv_c.shape[1]), -np.inf)
+        answer_problem = None
         if cv_c.shape[0]:
-            qcell, qlam = locate_in_cells(Qc, vxy_c, cv_c)
-            qin = qlam.min(axis=1) >= -_INSIDE_TOL
-        else:
-            qcell = np.full(total, -1)
-            qlam = np.full((total, cv_c.shape[1]), -np.inf)
-            qin = np.zeros(total, dtype=bool)
-        found = np.flatnonzero(qin)
+            try:
+                qcell, qlam = locate_in_cells(Qc, vxy_c, cv_c)
+            except Exception as err:   # sanctioned: raised on every rank below
+                answer_problem = (f"fault_mg: the cell-located transfer failed: "
+                                  f"{type(err).__name__}: {err}")
+        qin = qlam.min(axis=1) >= -_INSIDE_TOL
+        found = np.flatnonzero(qin) if answer_problem is None else np.zeros(0, dtype=np.int64)
+        Wq = np.zeros((0, nb))
+        colsq = np.zeros((0, nb, ncomp), dtype=np.int64)
+        score = np.zeros(0)
         if found.size:
-            lamn = _barycentric(Qn[found], vxy_c[cv_c[qcell[found]]])
-            Wq = _node_weights(Qn[found], qcell[found], lamn, Xc, cn,
-                               vxy_c, cv_c, degree)
-            colsq = l2g_c[cn[qcell[found]]]
-            score = qlam[found].min(axis=1)
-        else:
-            Wq = np.zeros((0, nb))
-            colsq = np.zeros((0, nb, ncomp), dtype=np.int64)
-            score = np.zeros(0)
+            try:
+                lamn = _barycentric(Qn[found], vxy_c[cv_c[qcell[found]]])
+                Wq = _node_weights(Qn[found], qcell[found], lamn, Xc, cn,
+                                   vxy_c, cv_c, degree)
+                colsq = l2g_c[cn[qcell[found]]]
+                score = qlam[found].min(axis=1)
+            except Exception as err:   # sanctioned: raised on every rank below
+                answer_problem = (f"fault_mg: the cell-located transfer failed: "
+                                  f"{type(err).__name__}: {err}")
+                found = found[:0]
+        _collective_raise(answer_problem)
         # answers travel back to every rank; each keeps those for its own queries
         ans_idx = m4.allgather(found)
         ans_W = m4.allgather(Wq)
@@ -383,17 +458,22 @@ def cell_located_transfer_parallel(coarse, fine, degree, continuous,
             answered[local] = True
         # nobody found it: this rank's own clamped best (if it has coarse cells)
         rest = np.flatnonzero(~answered)
+        rest_problem = None
         if rest.size and cv_c.shape[0]:
-            cells_r = pcell[~inside][rest]
-            lam_r = _barycentric(Xf[miss[rest]], vxy_c[cv_c[cells_r]])
-            best_W[rest] = _node_weights(Xf[miss[rest]], cells_r, lam_r, Xc, cn,
-                                         vxy_c, cv_c, degree)
-            best_cols[rest] = l2g_c[cn[cells_r]]
-            answered[rest] = True
-        if not answered.all():
-            raise RuntimeError(
-                "fault_mg: a fine node could not be located in any coarse cell "
-                "on any rank")
+            try:
+                cells_r = pcell[~inside][rest]
+                lam_r = _barycentric(Xf[miss[rest]], vxy_c[cv_c[cells_r]])
+                best_W[rest] = _node_weights(Xf[miss[rest]], cells_r, lam_r, Xc, cn,
+                                             vxy_c, cv_c, degree)
+                best_cols[rest] = l2g_c[cn[cells_r]]
+                answered[rest] = True
+            except Exception as err:   # sanctioned: raised on every rank below
+                rest_problem = (f"fault_mg: the cell-located transfer failed: "
+                                f"{type(err).__name__}: {err}")
+        if rest_problem is None and not answered.all():
+            rest_problem = ("fault_mg: a fine node could not be located in any "
+                            "coarse cell on any rank")
+        _collective_raise(rest_problem)
         hit_nodes.append(miss)
         hit_W.append(best_W)
         hit_cols.append(best_cols)

@@ -195,9 +195,39 @@ one campaign and is the error to recognise.
   cells' rows, which a node move leaves in place, and it only preconditions: after
   MMPDE moves the solution matches a fresh registration to the solver tolerance in
   velocity, pressure and slip, at the same velocity iterations (2-3 at np 1, 2 and
-  4 on hyperion's fixture, 14-28 with the patch killed; test_1152). On a split
+  4 on hyperion's fixture, 14-28 with the patch killed). On a split
   level the move still drops the structural rows outside the zone. A repartition
   or a topology change of the finest mesh kills the whole patch.
+- A kept `fac_zone` patch stays on the cells it was given, and the band can
+  leave them. A mover that holds the zone field where it is in space moves the
+  cells under it. On test_1152's fixture the patch's cells held 135 of the 330
+  weak cells after one move, 54 of 260 after two and 31 of 208 after three. The
+  patch still helped: 7 velocity iterations at each move on one rank, against 6
+  with the zone recomputed and 12, 10 and 9 with no patch. The transfers and
+  the level operators of the kept solver are those of a registration made after
+  the move, so the mask is the only difference, and test_1152 holds that: the
+  kept solver takes the count of a registration made after the move with the
+  same mask, and fewer than one with no zone. Over a long run of moves the
+  patch ends on the wrong cells. The remedy is the #1017 one, stated for a
+  zone: after a move, register again with the zone recomputed from the moved
+  field (`set_custom_fmg(..., fac_zone=...)`).
+- A move that keeps the topology keeps the transfers. The hierarchy is installed
+  again after `mesh.deform` or a mover, and a mesh that has moved since it was
+  made is read on the geometry it was built in, so its transfers are those it
+  had before the move (test_1176). Built from the moved coordinates they follow
+  the displacement: on a faulted fixture the rebuilt hierarchy takes 13
+  velocity iterations after each move, against 6 with the transfers kept and 5
+  at rest. It is not cheaper on every move:
+  under an interior mover the count changes by one either way, and a
+  redistribution that carries nodes about four cell widths costs one or two
+  iterations a solve (5 to 6 against 3 to 4 on 2 to 8 ranks). A move still
+  drops the structural patch; it comes back when the base is re-refined from
+  the moved fault and the new levels are registered. This holds for a mover
+  only. A change of topology makes a new mesh and a new hierarchy, and a base
+  that moved before an adapt or a cut goes into the new hierarchy where it
+  stands. A `relax()` of a mesh that has not moved is part of making it. A
+  mover does not replace refinement that adds nodes. Mechanism and counts:
+  [fault-split-multigrid](../subsystems/fault-split-multigrid.md).
 - The first solve after a move reads the moved fields. The mesh-move transfer
   wrote them without marking the mesh's assembly vector stale, so a solver that
   had solved before the move assembled with pre-move coefficients (test_1151).
