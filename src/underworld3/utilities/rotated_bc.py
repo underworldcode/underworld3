@@ -582,6 +582,9 @@ def build_rotation(solver, boundaries, datum_specs=None):
                 # Preserve the previous behaviour rather than impose the wrong datum.
                 _warn_once_partial_datum()
                 continue
+            pinned = [c for c in range(dim) if grows[c] < 0]
+            for wall in _walls_pinning_nonzero(solver, dm, q, pinned):
+                _warn_once_nonzero_pin(wall)
             Mf = np.array(nrms, dtype=float)[:, free]
             scale = float(np.linalg.norm(np.array(nrms, dtype=float)))
             if float(np.linalg.norm(Mf)) <= 1e-12 * max(scale, 1.0):
@@ -748,6 +751,39 @@ def build_rotation(solver, boundaries, datum_specs=None):
                np.array([n for _g, n in entries], dtype=float).reshape(-1, dim))
         for name, entries in given_dofs.items()}
     return Q, Qt, sorted(set(normal_rows)), datum_map
+
+
+_NONZERO_PIN_WARNED = [False]
+
+
+def _walls_pinning_nonzero(solver, dm, point, pinned):
+    """Names of the essential walls that hold ``point`` and prescribe, on one of
+    its ``pinned`` velocity components, a value not known to be zero."""
+    walls = []
+    for bc in solver.essential_bcs:
+        if bc.f_id != _VELOCITY_FIELD or not dm.hasLabel(bc.boundary):
+            continue
+        if dm.getLabel(bc.boundary).getValue(point) < 0:
+            continue
+        if any(c in pinned and sympy.sympify(bc.fn[c]).is_zero is not True
+               for c in bc.components):
+            walls.append(bc.boundary)
+    return walls
+
+
+def _warn_once_nonzero_pin(wall):
+    """The reduced constraint at a node shared with an essential BC holds the pinned
+    components at zero. Where the essential value is not zero the wall-normal
+    velocity there is not the one asked for (#939). Say so once rather than
+    silently."""
+    if not _NONZERO_PIN_WARNED[0]:
+        _NONZERO_PIN_WARNED[0] = True
+        print(f"[rotated_bc] WARNING: a rotated wall shares a node with the essential BC "
+              f"on {wall!r}, which prescribes a nonzero essential value there; the "
+              f"wall-normal constraint at that node is reduced as if the value were "
+              f"zero (the affine reduction against the pinned components is not "
+              f"implemented), so v.n at the node is not the prescribed one. Other "
+              f"nodes are unaffected.")
 
 
 _PARTIAL_DATUM_WARNED = [False]
@@ -1247,8 +1283,24 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
         * ``"ksp_its"`` — list of linear iteration counts, one per Newton iteration;
         * ``"nonlinear_iterations"``, ``"converged"`` — outer-loop count (the number
           of Newton increments solved, ``== len(ksp_its)``) and status;
-        * ``"rnorm"``, ``"rnorm0"`` — final and initial rotated residual norms ‖F̂‖
-          (feed the solve report);
+        * ``"rnorm"``, ``"rnorm0"`` — the final rotated residual norm ‖F̂‖ and the
+          one the reference is set from: the first residual measured, or, on a
+          cold start whose only forcing is a prescribed datum (zero residual at
+          ``u = 0``), the residual of the lifted iterate (feed the solve report);
+        * ``"ref"`` — the scale the relative tolerance is measured against:
+          ``rnorm0``, or ``max(rnorm0, fnorm_rest)`` where the rest-state
+          residual was measured;
+        * ``"fnorm_rest"`` — the rest-state residual ‖F̂(0)‖, measured only for a
+          warm start of a stationary equation; ``None`` otherwise;
+        * ``"rnorm_history"`` — the residual norm at each pass of the loop, the
+          final measuring pass included;
+        * ``"line_search_alpha"`` — the step length taken for each increment: 1 for
+          a full step, the backtracked fraction, or 0 where a step-norm exit left
+          the increment unapplied;
+        * ``"vel_its_last"``, ``"pres_its_last"`` — per increment, the iteration
+          counts of the velocity and pressure sub-solves at their last
+          application in that increment. Both are empty when a warm start
+          converges at iteration 0, because no increment was solved;
         * ``"continuation_switched"`` — whether the Picard→Newton tangent switch fired;
         * ``"continuation_switch_iteration"`` — the iteration it fired at (``None``
           if it did not);
