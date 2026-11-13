@@ -63,6 +63,41 @@ def _auto_pinned_labels(mesh) -> tuple:
     return tuple(names)
 
 
+def _pinned_labels_or_default(mesh, pinned_labels) -> tuple:
+    """The labels a mover pins: the caller's ``pinned_labels``, or every
+    geometric boundary the mesh holds when none are given.
+
+    A label that is not there pins nothing, so two cases warn (on the first
+    rank; the test is the same on every rank). A name the caller gave that the
+    DM holds no label for is most likely misspelt. And when no default wall is
+    left although ``mesh.boundaries`` names some, the DM has lost its boundary
+    labels and every boundary vertex is free to leave the domain. A mesh that
+    names a wall it never had (the inner wall of a solid disc) and holds the
+    others is the ordinary case and is silent.
+    """
+    import warnings
+    import underworld3 as uw
+
+    dm = mesh.dm
+    if pinned_labels is None:
+        labels = _auto_pinned_labels(mesh)
+        named = [b.name for b in mesh.boundaries
+                 if b.name not in ("All_Boundaries", "Null_Boundary", "Centre")]
+        if not labels and named and uw.mpi.rank == 0:
+            warnings.warn(
+                f"the mesh holds no label for any of its boundaries {named}, so no "
+                f"boundary vertex is pinned", UserWarning, stacklevel=3)
+        return labels
+    labels = tuple(pinned_labels)
+    missing = [name for name in labels if not dm.hasLabel(name)]
+    if missing and uw.mpi.rank == 0:
+        warnings.warn(
+            f"the mesh holds no label named {missing}, so these pin nothing; the "
+            f"labels it holds are {sorted(dm.getLabelName(i) for i in range(dm.getNumLabels()))}",
+            UserWarning, stacklevel=3)
+    return labels
+
+
 def _owned_vertex_mask(dm):
     """Local-chart boolean mask: True for owned vertices, False for
     ghosts (leaves of the point StarForest). Used by the parallel

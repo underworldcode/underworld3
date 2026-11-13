@@ -4473,8 +4473,8 @@ class Mesh(Stateful, uw_object):
             ``project(Y)`` slides+restores the slip vertices of ``Y`` in place
             and returns it.
         """
-        from underworld3.meshing.smoothing import (
-            _pinned_mask, _auto_pinned_labels, _owned_vertex_mask)
+        from underworld3.meshing.smoothing import _pinned_mask, _owned_vertex_mask
+        from underworld3.meshing.smoothing.graph import _pinned_labels_or_default
         from underworld3.meshing.smoothing import _boundary_facets
         from underworld3.meshing.bounding_surface import BoundingSurface
 
@@ -4486,8 +4486,7 @@ class Mesh(Stateful, uw_object):
             reference_coords = numpy.asarray(self.X.coords, dtype=float)
         ref = numpy.asarray(reference_coords, dtype=float)
 
-        all_labels = (tuple(boundary_labels) if boundary_labels is not None
-                      else _auto_pinned_labels(self))
+        all_labels = _pinned_labels_or_default(self, boundary_labels)
         # _pinned_mask closes every tagged point (edge in 2D, face in 3D)
         # down to its vertices, so face-only 3D labels classify correctly.
         # Which boundaries a vertex lies on is read from the labelled facets in
