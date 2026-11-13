@@ -188,6 +188,11 @@ target beside an earlier fault takes an interior vertex and leaves the fault's
 vertices where they are, or is refused as it would be under a wall. A target
 within 1e-9 of a cell's height of an edge is read as on that edge.
 
+The mesh has to be distributed without overlap, as `mesh.dm` is. In an overlap
+a boundary edge is held by two ranks and cannot be told from an edge of a
+partition seam, so `pull_vertex_onto` raises `ValueError` on every rank for a
+mesh that has one.
+
 `pull_vertex_onto` raises `ValueError` on every rank when the cell holding an
 interior target has no interior corner, and when each interior corner it has
 would leave a cell below `min_quality` (0.1 by default). An interior corner

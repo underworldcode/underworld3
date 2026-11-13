@@ -1003,6 +1003,8 @@ def pull_vertex_onto(dm, targets, min_quality=0.1):
         of the cell or edge holding it is on the boundary of the mesh, or
         each interior corner that could take it would ruin a cell (see
         ``min_quality``). Raised on every rank.
+    ValueError
+        The mesh is distributed with an overlap. Raised on every rank.
 
     Notes
     -----
@@ -1033,6 +1035,12 @@ def pull_vertex_onto(dm, targets, min_quality=0.1):
     A target beside an earlier fault takes an interior vertex and leaves the
     fault's own vertices where they are, or is refused as it would be under a
     wall.
+
+    The mesh must be distributed WITHOUT overlap, as ``Mesh.dm`` is. In an
+    overlap a boundary edge is held by two ranks and cannot be told from an
+    edge of a partition seam, and the call raises. Measured before the
+    refusal, on two ranks with an overlap of one cell: 91 of 2376 interior
+    targets took a boundary vertex, where none did on one rank.
 
     A target is read as ON an edge when it is within 1e-9 of the cell's
     height of it (the containment tolerance, in barycentric coordinates), so
@@ -1107,6 +1115,21 @@ def pull_vertex_onto(dm, targets, min_quality=0.1):
     cell_verts = _cell_vertices(dm)
     on_wall = _true_wall_vertex_mask(dm, len(X))
     shared = _shared_points(dm)
+    # A boundary edge is one with a single cell that no other rank holds. In
+    # an overlap a boundary edge is held by two ranks and reads as interior,
+    # so the boundary cannot be told from a partition seam there. Cells are
+    # held by more than one rank only when the mesh has an overlap.
+    cS, cE = dm.getHeightStratum(0)
+    pStart, _pEnd = dm.getChart()
+    if uw.mpi.comm.allreduce(int(shared[cS - pStart:cE - pStart].any()),
+                             op=MPI.MAX):
+        raise ValueError(
+            "pull_vertex_onto: the mesh is distributed with an overlap (some "
+            "cell is held by more than one rank). The domain boundary is read "
+            "from the edges that have one cell and are held by one rank, and "
+            "in an overlap a boundary edge is held by two, so a target inside "
+            "the mesh could take a boundary vertex. Pass the mesh without "
+            "overlap; `Mesh.dm` has none.")
     # the way each cell is wound, read from the mesh as given: a cell that an
     # earlier target of this call turned over is inverted, not wound backwards
     wound = np.where(_cell_quality(X, cell_verts) < 0.0, -1.0, 1.0)

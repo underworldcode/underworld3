@@ -636,3 +636,35 @@ def test_a_target_with_no_interior_corner_is_refused_on_every_rank():
     seen = uw.mpi.comm.allgather(outcome)
     assert set(seen) == {"refused"}, (
         f"np={uw.mpi.size}: ranks disagreed — {seen}")
+
+
+def test_a_mesh_with_overlap_is_refused_on_every_rank():
+    """A mesh distributed with an overlap is refused, on every rank.
+
+    The boundary is the edges with one cell that one rank holds. A boundary
+    edge inside an overlap is held by two ranks, so it reads as interior and
+    a target under the wall would take a wall vertex: on two ranks with an
+    overlap of one cell, 91 of 2376 such targets did before the refusal. The
+    target here is the first of the interior targets above, which is placed
+    on the same mesh without overlap.
+    """
+    from underworld3.utilities.line_cut import pull_vertex_onto
+
+    base = uw.meshing.UnstructuredSimplexBox(**_REGULAR_BOX)
+    dm = base.dm.clone()
+    dm.distributeOverlap(1)
+    cS, cE = dm.getHeightStratum(0)
+    _nroots, ilocal, _iremote = dm.getPointSF().getGraph()
+    n_ghost_cells = uw.mpi.comm.allreduce(
+        int(((ilocal >= cS) & (ilocal < cE)).sum()))
+    assert n_ghost_cells > 0, "the fixture has no overlap"
+
+    try:
+        pull_vertex_onto(dm, np.array([1 / 12 + 0.004, 1.0 - 0.025]))
+        outcome = "no refusal"
+    except ValueError as exc:
+        outcome = "refused" if "overlap" in str(exc) else str(exc)
+
+    seen = uw.mpi.comm.allgather(outcome)
+    assert set(seen) == {"refused"}, (
+        f"np={uw.mpi.size}: ranks disagreed — {seen}")
