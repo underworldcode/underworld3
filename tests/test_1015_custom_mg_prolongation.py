@@ -49,12 +49,40 @@ def test_custom_mg_barycentric_matches_fmg():
 
 
 def test_custom_mg_rbf_drives_solver():
-    """The RBF builder must also drive a converging geometric MG solve."""
+    """The RBF builder must drive a geometric MG solve to the nested-FMG
+    solution at a competitive iteration count (#429: it used to assert only
+    that the solve converged, so a builder that lost linear reproduction and
+    converged slowly would have passed)."""
+    fmg = _poisson(_box(0.25, refinement=2))
+    fmg.solve()
+    assert fmg.snes.getConvergedReason() > 0
+
     cust = _poisson(_box(0.25, refinement=2))
     cust.set_custom_mg([_box(0.285), _box(0.142)], kind="rbf")
     cust.solve()
     assert cust.snes.getKSP().getPC().getType() == "mg"
     assert cust.snes.getConvergedReason() > 0
+    rel = (np.linalg.norm(cust.Unknowns.u.data - fmg.Unknowns.u.data)
+           / (np.linalg.norm(fmg.Unknowns.u.data) + 1e-30))
+    assert rel < 1e-4
+    assert cust.snes.getKSP().getIterationNumber() <= fmg.snes.getKSP().getIterationNumber() + 5
+
+
+def test_rbf_prolongation_reproduces_linear_fields():
+    """The builder itself: sparse and linear-exact, also with duplicated and
+    nearly duplicated coarse points (the case that made the old dense
+    saddle-point solve raise, #429)."""
+    from underworld3.utilities import custom_mg
+
+    rng = np.random.default_rng(429)
+    coarse = rng.random((400, 2))
+    coarse = np.vstack([coarse, coarse[:5], coarse[5:10] + 1e-14])
+    fine = rng.random((3000, 2))
+    P = custom_mg.rbf_prolongation(coarse, fine).tocsr()
+    assert np.diff(P.indptr).max() <= 12          # local stencils, not dense
+    for f in (lambda X: np.ones(len(X)), lambda X: X[:, 0], lambda X: X[:, 1],
+              lambda X: 2 * X[:, 0] - 3 * X[:, 1] + 1):
+        np.testing.assert_allclose(P @ f(coarse), f(fine), rtol=0, atol=1e-11)
 
 
 def test_custom_mg_without_refine_hierarchy():
