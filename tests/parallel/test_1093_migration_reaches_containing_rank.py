@@ -35,6 +35,11 @@ second-nearest. So the cells are also dealt to the ranks at random (a seeded
 shell partition), where a point's domain is often the third-nearest by
 centroid or further, and points like that are asked, many at once and one on
 its own (from np 3).
+
+Points outside the mesh, just beyond its outer wall and in its hole, are
+offered only to the ranks whose padded domain box holds them, and stay on the
+last of those (or, in no box, on the nearest domain): never on a rank with no
+cells, and in at most two rounds on the slab partition.
 """
 
 import numpy as np
@@ -48,9 +53,10 @@ pytestmark = [pytest.mark.level_2, pytest.mark.mpi(min_size=2), pytest.mark.time
 R_OUTER, R_INNER = 1 / 0.45, 0.55 / 0.45
 
 
-def _scatter(dmod):
+def _scatter(dmod, ranks=None):
     """Install a shell partition dealing the loaded DM's cells to the ranks
-    at random (seeded, so the same on every platform)."""
+    at random (seeded, so the same on every platform); to the first
+    ``ranks`` only, if given, so the others hold no cells."""
     from petsc4py import PETSc
 
     original = dmod._from_plexh5
@@ -61,7 +67,7 @@ def _scatter(dmod):
             return result
         sf0, dm = result
         cs, ce = dm.getHeightStratum(0)
-        owner = np.random.default_rng(1093).integers(0, uw.mpi.size, ce - cs)
+        owner = np.random.default_rng(1093).integers(0, ranks or uw.mpi.size, ce - cs)
         partitioner = dm.getPartitioner()
         partitioner.setType(PETSc.Partitioner.Type.SHELL)
         partitioner.setShellPartition(
@@ -105,7 +111,8 @@ def _annulus(layout):
     """The cavity annulus of #1086 (refinement 2), with f = 2x + 3y on P1, on
     the platform's partition (None), in slabs, or scattered."""
     dmod = uw.discretisation.discretisation_mesh
-    install = {"slabs": _slabs, "scatter": _scatter}.get(layout)
+    install = {"slabs": _slabs, "scatter": _scatter,
+               "last_empty": lambda d: _scatter(d, uw.mpi.size - 1)}.get(layout)
     original = install(dmod) if install is not None and uw.mpi.size > 1 else None
     try:
         mesh = uw.meshing.Annulus(radiusOuter=R_OUTER, radiusInner=R_INNER, cellSize=0.5,
@@ -132,6 +139,11 @@ def slab_annulus():
 @pytest.fixture(scope="module")
 def scattered_annulus():
     return _annulus("scatter")
+
+
+@pytest.fixture(scope="module")
+def last_empty_annulus():
+    return _annulus("last_empty")
 
 
 def _deep(mesh, seed, n=2000):
@@ -250,3 +262,70 @@ def test_a_single_point_in_a_third_nearest_domain(scattered_annulus):
     asked = deep[:1] if uw.mpi.rank == uw.mpi.size - 1 else np.zeros((0, 2))
     err, outside = _max_error(f, asked)
     assert outside == 0 and err < 1e-12, (err, outside)
+
+
+def _exterior(seed, n=500):
+    """Points just outside the outer wall (up to 0.02 out) and in the hole."""
+    rng = np.random.default_rng(seed)
+    r = np.concatenate([rng.uniform(R_OUTER + 1e-4, R_OUTER + 0.02, n),
+                        rng.uniform(R_INNER - 0.2, R_INNER - 1e-4, n)])
+    theta = rng.uniform(0, 2 * np.pi, 2 * n)
+    return np.column_stack([r * np.cos(theta), r * np.sin(theta)])
+
+
+def _place_exterior(mesh, seed):
+    """Migrate exterior points; returns (held coordinates, rounds taken)."""
+    points = _exterior(seed + uw.mpi.rank)
+    swarm = uw.swarm.Swarm(mesh)
+    swarm.add_particles_with_global_coordinates(points, migrate=False)
+    total = uw.mpi.comm.allreduce(len(points))
+    calls = [0]
+    classify = mesh.points_in_domain
+
+    def counted(*args, **kwargs):
+        calls[0] += 1
+        return classify(*args, **kwargs)
+
+    mesh.points_in_domain = counted
+    try:
+        swarm.migrate(remove_sent_points=True, delete_lost_points=False)
+    finally:
+        del mesh.points_in_domain
+    held = np.asarray(swarm.dm.getField("DMSwarmPIC_coor")).reshape(-1, 2).copy()
+    swarm.dm.restoreField("DMSwarmPIC_coor")
+    assert uw.mpi.comm.allreduce(len(held)) == total       # none lost
+    return held, uw.mpi.comm.allreduce(calls[0] - 1, op=MPI.MAX)
+
+
+def _where_they_belong(mesh, held):
+    """Each exterior point on a rank whose padded box holds it, or, in no
+    box, on its nearest domain; and none on a rank with no cells."""
+    lo, hi = mesh._get_domain_boxes()
+    centroids = mesh._get_domain_centroids()
+    start, end = mesh.dm.getHeightStratum(0)
+    if end == start:
+        assert len(held) == 0, "a rank with no cells holds exterior points"
+        return
+    me = uw.mpi.rank
+    in_box = np.all((held >= lo[me]) & (held <= hi[me]), axis=1)
+    in_any = np.array([np.all((h >= lo) & (h <= hi), axis=1).any() for h in held], dtype=bool)
+    nearest = np.argmin(np.linalg.norm(held[:, None, :] - centroids[None], axis=2), axis=1)
+    ok = in_box | (~in_any & (nearest == me))
+    assert ok.all(), held[~ok][:5]
+
+
+@pytest.mark.tier_b
+def test_exterior_points_stay_near_where_they_could_be(slab_annulus):
+    mesh, _ = slab_annulus
+    held, rounds = _place_exterior(mesh, 6093)
+    _where_they_belong(mesh, held)
+    assert rounds <= 2, rounds
+
+
+@pytest.mark.tier_b
+def test_exterior_points_never_reach_a_rank_with_no_cells(last_empty_annulus):
+    mesh, _ = last_empty_annulus
+    counts = uw.mpi.comm.allgather(int(np.subtract(*mesh.dm.getHeightStratum(0)[::-1])))
+    assert counts[-1] == 0 and all(counts[:-1])
+    held, _ = _place_exterior(mesh, 7093)
+    _where_they_belong(mesh, held)

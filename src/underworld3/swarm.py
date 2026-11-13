@@ -76,26 +76,33 @@ class _ReadOnlyCoordinateSnapshot(np.ndarray):
         raise ValueError(self._GUIDANCE)
 
 
-def _outside_every_domain(boxes, coords):
-    """True where a point is outside every rank's inflated domain box
-    (``boxes`` from ``Mesh._get_domain_boxes``), so in no rank's domain.
-    Tested against the union box first, so only points inside it pay the
-    per-rank test. Rank-local."""
+def _candidate_ranks(boxes, centroids, coords, n):
+    """The first ``n`` ranks a point is offered to, ``(m, n)``, -1 past the end
+    of its list. Rank-local: the same for a point on whichever rank holds it.
+
+    A point's list is the ranks whose inflated domain box
+    (``Mesh._get_domain_boxes``) contains it, nearest domain centroid first:
+    the only ranks whose domain can contain it. A point in no box (outside the
+    mesh by more than a cell) is offered to its nearest centroid only, where it
+    is left, as before. A rank with no cells has an empty box and no finite
+    centroid, so it is never offered a point."""
     lo, hi = boxes
     coords = np.asarray(coords, dtype=float).reshape(-1, lo.shape[1])
-    live = np.isfinite(lo).all(axis=1)
-    lo, hi = lo[live], hi[live]
-    outside = np.ones(len(coords), dtype=bool)
-    if not len(coords) or not len(lo):
-        return outside
-    near = np.flatnonzero(((coords >= lo.min(axis=0)) & (coords <= hi.max(axis=0))).all(axis=1))
-    for box_lo, box_hi in zip(lo, hi):
-        if not near.size:
-            break
-        inside = ((coords[near] >= box_lo) & (coords[near] <= box_hi)).all(axis=1)
-        outside[near[inside]] = False
-        near = near[~inside]
-    return outside
+    out = np.full((len(coords), n), -1, dtype=np.int64)
+    for s in range(0, len(coords), 4096):
+        X = coords[s:s + 4096]
+        inside = np.all((X[:, None, :] >= lo[None]) & (X[:, None, :] <= hi[None]), axis=2)
+        d = np.linalg.norm(X[:, None, :] - centroids[None], axis=2)
+        nearest = np.argmin(d, axis=1)
+        d = np.where(inside, d, np.inf)
+        order = np.argsort(d, axis=1, kind="stable")[:, :n]
+        ok = np.isfinite(np.take_along_axis(d, order, axis=1))
+        block = np.where(ok, order, -1)
+        none = ~inside.any(axis=1)
+        block[none] = -1
+        block[none, 0] = nearest[none]
+        out[s:s + 4096] = block
+    return out
 
 
 def _coordinate_row_keys(coords):
@@ -4413,31 +4420,29 @@ class Swarm(Stateful, uw_object):
         # Migrate particles between processes (if there are more than one of them)
 
         if uw.mpi.size > 1:
-            # Points outside every domain's inflated box can be claimed by no
-            # rank. The first round sends them to their nearest domain (the
-            # domain kd-tree's nearest centroid, where they always went), and
-            # they stay there: only the points that may still be inside some
-            # domain are offered further. Without this, a migrate whose only
-            # unclaimed points are exterior (departure points, advection exits,
-            # clip_to_mesh=False swarms) ran every round and parked them on the
-            # farthest domain (#1093 review).
-            seeking = not_my_points
+            # Each unclaimed point is offered, round by round, to the ranks
+            # whose inflated domain box contains it, nearest centroid first
+            # (_candidate_ranks), and stays where it is when its list is
+            # exhausted. No "no progress" exit: a point inside the mesh near a
+            # seam is first offered to its own rank, which claims nothing, and
+            # an exit there stranded it (#1093). The per-point list bounds the
+            # cost instead: a point outside the mesh, near a wall or in a hole,
+            # takes as many rounds as boxes hold it (one or two), and one in no
+            # box takes one, to its nearest domain. No point is ever sent to a
+            # rank with no cells. The rounds stop when no point has a candidate
+            # left, or at the cap.
             boxes = self.mesh._get_domain_boxes()          # collective, every rank
+            centroids = self.mesh._get_domain_centroids()  # collective, every rank
+            seeking = not_my_points
             for it in range(0, min(max_its, uw.mpi.size)):
 
-                # Send unclaimed points to next processor in line
-
-                swarm_rank_array = self.dm.getField("DMSwarm_rank")
+                swarm_rank_array = self.dm.getField("DMSwarm_rank").reshape(-1)
                 swarm_coord_array = self.dm.getField("DMSwarmPIC_coor").reshape(-1, self.cdim)
 
                 if seeking.shape[0] > 0:
-                    dist, rank = mesh_domain_kdtree.query(
-                        swarm_coord_array[seeking], k=it + 1, sqr_dists=False
-                    )
-
-                    swarm_rank_array.reshape(-1)[seeking] = rank.reshape(
-                        -1, it + 1
-                    )[:, it].flatten()
+                    dest = _candidate_ranks(boxes, centroids,
+                                            swarm_coord_array[seeking], it + 1)[:, it]
+                    swarm_rank_array[seeking] = np.where(dest >= 0, dest, uw.mpi.rank)
 
                 self.dm.restoreField("DMSwarm_rank")
                 self.dm.restoreField("DMSwarmPIC_coor")
@@ -4485,24 +4490,19 @@ class Swarm(Stateful, uw_object):
                     )
 
                 not_my_points = np.where(in_or_not == False)[0]
-                exterior = _outside_every_domain(boxes, swarm_coord_array[not_my_points])
+                # the unclaimed points with a candidate left for the next round
+                if not_my_points.size and it + 1 < min(max_its, uw.mpi.size):
+                    nxt = _candidate_ranks(boxes, centroids,
+                                           swarm_coord_array[not_my_points], it + 2)[:, it + 1]
+                    seeking = not_my_points[nxt >= 0]
+                else:
+                    seeking = not_my_points[:0]
                 self.dm.restoreField("DMSwarmPIC_coor")
-                seeking = not_my_points[~exterior]
 
                 uw.mpi.barrier()
 
                 if uw.mpi.comm.allreduce(int(seeking.size)) == 0:
                     break
-
-                # No "no progress" exit here. Round `it` offers each unclaimed
-                # point to its (it+1)-th nearest domain, and a round can claim
-                # nothing only because that domain was the point's own rank: a
-                # point inside the mesh near a partition seam whose own rank's
-                # centroid is nearest, but whose cell is on the next rank. An
-                # exit then left it on a rank that does not contain it, where
-                # it was lost or extrapolated (#1093). Points outside every
-                # domain's box stopped seeking above; the round cap bounds the
-                # rest (outside the mesh but inside some box).
 
         # Missing points for deletion if required
         if delete_lost_points:

@@ -7974,8 +7974,11 @@ class Mesh(Stateful, uw_object):
 
     @uw.collective_operation
     def _get_domain_boxes(self):
-        """Every rank's vertex bounding box, inflated by the largest cell
-        radius: ``(lo, hi)``, each ``(size, cdim)``, the same on every rank. A
+        """Every rank's vertex bounding box, padded: ``(lo, hi)``, each
+        ``(size, cdim)``, the same on every rank. A point a rank's domain holds
+        is inside its unpadded box; the pad (four times the locator's face
+        tolerance, ``_EVAL_FACE_TOL``, of the largest cell radius) covers a
+        point just outside the mesh that the locator still gives a cell. A
         point outside all of them is in no rank's domain. A rank with no cells
         has an empty box (``lo = +inf``). Collective: one small allgather."""
         import underworld3 as uw
@@ -7985,7 +7988,7 @@ class Mesh(Stateful, uw_object):
             lo, hi = coords.min(axis=0), coords.max(axis=0)
         else:
             lo, hi = numpy.full(self.cdim, numpy.inf), numpy.full(self.cdim, -numpy.inf)
-        pad = self.get_max_radius()
+        pad = 4.0 * self._EVAL_FACE_TOL * self.get_max_radius()
         boxes = uw.mpi.comm.allgather((lo - pad, hi + pad))
         return (numpy.array([b[0] for b in boxes]), numpy.array([b[1] for b in boxes]))
 
