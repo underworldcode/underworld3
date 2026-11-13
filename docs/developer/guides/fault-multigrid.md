@@ -215,9 +215,9 @@ one campaign and is the error to recognise.
   again after `mesh.deform` or a mover, and a mesh that has moved since it was
   made is read on the geometry it was built in, so its transfers are those it
   had before the move (test_1176). Built from the moved coordinates they follow
-  the displacement: on a faulted fixture the rebuilt hierarchy took 13 velocity
-  iterations and is now refused by the dependent-column check (#1101), against
-  6 with the transfers kept and 5 at rest. It is not cheaper on every move:
+  the displacement: on a faulted fixture the rebuilt hierarchy takes 13
+  velocity iterations after each move, against 6 with the transfers kept and 5
+  at rest. It is not cheaper on every move:
   under an interior mover the count changes by one either way, and a
   redistribution that carries nodes about four cell widths costs one or two
   iterations a solve (5 to 6 against 3 to 4 on 2 to 8 ranks). A move still

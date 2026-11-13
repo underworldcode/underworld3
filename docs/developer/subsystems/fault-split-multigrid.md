@@ -274,8 +274,9 @@ Built from the moved coordinates, a moved node was located among the unmoved
 coarse nodes and its weights followed the displacement. On the fixtures of
 `tests/test_1176_custom_mg_transfer_after_a_move.py` (serial, displacements of
 0.02 on a unit box) a weight changed by 0.65 to 1.1, and the faulted Stokes solve
-went from 5 velocity iterations to 13; with the dependent-column check of #1101
-that rebuilt hierarchy is refused at the first move. With the level read where it
+went from 5 velocity iterations to 13 after each of three moves, with 62 to 137
+coarse unknowns of the level under the fault merged by the dependent-column
+repair of #1101. With the level read where it
 was built the transfers after a move equal those before it entry for entry, and
 the same solve takes 6 iterations after each of three moves, as a solver built on
 the moved mesh does. On 2 to 5 ranks it took 6 at rest and 7 after each move.
@@ -331,9 +332,10 @@ geometry, on the new mesh and on the split level under it alike, so the new mesh
 is read where it is: 6 velocity iterations on the fixture of the test, whose host
 moved by 0.002 before the cut, and 5 with the host at rest. The split level under
 the new mesh is cut where the host's coarse level stands, which did not move. On
-that fixture a host that moved by 0.005 or more (0.4 of its finest cell size) is
-refused by the dependent-column check (#1101), with the transfers kept or built
-from the moved coordinates. The finest level of a refined base that moved before an adapt or a cut is
+that fixture a host that moved by 0.005 or more (0.4 of its finest cell size)
+leaves that split level with dependent coarse unknowns, which the repair of
+#1101 merges (2 at 0.005, 6 at 0.01, 62 at 0.02), with the transfers kept or
+built from the moved coordinates; the solve takes 6 or 7 iterations. The finest level of a refined base that moved before an adapt or a cut is
 likewise carried into the child's hierarchy as a new mesh on the moved
 coordinates, and the pair under it is rebuilt from them: with the top wall of a
 box raised by 5 % three times before the adapt, the solve on the child takes 4
