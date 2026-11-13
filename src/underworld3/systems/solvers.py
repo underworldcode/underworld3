@@ -5652,7 +5652,8 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
         self._penalty = expression(R"{\uplambda}", 0, "Incompressibility Penalty")
 
         self.restore_points_to_domain_func = restore_points_func
-        self._bodyforce = sympy.Matrix([[0] * self.mesh.dim]).T
+        # a row, as the setter stores it and F0's time term is (#1034)
+        self._bodyforce = sympy.Matrix([[0] * self.mesh.dim])
         self._constitutive_model = None
 
         # self._E = self.mesh.vector.strain_tensor(self.u.sym)
