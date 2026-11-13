@@ -145,14 +145,14 @@ class SimplexLocator:
         out = self._star_table[cells, mask]
         return np.where(out >= 0, out, cells)
 
-    def locate(self, points, start, restarts=()):
+    def locate(self, points, start, restarts=(), return_exit=False):
         """Containing local cell per point (-1 if no local cell contains it).
 
         ``start`` gives a local start cell per point; ``restarts`` further start
         cells, each an array like ``start``, tried in turn for points still lost
         (a non-convex local mesh can put a wall between start and target).
         """
-        cells, lam, _ = self.walk(points, start)
+        cells, lam, exit_cell = self.walk(points, start)
         for alt in restarts:
             lost = np.flatnonzero(cells < 0)
             if lost.shape[0] == 0:
@@ -161,4 +161,8 @@ class SimplexLocator:
             cells[lost], lam[lost] = c2, l2
         found = cells >= 0
         cells[found] = self.lowest_in_star(cells[found], lam[found])
+        if return_exit:
+            # the cell the first walk left the local mesh through (-1: none)
+            exit_cell[found] = -1
+            return cells, exit_cell
         return cells

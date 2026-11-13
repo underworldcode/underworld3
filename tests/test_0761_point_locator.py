@@ -544,8 +544,8 @@ def test_evaluate_fills_a_point_no_cell_owns_instead_of_returning_nan():
     located = mesh._robust_owning_cells
     mesh._dminterpolation_cache.invalidate_all("fault injection")
 
-    def loses_the_victims(points):
-        cells = np.asarray(located(points), dtype=np.int64).copy()
+    def loses_the_victims(points, **kwargs):
+        cells = np.asarray(located(points, **kwargs), dtype=np.int64).copy()
         for victim in victim_coords:
             cells[np.all(points == victim, axis=1)] = -1
         return cells

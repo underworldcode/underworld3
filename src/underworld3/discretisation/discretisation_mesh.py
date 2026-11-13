@@ -7404,7 +7404,8 @@ class Mesh(Stateful, uw_object):
             # migration reads, keeps the boundary-sign test, so no swarm claim
             # changes here; making the two agree is the follow-up that passes a
             # particle's previous cell to the walk.
-            cells = numpy.asarray(self._robust_owning_cells(model_points), dtype=numpy.int64)
+            cells = numpy.asarray(self._robust_owning_cells(model_points, for_evaluation=True),
+                                  dtype=numpy.int64)
             return cells >= 0, cells
         if self.boundary_face_control_points_kdtree is None:
             in_or_not = self._get_closest_local_cells_internal(model_points) != -1
@@ -7842,7 +7843,7 @@ class Mesh(Stateful, uw_object):
     # cell contains to this tolerance is evaluated in that cell (#1115).
     _EVAL_CONTAIN_TOL = 1.0e-10
 
-    def _robust_owning_cells(self, coords: numpy.ndarray) -> numpy.ndarray:
+    def _robust_owning_cells(self, coords: numpy.ndarray, for_evaluation=False) -> numpy.ndarray:
         """Per-point owning cell for parallel evaluation (coords in model units).
 
         This is the strict barycentric/cell-wall locator
@@ -7879,8 +7880,27 @@ class Mesh(Stateful, uw_object):
         if coords.shape[0] == 0:
             return numpy.array([], dtype=numpy.int64)
         locator = self._simplex_locator()
+        beyond_reach = None
         if locator is not None:
-            cells = self._walk_to_owning_cells(locator, coords)
+            cells, beyond_reach, exit_cell = self._walk_to_owning_cells(locator, coords)
+            if for_evaluation and uw.mpi.size == 1:
+                # Evaluation in serial only: a point the walk could not place in
+                # a local cell is given the face tolerance against the cell it
+                # left the mesh through, not the 50-centroid search, which costs
+                # a point outside the domain 51 containment tests. In serial the
+                # local boundary is the domain boundary, and the two agree on
+                # every point measured (1.02e6, including points 1e-6 and 1e-8
+                # off boundary vertices). In parallel a point within the
+                # tolerance of a partition seam can be met by another cell than
+                # the exit cell, so there the full pass below decides, as for
+                # claims. The rank count is the same on every rank: no
+                # collective depends on this branch.
+                lost = numpy.flatnonzero((cells < 0) & (exit_cell >= 0))
+                if lost.shape[0] > 0:
+                    near = self._test_if_points_in_cells_internal(
+                        coords[lost], exit_cell[lost], tol=self._EVAL_FACE_TOL)
+                    cells[lost[near]] = exit_cell[lost[near]]
+                return cells
         else:
             cells = numpy.asarray(
                 self._get_closest_local_cells_internal(coords, tol=self._EVAL_CONTAIN_TOL),
@@ -7890,7 +7910,27 @@ class Mesh(Stateful, uw_object):
         # tolerance below decides whether this rank answers for it. The set of
         # points a rank claims is unchanged; only which cell holds a contained
         # point is decided exactly (the locator rework, register row 14).
-        lost = numpy.flatnonzero(cells < 0)
+        # A point beyond every local cell's reach is not handed to the face
+        # tolerance either: that pass rejects it by the same reach test, after
+        # a kd-tree query and a containment test it does not need.
+        if beyond_reach is None:
+            lost = numpy.flatnonzero(cells < 0)
+        else:
+            # The face tolerance can only claim a point within its slab of a
+            # local face, which is within that face's size of its control
+            # point. A lost point farther than twice the local cell reach from
+            # every local boundary face control point is not handed to it.
+            # Rank-local on purpose: this runs only where points are lost, so
+            # nothing here may be collective (get_max_radius is).
+            candidate = (cells < 0) & ~beyond_reach
+            tree = getattr(self, "boundary_face_control_points_kdtree", None)
+            reach = getattr(self, "_local_cell_reach", None)
+            if tree is not None and reach and candidate.any():
+                which = numpy.flatnonzero(candidate)
+                dist2, _ = tree.query(coords[which], k=1, sqr_dists=True)
+                far = numpy.asarray(dist2).ravel() >= (2.0 * reach) ** 2
+                candidate[which[far]] = False
+            lost = numpy.flatnonzero(candidate)
         if lost.shape[0] > 0:
             cells[lost] = numpy.asarray(
                 self._get_closest_local_cells_internal(coords[lost], tol=self._EVAL_FACE_TOL),
@@ -7926,9 +7966,12 @@ class Mesh(Stateful, uw_object):
         the nearest control point; a point still lost is walked again from its
         few nearest centroids (a non-convex local mesh can wall it off). -1 where
         no local cell contains the point. A point several cells contain gets the
-        lowest-numbered cell in the star of the entity it lies on."""
+        lowest-numbered cell in the star of the entity it lies on. Also returns
+        which points are beyond every local cell's reach (not walked)."""
         if locator.n_cells == 0:
-            return numpy.full(coords.shape[0], -1, dtype=numpy.int64)
+            return (numpy.full(coords.shape[0], -1, dtype=numpy.int64),
+                    numpy.ones(coords.shape[0], dtype=bool),
+                    numpy.full(coords.shape[0], -1, dtype=numpy.int64))
         distance, nearest = self._index.query(coords, k=1, sqr_dists=False)
         distance = numpy.asarray(distance).reshape(-1)
         start = numpy.asarray(self._indexMap[numpy.asarray(nearest).reshape(-1)],
@@ -7940,7 +7983,8 @@ class Mesh(Stateful, uw_object):
         reach = getattr(self, "_local_cell_reach", None)
         near = (numpy.ones(coords.shape[0], dtype=bool) if not reach
                 else distance <= self._LOCATOR_REACH_MARGIN * reach)
-        cells[near] = locator.locate(coords[near], start[near])
+        exit_cell = numpy.full(coords.shape[0], -1, dtype=numpy.int64)
+        cells[near], exit_cell[near] = locator.locate(coords[near], start[near], return_exit=True)
         lost = numpy.flatnonzero((cells < 0) & near)
         if lost.shape[0] > 0:
             k = min(4, locator.n_cells)
@@ -7950,7 +7994,10 @@ class Mesh(Stateful, uw_object):
                                          restarts=[cc[:, j] for j in range(1, cc.shape[1])])
         found = cells >= 0
         cells[found] += locator.cStart
-        return cells
+        exit_cell[cells >= 0] = -1
+        has_exit = exit_cell >= 0
+        exit_cell[has_exit] += locator.cStart
+        return cells, ~near, exit_cell
 
     def _audit_cell_face_geometry(self):
         """Measure the two quantities that bound the cell-wall estimator's
