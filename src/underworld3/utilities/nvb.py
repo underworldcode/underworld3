@@ -364,6 +364,24 @@ def _nested_prolongation_local(coarse_dm, fine_dm):
     # convinced me this code was broken when it was not.
     unresolved = [r for r in range(n_f) if weights[r] is None]
     if unresolved:
+        # A matching pair is the vertex's parents only if its two rows lie in
+        # ONE coarse cell: there the coarse P1 field is linear, so the averaged
+        # row is the embedding whichever such pair is taken, and a true parent
+        # edge always lies in one coarse cell. In 3-D a cascade vertex often has
+        # two or three matching pairs, and the first found used to be taken even
+        # when its rows were in two different cells (#449). Read from the
+        # coarse mesh's connectivity; no tolerance.
+        ccS, ccE = coarse_dm.getHeightStratum(0)
+        cells_of = [set() for _ in range(cvE - cvS)]
+        for c in range(ccS, ccE):
+            for q in coarse_dm.getTransitiveClosure(c)[0]:
+                if cvS <= q < cvE:
+                    cells_of[q - cvS].add(c)
+
+        def in_one_cell(p_, q_):
+            support = set(weights[p_]) | set(weights[q_])
+            return bool(set.intersection(*(cells_of[v] for v in support)))
+
         nbr = [[] for _ in range(n_f)]
         for e in range(feS, feE):
             c = fine_dm.getCone(e)
@@ -381,7 +399,7 @@ def _nested_prolongation_local(coarse_dm, fine_dm):
                     for j in range(i + 1, len(cand)):
                         p_, q_ = cand[i], cand[j]
                         avg = np.ascontiguousarray(0.5 * (fxyz[p_] + fxyz[q_]))
-                        if avg.tobytes() == target:
+                        if avg.tobytes() == target and in_one_cell(p_, q_):
                             found = (p_, q_)
                             break
                     if found:

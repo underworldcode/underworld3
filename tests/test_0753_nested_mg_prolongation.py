@@ -250,33 +250,14 @@ def test_reproduces_an_arbitrary_coarse_field(dim, cell_size, max_levels, ratio)
     cell boundaries (#432) — using it as the reference produced a convincing
     false accusation against this code.
 
-    TODO(BUG) ``nvb.nested_prolongation`` is wrong in 3-D for vertices a closure
-    cascade places strictly INSIDE a coarse tet — worst error 1.19, measured per
-    generation with no composition involved, against 1.9e-15 in 2-D. The defect
-    is asserted POSITIVELY below rather than through ``xfail(strict=True)``: it
-    is carried by ONE row in 2336 of a gmsh mesh, so a strict xfail turns a gmsh
-    version bump into a hard failure, and it hides how narrow the breakage is.
-    When the bug is fixed this test fails and says so.
+    In 3-D a vertex the closure cascade places strictly inside a coarse tet
+    used to take the first pair of resolved neighbours whose midpoint it is,
+    which was sometimes not its parents (#449, worst error 1.19). Every
+    dimension now asserts exactness; test_0449 checks the same rows on a mesh
+    that does not depend on which gmsh built it.
     """
     _on_support, interior = _embedding_report(dim, cell_size, max_levels, ratio)
     wrong = [(k, r) for k, r, exact in interior if not exact]
-
-    if dim == 3:
-        if not wrong:
-            # The defect is carried by the handful of vertices a closure
-            # cascade places strictly inside a coarse tet, and WHETHER any
-            # arise depends on the gmsh mesh: the linux CI mesh presents
-            # none while the macOS reference mesh does, so a hard assert
-            # here fires falsely on one platform or the other (measured,
-            # PR #510 CI). Skipping keeps the tripwire's message without
-            # the flake; when #449 is truly fixed, the skip goes with it
-            # and every dimension asserts exactness below.
-            pytest.skip(
-                "no 3-D interior-vertex row is wrong on this mesh — the #449 "
-                "cascade parentage did not occur here (mesh-dependent), or "
-                "the defect is fixed. Verify against the reference-toolchain "
-                "mesh before deleting this branch.")
-        return
 
     assert not wrong, (
         f"{len(wrong)} of {len(interior)} rows whose fine vertex lies strictly "
