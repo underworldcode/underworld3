@@ -406,6 +406,8 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   # Shell Inner/Outer cell labels follow the Internal surface, not a radius test:
   # the same assertions hold on one rank, so the file also runs serially.
   batch 3 tests/parallel/test_1175_shell_region_labels.py
+  # So are the multigrid levels an adapt keeps, the same at any rank count (#865).
+  batch 3 tests/parallel/test_1177_mg_levels_same_at_any_rank_count_parallel.py
   # test_106*/test_107* were held back pending "a triage/deselect decision". That
   # decision is made: the band is not the unit of exclusion. Of the 243 tests in
   # the deferred bands only 26 are level_3 or tier_c; 55 are level_1 AND tier_a —

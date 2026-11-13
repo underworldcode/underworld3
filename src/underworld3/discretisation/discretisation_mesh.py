@@ -9518,7 +9518,10 @@ class Mesh(Stateful, uw_object):
             per doubling at the same iteration count. ``2.0`` (halve `h` each
             level) is the standard choice and the measured default; raise it for
             fewer, cheaper levels or lower it if a problem needs a gentler
-            sequence.
+            sequence. The cell size of a generation is the 5th percentile of
+            its cell diameters over the whole mesh, so the choice of levels
+            does not depend on the partition: where the refinement gives the
+            same generations at any rank count, the same levels are kept.
         repair : bool, default False
             Run a reconnection (Lawson flip) pass after each ``edge_split``
             generation, repairing the element shapes the split leaves behind. 2-D
@@ -10073,7 +10076,7 @@ class Mesh(Stateful, uw_object):
             # so fewer edges are independent per pass.
             n_pass = 8 * dim * max_levels
             current_dm = base_finest
-            _pct5_of_dm = {}
+            _size_of_dm = {}
             for level in range(n_pass):
                 centroids, _proxy_h, cs = cell_geometry(current_dm)
                 # The topology tables are read ONCE per pass and shared
@@ -10083,24 +10086,26 @@ class Mesh(Stateful, uw_object):
                 # cells" verdict is COLLECTIVE (rank-local branching on
                 # the raw metric is the np>1 deadlock class).
                 _edge_tables = None
+                diameter = numpy.empty(0)
                 M = marking_metric(centroids)
                 if M is not None and centroids.shape[0]:
                     h_target = 1.0 / numpy.sqrt(M)
                     diameter, _edge_tables = edge_split.cell_diameters(
                         current_dm, return_tables=True)
-                    # The marking pass has just measured this dm; the MG
-                    # level selection re-derives the same 5th percentile
-                    # per retained generation, so it is cached here
-                    # rather than re-walking every level's topology.
-                    _pct5_of_dm[id(current_dm)] = (
-                        float(numpy.percentile(diameter, 5))
-                        if diameter.size else float("inf"))
                     sel = numpy.where(diameter > h_target)[0]
                     if node_budget is not None and sel.size > node_budget:
                         order = numpy.argsort(M[sel])[::-1]
                         sel = sel[order[:node_budget]]
                 else:
                     sel = numpy.empty(0, dtype=int)   # rank owns no cells
+                if M is not None:
+                    # The marking pass has just measured this dm, and the MG
+                    # level selection sizes each generation from the same
+                    # diameters, so the size is taken here rather than by
+                    # re-walking every level's topology. Collective: a rank
+                    # with no cells joins with none.
+                    _size_of_dm[id(current_dm)] = edge_split.resolved_cell_size(
+                        current_dm, diameters=diameter)
 
                 marked = [int(cs + j) for j in sel]
                 _coarse_for_P = current_dm
@@ -10341,7 +10346,7 @@ class Mesh(Stateful, uw_object):
             level_dms, _nested_Ps, _nested_parent_cells = self._subsample_mg_levels(
                 base_finest, level_dms, _nested_Ps, _nested_parent_cells,
                 ratio=mg_coarsening_ratio, verbose=verbose,
-                resolution_hint=(_pct5_of_dm if engine == "edge_split"
+                resolution_hint=(_size_of_dm if engine == "edge_split"
                                  else None),
                 repaired=_repaired_passes)
 
@@ -10399,6 +10404,11 @@ class Mesh(Stateful, uw_object):
         the hierarchy; the whole-mesh median `h` is likewise flat and useless. So
         the resolution of the refined region is what decides a level.
 
+        **The measure belongs to the mesh, not to its partition.** It is one
+        percentile over every rank's cells together
+        (:func:`edge_split.resolved_cell_size`), so the generations kept do
+        not depend on how the cells are dealt out.
+
         The exact per-generation prolongations are COMPOSED across the generations
         a level skips, so the recorded transfer stays exact rather than falling
         back to the geometric builder.
@@ -10416,19 +10426,13 @@ class Mesh(Stateful, uw_object):
         def resolution(dm):
             """The size of the cells this level actually resolves with.
 
-            A low percentile rather than the strict minimum, so one thin cell
-            cannot declare a level; reduced with MIN so the finest region counts
-            wherever it happens to live. A caller that already measured a
-            dm during its own pass loop supplies the value through
-            ``resolution_hint`` instead of paying a second topology walk.
+            A caller that already measured a dm during its own pass loop
+            supplies the size through ``resolution_hint`` instead of paying a
+            second topology walk. Every rank holds the same keys.
             """
             if resolution_hint is not None and id(dm) in resolution_hint:
-                local = resolution_hint[id(dm)]
-            else:
-                d = edge_split.cell_diameters(dm)
-                local = (float(numpy.percentile(d, 5)) if d.size
-                         else float("inf"))
-            return uw.mpi.comm.allreduce(local, op=min)
+                return resolution_hint[id(dm)]
+            return edge_split.resolved_cell_size(dm)
 
         # An engine lands near the target, not on it (1.92, 1.97, 2.19 measured),
         # so the test is against a slightly slack ratio; without it a 1.99 step is

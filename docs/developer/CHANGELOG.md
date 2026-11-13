@@ -6,6 +6,18 @@ This log tracks significant development work at a conceptual level, suitable for
 
 ## 2026 Q4 (October – December)
 
+### An adapted mesh keeps the same multigrid levels at any rank count (November 2026, #865)
+
+`Mesh.adapt` keeps one refinement generation per halving of the cell size as a
+multigrid level. It sized a generation by the smallest of the ranks' own
+5th-percentile cell diameters, which moved with how the cells were dealt out: the
+same adapted mesh kept two add-on levels at 1 to 6 ranks and one at 7 and 8. The
+size is now the 5th percentile over the whole mesh, found without gathering the
+cells. Serial hierarchies are unchanged. In parallel the levels are the serial
+ones wherever the refinement gives the serial generations (with `repair=True` or
+a `node_budget` it does not), so an iteration count recorded in parallel on an
+adapted mesh can move.
+
 ### The fault-band patch factors in quotient minimum degree (November 2026, #895)
 
 The FAC patch smoother solves a fault band's block by LU, and under PETSc's default
