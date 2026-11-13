@@ -13079,6 +13079,10 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         # before any setup reads either list, so an unsupported pair costs
         # nothing before it is refused.
         self._reject_mixed_constraint_mechanisms("solve")
+        # a split fault this solver neither ties nor constrains is an open
+        # crack: said, not refused (#1099)
+        from underworld3.utilities.fault_contact import warn_unpaired_split_faults
+        warn_unpaired_split_faults(self)
 
         _check_homotopy_value(homotopy)
         if homotopy:

@@ -626,8 +626,9 @@ def split_tail_levels(levels, fault_specs, verbose=False):
 
     The replay runs from the finest level down. A level the faults cannot be
     carried onto — a network whose one-cell ligament closes at the coarser
-    spacing, so two labels meet; a sheet the placement refuses — is left WELDED,
-    and so is every level beneath it (a split level under a welded one would
+    spacing, so two labels meet; a sheet the placement refuses — is left WELDED
+    there (it keeps the faults an earlier call split into it), and so is every
+    level beneath it (a split level under a welded one would
     hand the welded level's single trace node one side's value). The hierarchy
     then has split levels down to the finest coarsening the geometry allows,
     and a warning says where the replay stopped and why.
@@ -667,10 +668,11 @@ def split_tail_levels(levels, fault_specs, verbose=False):
             _collective_raise(problem)
         except RuntimeError as exc:
             warnings.warn(
-                f"fault_mg: the fault(s) could not be carried onto add-on "
-                f"level {k} of {len(levels)} ({exc}); that level and the "
-                f"levels beneath it stay welded, the {len(levels) - 1 - k} "
-                f"finer add-on level(s) are split.")
+                f"fault_mg: the fault(s) {[e[0] for e in entries]} could "
+                f"not be carried onto add-on level {k} of {len(levels)} "
+                f"({exc}); that level and the levels beneath it stay welded "
+                f"there, the {len(levels) - 1 - k} finer add-on level(s) are "
+                f"split.")
             break
         split._custom_mg_coarse_meshes = None
         out[k] = split
