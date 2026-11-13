@@ -313,6 +313,6 @@ for i, h in enumerate(results_tanh['h']):
 
 # %%
 from mpi4py import MPI
-MPI.Finalize()
+# mpi4py handles MPI finalization at interpreter shutdown
 
 # %%
