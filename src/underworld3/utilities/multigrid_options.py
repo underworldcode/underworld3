@@ -227,7 +227,8 @@ def _geometric_mg_settings(coarse, smoother="robust"):
         # levels, 25% at 4). Four iterations, not more: per unit work gmres/4
         # (rho^(1/4) = 0.87) beats gmres/8 (0.91).
         #
-        # TODO(DESIGN): the MECHANISM on record for that result is wrong. Both
+        # TODO(DESIGN): for the isotropic rheologies the MECHANISM on record for
+        # that result is wrong; under transverse isotropy it is open. Both
         # this comment and design/nonlinear-solver-homotopy-warmstart.md (Layer 3)
         # said richardson degrades because the consistent-Newton tangent makes the
         # velocity block NON-SYMMETRIC. Measured (velocity_block_symmetry.py in the
@@ -240,8 +241,9 @@ def _geometric_mg_settings(coarse, smoother="robust"):
         # block IS non-symmetric (1e-1): the TI tangent has no major symmetry. The
         # Picard block is symmetric (6.6e-17), as a frozen-coefficient form must
         # be. So symmetry does not explain the isotropic cases, where the Newton
-        # block is symmetric too (docs/developer/subsystems/solvers.md). The
-        # likely real mechanism is operator
+        # block is symmetric too; under TI, where it is not, whether it matters is
+        # unmeasured (docs/developer/subsystems/solvers.md). For the isotropic
+        # cases the likely real mechanism is operator
         # CONDITIONING: at eta contrast 1e26 the SOR-preconditioned spectrum is
         # spread far enough that a stationary iteration stalls where a Krylov
         # smoother adapts its polynomial. That also predicts the cost measured on

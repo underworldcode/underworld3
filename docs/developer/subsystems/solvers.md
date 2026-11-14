@@ -486,8 +486,9 @@ Two consequences worth stating outright:
 
 Both this bundle's comment and the Layer 3 section of
 `design/nonlinear-solver-homotopy-warmstart.md` said richardson degrades because
-the consistent-Newton tangent makes the velocity block **non-symmetric**. That
-mechanism does not survive measurement.
+the consistent-Newton tangent makes the velocity block **non-symmetric**. For the
+isotropic rheologies that mechanism does not survive measurement; under transverse
+isotropy it is open (below).
 
 For an isotropic η(ε̇_II) the Newton term is
 
@@ -509,8 +510,9 @@ calibration of 5e-17:
 | transverse isotropic, Newton tangent | **1.0e-01** | — |
 
 The third column is the control: if the consistent tangent had contributed
-nothing, the symmetry reading would be vacuous. It contributed 5–40% of ‖A‖ in
-every case, and the block stayed symmetric anyway.
+nothing, the symmetry reading would be vacuous. In the isotropic rows it
+contributed 5–40% of ‖A‖, and the block stayed symmetric anyway. It was not
+re-measured for the transverse-isotropic Newton row.
 
 Non-symmetry *does* appear under transverse isotropy, under the **Newton**
 tangent only, and it is a property of the tangent rather than a defect: the TI
@@ -520,12 +522,20 @@ tangent is consistent with the residual: PETSc's `-snes_test_jacobian` gives
 ‖J−J_fd‖/‖J‖ of 4.3e-5 to 5.9e-4 over the iterations of a TI power law with
 η₁ = 0.01 η₀, against 6.2e-6 to 4.2e-4 for the isotropic control on the same
 mesh, both at the finite-difference floor of the regularised power law (#457 was
-fixed by #493). An earlier version of this table read 7.2e-02 for the TI Picard
-row and called it a defect signature; re-measured on development c2aa36b3, the
-TI rows are as above. (Measured on an 8 × 8 Q2/Q1 box with a shear lid,
-η₀ = (10⁻³ + ε̇_II)^(−2/3), director (1, 1)/√2, one rank.)
+fixed by #493). An earlier table reported 7.2e-02 for the TI Picard row; it does
+not reproduce on development c2aa36b3. (The TI rows were measured on an 8 × 8
+Q2/Q1 box with a shear lid, η₀ = (10⁻³ + ε̇_II)^(−2/3), director (1, 1)/√2, one
+rank.)
 
-The mechanism that does fit everything measured is **operator conditioning**: at
+So for transverse isotropy the question is open. The Newton velocity block is
+non-symmetric, and the evidence below that the smoother setting is robust
+includes the TI rotated annulus (11 to 5 iterations), where non-symmetry is not
+ruled out and nothing was measured. Conditioning explains the isotropic cases;
+whether non-symmetry also matters under TI has not been measured. The smoother
+settings are unchanged by this correction.
+
+The mechanism that fits everything measured for the isotropic rheologies is
+**operator conditioning**: at
 η contrast 1e26 the SOR-preconditioned spectrum is spread far enough that a
 stationary iteration stalls where a Krylov smoother adapts its polynomial. It
 predicts the notch result, and it predicts the cost below on well-conditioned
