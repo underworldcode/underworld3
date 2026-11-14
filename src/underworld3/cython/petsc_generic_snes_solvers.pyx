@@ -3097,6 +3097,31 @@ class SolverBaseClass(uw_object):
                             "normal also needs it: its continuity-row derivative is zero in "
                             "value but not symbolically.)")
                     total += integral(self.mesh, list(dp)[0] * lam.sym[0], bc.boundary)
+        # The volume continuity term (a saddle point's PF0, e.g. Stokes
+        # ``constraints``) is tested against the pressure adjoint lam (#1161).
+        pf0 = getattr(self, "PF0", None)
+        if pf0 is not None:
+            dpf = diff_wrt_field(self._peel_except(sympy.Matrix(pf0.sym), wrt), wrt)
+            if not sympy.Matrix(dpf).is_zero_matrix:
+                if lam is None:
+                    name = getattr(wrt, "name", None) or str(wrt)
+                    raise ValueError(
+                        f"sensitivity: {name} enters the continuity term of this solver, "
+                        "which is tested against the pressure adjoint: pass lam=, the "
+                        "pressure part of the adjoint_solve target.")
+                total += integral(self.mesh, list(sympy.Matrix(dpf))[0] * lam.sym[0])
+        # The datum of an add_constraint_bc multiplier condition is tested
+        # against the multiplier's adjoint, which sensitivity is not given:
+        # refused by name rather than dropped (#1161).
+        for cbc in (getattr(self, "_block_constraint_bcs", None) or []):
+            datum = sympy.Matrix([cbc.g]) if not isinstance(cbc.g, sympy.MatrixBase) else cbc.g
+            if not sympy.Matrix(diff_wrt_field(self._peel_except(datum, wrt), wrt)).is_zero_matrix:
+                name = getattr(wrt, "name", None) or str(wrt)
+                raise NotImplementedError(
+                    f"sensitivity: {name} enters the datum {cbc.g} of the add_constraint_bc "
+                    f"condition on {cbc.boundary!r}. Its part of the gradient is tested "
+                    "against the constraint multiplier's adjoint, which is not computed "
+                    "yet, so it is refused rather than left out (#1161).")
         return total
 
     def _constraint_mechanisms(self):
@@ -12739,6 +12764,10 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             why = (why + ". The forward solve used the Picard tangent, so the "
                    "consistent tangent is assembled for the adjoint (a rebuild "
                    "of the Jacobian kernel)")
+        if getattr(self, "_block_constraint_bcs", None):
+            why = (why + ". A parameter in an add_constraint_bc datum is refused by "
+                   "sensitivity: its part needs the constraint multiplier's adjoint, "
+                   "which is not computed yet (#1161)")
         rotated = list(getattr(self, "_rotated_freeslip_bcs", None) or [])
         if rotated:
             why = (why + f". {len(rotated)} rotated free-slip constraint(s): the "
