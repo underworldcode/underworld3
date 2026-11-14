@@ -829,6 +829,15 @@ def _warn_if_points_are_not_owned(extrapolated):
     )
 
 
+def _as_symbolic(expr):
+    """``expr`` as sympy: a mesh or swarm variable passed itself, rather than its
+    ``.sym``, is read through ``.sym``, as the evaluators read it."""
+    import sympy
+
+    if not isinstance(expr, (sympy.Basic, sympy.MatrixBase)) and hasattr(expr, "sym"):
+        return expr.sym
+    return expr
+
 def _unit_leaves(expr):
     """The leaves of ``expr`` that decide its units, split by whether they carry
     units: ``(unitless_fields, dimensional)``, each a sorted list of names.
@@ -845,7 +854,7 @@ def _unit_leaves(expr):
 
     unitless, dimensional = set(), set()
     seen = set()
-    stack = [expr]
+    stack = [_as_symbolic(expr)]
     while stack:
         e = stack.pop()
         if isinstance(e, UWexpression):
@@ -918,7 +927,7 @@ def _refuse_points_far_outside(expr, coords_nd, collective):
     from mpi4py import MPI
     from .expressions import mesh_vars_in_expression
 
-    mesh = mesh_vars_in_expression(expr)[0]
+    mesh = mesh_vars_in_expression(_as_symbolic(expr))[0]
     if mesh is None:
         return
     nodes = np.asarray(mesh._coords, dtype=np.float64).reshape(-1, mesh.cdim)

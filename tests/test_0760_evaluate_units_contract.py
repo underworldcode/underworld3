@@ -298,3 +298,17 @@ def test_a_derivative_at_a_point_far_outside_is_refused():
             uw.function.evaluate(expr, pts)
         with pytest.raises(ValueError, match="outside"):
             uw.function.global_evaluate(expr, pts)
+
+
+@pytest.mark.level_1
+@pytest.mark.tier_b
+def test_a_variable_passed_itself_is_read_through_its_sym():
+    """``evaluate(v, pts)`` with the variable, not ``v.sym``, is answered inside the
+    mesh and refused far outside it, as ``v.sym`` is (test_0820 passes ``v``)."""
+    mesh = _box()
+    v = uw.discretisation.MeshVariable("v_itself_760", mesh, 2, degree=2)
+    _shear(v)
+    inside = np.asarray(uw.function.evaluate(v, _PTS)).ravel()
+    assert inside[0] == pytest.approx(0.5)
+    with pytest.raises(ValueError, match="outside"):
+        uw.function.evaluate(v, np.array([[6.0e4, -3.0e4]]))
