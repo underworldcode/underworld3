@@ -1,6 +1,6 @@
 # Trial: a radially graded annulus base under the moving mesh and the fault
 
-Status at 2026-11-14 06:30 UTC. The radially graded run has finished (60 steps); the production-length run on the banded base with a slab region is at step 97 of 200. **Section 4 is the current design**; sections 2 and 3 are the steps that led to it. Same model, driver and code as `mmpde_fault_sample_runs.md`, plus new driver options for the base: `uw_cell_inner`, `uw_cell_window`, `uw_cell_band`, `uw_cell_grow`.
+Status at 2026-11-14 11:30 UTC. Both production-length runs have finished: the radially graded base (60 steps, to t = 3.44e-4) and the banded base with a slab region (200 steps, to t = 5.90e-4). **Section 4 is the current design**; sections 2 and 3 are the steps that led to it. Same model, driver and code as `mmpde_fault_sample_runs.md`, plus new driver options for the base: `uw_cell_inner`, `uw_cell_window`, `uw_cell_band`, `uw_cell_grow`.
 
 ## 1. Does a graded base survive the refinement hierarchy?
 
@@ -101,31 +101,45 @@ Entries are fault slip rate / trench angle / vrms. All three left-hand columns u
 | 1.5e-4 | 1278 / −2.44° / 320 | 1068 / −2.10° / 292 | 1110 / −1.97° / 292 | 1079 / −1.90° / 284 |
 | 2.0e-4 | 2423 / −3.72° / 546 | 2044 / −3.04° / 481 | 1964 / −2.87° / 463 | 1904 / −2.76° / 445 |
 | 2.5e-4 | 3454 / −5.51° / 826 | 2708 / −4.42° / 666 | 3018 / −4.39° / 715 | 3024 / −4.15° / 701 |
-| 3.0e-4 | (step 97: 3470 / −7.2° / 970) | 3559 / −6.20° / 897 | 3477 / −5.80° / 902 | 3361 / −5.57° / 877 |
-| 3.4e-4 | | 3247 / −7.62° / 884 | 3349 / −6.90° / 898 | 3037 / −6.70° / 847 (at 3.5e-4) |
+| 3.0e-4 | 3432 / −7.20° / 969 | 3559 / −6.20° / 897 | 3477 / −5.80° / 902 | 3361 / −5.57° / 877 |
+| 3.4e-4 | 2980 / −8.23° / 884 | 3247 / −7.62° / 884 | 3349 / −6.90° / 898 | not sampled |
+| 3.5e-4 | 2852 / −8.50° / 847 | ended at 3.44e-4 | 3197 / −7.11° / 861 | 3037 / −6.70° / 847 |
+| 4.0e-4 | 2626 / −9.51° / 810 | | 2880 / −8.30° / 798 | 2777 / −7.68° / 775 |
+| 5.0e-4 | 2327 / −11.40° / 773 | | 2739 / −10.50° / 801 | 2470 / −9.42° / 755 |
+| 5.5e-4 | 2180 / −12.27° / 739 | | 2784 / −11.60° / 808 | not sampled (6.0e-4: 2390 / −10.90° / 737) |
 
 ![histories](graded_base_histories.png)
 
 - **Radial ramp.** In family with the other moving-mesh runs: slip 10% low at 2.5e-4 and 6% high at 3.0e-4, trench about 1° ahead of the production run at the end. No failed steps, no placement refusals in 60 steps.
-- **Band plus slab region.** It runs ahead of every other run, by roughly 0.4e-4 in time: its state at 2.5e-4 is close to the refinement-5 moving-mesh run's at 3.0e-4. Cause not identified. This base has 12 to 16 km cells in the lid where the others have 24 to 40 km, and the weak crust is 11 km thick, so the lid may not be converged in the refinement-5 runs; that is a guess. No failed steps or placement refusals in 97 steps.
-- **The mesh holds.** At step 90 of the banded run the lid is 12 / 17 km all round and the slab 26 to 33 km down to 660 km.
-- **The slab region is nearly outrun.** By t = 3e-4 the trench has moved 7° to 8° (800 to 900 km of arc) against the region's 1000 km half-width.
+- **Band plus slab region, to the slip peak.** It runs ahead of every other run on the rise, by roughly 0.4e-4 in time: its slip peaks near t = 2.6e-4 to 2.9e-4 (3,450 to 3,540) where the others peak near 3.0e-4 to 3.2e-4. The peak level is the same. Cause not identified. This base has 12 to 16 km cells in the lid where the others have 24 to 40 km, and the weak crust is 11 km thick, so the lid may not be converged in the refinement-5 runs; that is a guess.
+- **Band plus slab region, after the peak.** It settles close to the production run: slip 5% to 6% lower at 4.0e-4 and 5.0e-4, vrms 2% to 5% higher. The refinement-5 moving-mesh run sits 4% to 11% higher in slip over the same interval. No slip spikes.
+- **Its trench lead stops growing.** The trench is 1.6° ahead of the production run at 3.0e-4 and 1.8° to 2.0° ahead from 3.5e-4 to 5.0e-4: the lead is built on the rise, and after the peak the trench retreats at the production run's rate (1.9° per 1e-4 against 1.7°). The refinement-5 moving-mesh run's lead keeps growing (0.6° at 4.0e-4, 1.1° at 5.0e-4).
+- **No failed steps.** All 200 steps converged and the fault was placed at every step.
+- **The lid holds; the slab does not.** The lid stays at 12 / 17 km (10th percentile / median) all round to the end. The trench passes the edge of the slab region (8.9°) at t = 3.7e-4. Slab cell edge (km, 10th percentile / median) within 1000 km of the trench:
+
+| Step, t | Trench | Slab 100–200 km | Slab 200–400 km | Slab 400–660 km |
+|---|---|---|---|---|
+| 0 | −0.5° | 20 / 24 | 18 / 29 | 22 / 29 |
+| 90, 2.9e-4 | −6.8° | 20 / 26 | 30 / 32 | 30 / 33 |
+| 150, 4.4e-4 | −10.2° | 22 / 29 | 31 / 33 | 32 / 34 |
+| 190, 5.6e-4 | −12.5° | 22 / 29 | 31 / 44 | 39 / 46 |
 
 ## 6. Cost
 
 Core-hours of solver steps to a matched model time, on a shared 96-thread Linux workstation, so indicative.
 
-| Run | Ranks | Median s/step | Steps to t = 3.0e-4 | Core-hours to t = 3.0e-4 | Smallest time step |
-|---|---|---|---|---|---|
-| Radial ramp base + moving mesh | 4 | 132 | 48 | 7 | 3.2e-6 |
-| Band + slab region base + moving mesh | 4 | 159 | 97 | 17 | 1.6e-6 |
-| Uniform ref 4 + moving mesh | 4 | 202 | 39 | 9 | 4.1e-6 |
-| Uniform ref 5 + moving mesh | 10 | 373 | 71 | 72 | 2.3e-6 |
+| Run | Ranks | Median s/step | Steps to t = 3.0e-4 | Core-hours to t = 3.0e-4 | Core-hours to t = 5.0e-4 | Smallest time step |
+|---|---|---|---|---|---|---|
+| Radial ramp base + moving mesh | 4 | 132 | 48 | 7 | not run | 3.2e-6 |
+| Band + slab region base + moving mesh | 4 | 160 | 97 | 17 | 31 (173 steps) | 1.6e-6 |
+| Uniform ref 4 + moving mesh | 4 | 202 | 39 | 9 | 16 (74 steps) | 4.1e-6 |
+| Uniform ref 5 + moving mesh | 10 | 373 | 71 | 72 | 148 (143 steps) | 2.3e-6 |
 
 - The uniform refinement-5 production run on a Linux cluster took a median 100 s/step on 26 ranks (2,600 core-seconds per step).
-- The banded base costs about a quarter of the refinement-5 moving-mesh run to the same model time, with a finer lid and a similar slab. It costs 2.5 times the radial ramp: half the time step, and more cells.
+- The whole banded run (200 steps to t = 5.90e-4) took 9.0 h of solver steps on 4 ranks (36 core-hours).
+- The banded base costs about a quarter to a fifth of the refinement-5 moving-mesh run to the same model time, with a finer lid and a similar slab. It costs 2.5 times the radial ramp: half the time step, and more cells.
 
 ## Limits of this trial
 
-- The window (section 3) and the slab region (section 4) are fixed in the base. The trench moves about 14° (870 km) by t = 8e-4 in the production run, so a long run needs a wider or offset window.
+- The window (section 3) and the slab region (section 4) are fixed in the base. In the banded run the trench left the region at t = 3.7e-4 and the slab below 200 km coarsened from 29 km to 44 to 46 km by 5.6e-4. A long run needs a wider or offset region; the trench moves about 14° by t = 8e-4 in the production run.
 - The band and the window are put in through a size callback wrapped round the library's annulus mesher from the driver. A proper option on the mesher is library work, not done here.
