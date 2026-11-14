@@ -595,7 +595,7 @@ if [ $PARALLEL_RANKS -gt 0 ] && shard_owns 4; then
     # adapt(engine='nvb') with a rank without cells: the box that leaves a rank
     # empty does so from np 3 (at np 2 the test skips), so it runs at np 3 always.
     OMPI_MCA_rmaps_base_oversubscribe=1 $SUPERVISE mpirun -n 3 python -m pytest --with-mpi \
-      tests/parallel/test_1185_adapt_nvb_rank_without_cells_parallel.py || status=1
+      tests/parallel/test_1189_adapt_nvb_rank_without_cells_parallel.py || status=1
 
     # Four ranks give a rank that shares an interface vertex and holds none of the
     # interface's facets, which the pressure split must still be told about: with

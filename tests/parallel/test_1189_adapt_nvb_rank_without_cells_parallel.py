@@ -9,7 +9,7 @@ construction, decides now.
 A unit box of cell size 1 with two refinements has 64 cells; at np 3 and np 4 the
 partition leaves a rank without cells (asserted; skipped where it does not).
 
-    python scripts/mpi_supervisor.py --silence 300 -- mpirun -n 3 python -m pytest --with-mpi tests/parallel/test_1185_adapt_nvb_rank_without_cells_parallel.py
+    python scripts/mpi_supervisor.py --silence 300 -- mpirun -n 3 python -m pytest --with-mpi tests/parallel/test_1189_adapt_nvb_rank_without_cells_parallel.py
 """
 import numpy as np
 import pytest
@@ -30,7 +30,7 @@ def test_nvb_adapt_with_a_rank_without_cells():
         pytest.skip(f"np {uw.mpi.size}: no rank is left without cells ({counts})")
     assert mesh.isSimplex
 
-    metric = uw.discretisation.MeshVariable("M1185", mesh, 1, degree=1)
+    metric = uw.discretisation.MeshVariable("M1189", mesh, 1, degree=1)
     X = np.asarray(metric.coords)
     metric.array[:, 0, 0] = np.where(np.abs(X[:, 1] - 0.5) < 0.2, 16.0, 4.0) ** 2
 
