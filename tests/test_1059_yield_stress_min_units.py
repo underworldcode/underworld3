@@ -23,6 +23,7 @@ import pytest
 import sympy
 
 import underworld3 as uw
+from _units_helpers import model_units
 from underworld3.function.expressions import unwrap_expression
 
 pytestmark = [pytest.mark.level_2]
@@ -36,7 +37,9 @@ FLOOR_PA = 0.35e6
 
 # every spelling of the same 0.35 MPa floor; C0 is the cohesion expression
 FLOOR_SPELLINGS = {
-    "nondimensional_float": lambda C0, tau_pa: FLOOR_PA / STRESS_SCALE,
+    # the non-dimensional value, stated in model units: a bare float is refused
+    # in a units model (ruling, 2026-11-13; see the test at the end)
+    "nondimensional_float": lambda C0, tau_pa: model_units(FLOOR_PA / STRESS_SCALE, "Pa"),
     "quantity_Pa": lambda C0, tau_pa: uw.quantity(FLOOR_PA, "Pa"),
     "quantity_MPa": lambda C0, tau_pa: uw.quantity(FLOOR_PA / 1.0e6, "MPa"),
     "product_with_expression": lambda C0, tau_pa: (FLOOR_PA / tau_pa) * C0,
@@ -146,3 +149,22 @@ def test_sum_of_field_expression_and_quantity_expression_scales_each_operand():
         at_unit_seed = float(nondimensional.subs(seed.sym[0], 1))
         assert at_unit_seed == pytest.approx(
             (29.1e6 + 0.35e6) / STRESS_SCALE, rel=1.0e-12)
+
+
+@pytest.mark.tier_b
+@pytest.mark.level_1
+def test_a_bare_float_floor_is_refused_in_a_units_model():
+    """A bare number for a stress in a model with reference quantities is
+    ambiguous, and refused at the setter (ruling, 2026-11-13)."""
+    uw.get_default_model().set_reference_quantities(
+        length=uw.quantity(H, "m"), velocity=uw.quantity(V, "m/s"),
+        viscosity=uw.quantity(ETA, "Pa*s"))
+    try:
+        mesh = uw.meshing.UnstructuredSimplexBox(
+            minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.5)
+        st = uw.systems.Stokes(mesh)
+        st.constitutive_model = uw.constitutive_models.ViscoPlasticFlowModel
+        with pytest.raises(ValueError, match="bare number"):
+            st.constitutive_model.Parameters.yield_stress_min = FLOOR_PA / STRESS_SCALE
+    finally:
+        uw.reset_default_model()

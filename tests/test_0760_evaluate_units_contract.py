@@ -19,6 +19,7 @@ Louis's ruling, 2026-11-13:
 Reference quantities: 30 km, 1e24 Pa s and 2.5 mm/yr, so V/L = 2.64e-15 1/s.
 """
 import numpy as np
+import sympy
 import pytest
 
 import underworld3 as uw
@@ -362,3 +363,101 @@ def test_a_remap_after_a_move_is_not_refused():
     new = np.asarray(mesh._coords).copy() * 1.6      # nodes moved well outside
     mesh.deform(new)
     assert np.isfinite(np.asarray(T.data)).all()
+
+
+def _T_and_constants(mesh):
+    T = uw.discretisation.MeshVariable(f"T_red_{id(mesh)}", mesh, 1, degree=1)
+    T.data[:, 0] = 2.0
+    e1 = uw.expression(r"\eta_{1,r}", uw.quantity(1e21, "Pa*s"), "eta1")
+    e0 = uw.expression(r"\eta_{0,r}", uw.quantity(1e24, "Pa*s"), "eta0")
+    return T, e1, e0
+
+
+@pytest.mark.level_1
+@pytest.mark.tier_b
+def test_a_viscosity_contrast_beside_a_unitless_field_is_a_pure_number(units_model):
+    """``T * eta1/eta0``: the dimensional leaves reduce to a pure number, so this
+    is not a mix (H1, review of #1182). 2.0 * 1e-3."""
+    T, e1, e0 = _T_and_constants(_box())
+    r = uw.function.evaluate(T.sym[0] * e1 / e0, _PTS)
+    assert float(np.asarray(r).ravel()[0]) == pytest.approx(2.0e-3)
+
+
+@pytest.mark.level_1
+@pytest.mark.tier_b
+def test_an_arrhenius_factor_beside_a_unitless_field_is_a_pure_number(units_model):
+    T, _e1, _e0 = _T_and_constants(_box())
+    E = uw.expression("E_r", uw.quantity(3.0e5, "J/mol"), "activation energy")
+    R = uw.expression("R_r", uw.quantity(8.314, "J/(mol*K)"), "gas constant")
+    T0 = uw.expression("T_{0,r}", uw.quantity(1600, "K"), "reference temperature")
+    r = uw.function.evaluate(T.sym[0] * sympy.exp(-E / (R * T0)), _PTS)
+    assert float(np.asarray(r).ravel()[0]) == pytest.approx(2.0 * np.exp(-3.0e5 / (8.314 * 1600)))
+
+
+@pytest.mark.level_1
+@pytest.mark.tier_b
+def test_a_unitless_field_times_one_dimensional_constant_is_still_refused(units_model):
+    T, e1, _e0 = _T_and_constants(_box())
+    with pytest.raises(ValueError, match="units"):
+        uw.function.evaluate(T.sym[0] * e1, _PTS)
+    with pytest.raises(ValueError, match="units"):
+        uw.function.evaluate(T.sym[0] + e1, _PTS)
+
+
+@pytest.mark.level_1
+@pytest.mark.tier_b
+def test_a_p0_pressure_alone_is_pointed_to_the_stable_pair():
+    """degree=1 would pair a P0 pressure with a P1 velocity, which locks."""
+    mesh = _box()
+    p0 = uw.discretisation.MeshVariable("p0_844", mesh, 1, degree=0, continuous=False)
+    with pytest.raises(ValueError, match="degree=2"):
+        uw.systems.Stokes(mesh, pressureField=p0)
+
+
+# --- bare numbers for dimensional parameters (ruling, 2026-11-13) ------------------
+
+
+@pytest.mark.level_1
+@pytest.mark.tier_b
+def test_a_bare_viscosity_is_refused_in_a_units_model(units_model):
+    st = uw.systems.Stokes(_box())
+    st.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    with pytest.raises(ValueError, match=r"uw\.quantity\(1\.0, \"Pa\*s\"\)"):
+        st.constitutive_model.Parameters.shear_viscosity_0 = 1.0
+    st.constitutive_model.Parameters.shear_viscosity_0 = uw.quantity(1e21, "Pa*s")
+
+
+@pytest.mark.level_1
+@pytest.mark.tier_b
+def test_zero_and_numbers_inside_expressions_are_not_refused(units_model):
+    st = uw.systems.Stokes(_box())
+    st.constitutive_model = uw.constitutive_models.ViscoPlasticFlowModel
+    P = st.constitutive_model.Parameters
+    P.yield_stress_min = 0
+    eta = uw.expression(r"\eta_{b}", uw.quantity(1e21, "Pa*s"), "viscosity")
+    P.shear_viscosity_0 = 2 * eta
+
+
+@pytest.mark.level_1
+@pytest.mark.tier_b
+def test_a_bare_viscosity_is_fine_without_reference_quantities():
+    st = uw.systems.Stokes(_box())
+    st.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    st.constitutive_model.Parameters.shear_viscosity_0 = 1.0
+
+
+@pytest.mark.level_2
+@pytest.mark.tier_b
+def test_the_default_viscosity_is_refused_when_first_read(units_model):
+    """The default viscosity 1 has no units in a units model. It used to give a
+    stress of 3.17e-16 labelled 1/s; it is refused at the first evaluate or solve
+    that reads it."""
+    mesh = _box()
+    st = uw.systems.Stokes(mesh)
+    st.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    with pytest.raises(ValueError, match="left at its default"):
+        uw.function.evaluate(st.stress[0, 1], _PTS)
+    st.add_dirichlet_bc((uw.quantity(1, "cm/yr"), uw.quantity(0, "cm/yr")), "Top")
+    st.add_dirichlet_bc((uw.quantity(0, "cm/yr"), uw.quantity(0, "cm/yr")), "Bottom")
+    with pytest.raises(ValueError, match="left at its default"):
+        st.solve()

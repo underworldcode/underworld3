@@ -929,12 +929,14 @@ _internal_resampling_depth = 0
 
 
 class _internal_resampling:
-    """Context for the library's own resampling of a field at new points (a remap
-    after a mesh move, a refinement transfer). The far-point refusal (#786) is
-    for user queries; a library path that moved the mesh asks about points that
-    can lie more than a cell outside the old geometry, and extrapolates them on
-    purpose. Entered on every rank by collective code, so the check it switches
-    off is skipped on every rank alike."""
+    """Context for the library's own work that the user-facing units refusals
+    are not meant for: a remap after a mesh move or a refinement transfer (whose
+    points can lie more than a cell outside the old geometry), a solver's own
+    history evaluation, and the adjoint's inert scratch assemblers (whose bare
+    parameter values are overridden by their templates). Under it the far-point
+    refusal (#786), the mixed-units refusal (#904) and the bare-number setter
+    refusal stand aside. Entered on every rank by collective code, so the checks
+    it switches off are skipped on every rank alike."""
 
     def __enter__(self):
         global _internal_resampling_depth
@@ -1021,29 +1023,134 @@ def _unit_leaves(expr):
     return sorted(unitless), sorted(dimensional)
 
 
-def _refuse_mixed_unit_leaves(expr):
-    """Refuse an expression that mixes a field without units with a leaf that has
-    units, in a model with reference quantities (#771, #904).
+def _mixed_product(expr):
+    """The first product (or sum) in ``expr`` that puts a field without units
+    beside factors whose COMBINED dimension is not dimensionless, or None.
 
-    A field without units stores a non-dimensional number of unknown dimension.
-    Alone it is returned as a pure number. Multiplied by a dimensional leaf the
-    result is incoherent: the gateway would re-dimensionalise the product with
-    the dimensional leaf's scale only.
+    The dimensional factors of a product are reduced together, so a viscosity
+    contrast ``T * eta1/eta0`` or an Arrhenius factor ``T * exp(-E/(R*T0))`` is
+    a known pure number beside ``T``, and is not a mix; ``T * eta1`` is. In a sum,
+    a term that depends only on unitless fields beside a dimensional term is a
+    mix (``T + eta1``). Coordinates are left out of the reduction. Named
+    expressions are walked into, each once.
     """
+    import sympy
+    from sympy.vector import BaseScalar
+    from underworld3.units import get_units
+    from .expressions import UWexpression
+
+    unitless_cache = {}
+
+    def has_unitless_field(e):
+        key = id(e)
+        if key not in unitless_cache:
+            unitless_cache[key] = bool(_unit_leaves(e)[0])
+        return unitless_cache[key]
+
+    def dimensional(e):
+        e = e.subs({c: 1 for c in e.atoms(BaseScalar)}) if hasattr(e, "atoms") else e
+        try:
+            return _has_dimension(get_units(e))
+        except Exception:
+            # Sanctioned fallback: units inference that cannot reduce a factor
+            # does not make a mix; the refusal must not fire on what it cannot read.
+            return False
+
+    seen = set()
+    stack = [_as_symbolic(expr)]
+    while stack:
+        e = stack.pop()
+        if isinstance(e, UWexpression):
+            if id(e) in seen:
+                continue
+            seen.add(id(e))
+            stack.append(e.sym)
+            continue
+        if isinstance(e, sympy.MatrixBase):
+            stack.extend(list(e))
+            continue
+        if not isinstance(e, sympy.Basic):
+            continue
+        if isinstance(e, sympy.Mul):
+            fields = [f for f in e.args if has_unitless_field(f)]
+            others = [f for f in e.args if not has_unitless_field(f)]
+            if fields and others and dimensional(sympy.Mul(*others)):
+                return e
+        elif isinstance(e, sympy.Add):
+            field_terms = [t for t in e.args
+                           if has_unitless_field(t) and not _unit_leaves(t)[1]]
+            dim_terms = [t for t in e.args
+                         if not has_unitless_field(t) and dimensional(t)]
+            if field_terms and dim_terms:
+                return e
+        stack.extend(e.args)
+        stack.extend(a for a in e.atoms(sympy.Symbol) if isinstance(a, UWexpression))
+    return None
+
+
+
+def _refuse_unset_dimensional_defaults(leaves):
+    """Refuse a dimensional parameter left at its bare-number default, in a model
+    with reference quantities (ruling, 2026-11-13). ``leaves`` are named
+    expressions; the mark is set by the parameter descriptor and cleared when
+    the parameter is assigned. Depends only on the expressions, so it gives the
+    same answer on every rank."""
+    import sympy
+    from .expressions import UWexpression
+
     if not uw.get_default_model().has_units():
         return
-    unitless, dimensional = _unit_leaves(expr)
-    if unitless and dimensional:
-        raise ValueError(
-            "evaluate: this expression mixes fields without units "
-            f"({', '.join(unitless)}) with leaves that have units "
-            f"({', '.join(dimensional)}), in a model with reference quantities. "
-            "A field without units holds a non-dimensional number of unknown "
-            "dimension, so the product has no coherent units. Give the field units "
-            "(MeshVariable(..., units=...)), or evaluate the pieces separately "
-            "(#771, #904)."
-        )
+    seen = set()
+    stack = list(leaves)
+    while stack:
+        e = stack.pop()
+        if isinstance(e, UWexpression):
+            if id(e) in seen:
+                continue
+            seen.add(id(e))
+            mark = getattr(e, "_unset_dimensional_default", None)
+            if mark:
+                name, units, value = mark
+                raise ValueError(
+                    f"'{name}' was left at its default, {value}, which has no units "
+                    f"in a model with reference quantities. Set it with units, e.g. "
+                    f"Parameters.{name} = uw.quantity({value}, \"{units}\") "
+                    "(units ruling, 2026-11-13).")
+            stack.append(e.sym)
+            continue
+        if isinstance(e, sympy.MatrixBase):
+            stack.extend(list(e))
+        elif isinstance(e, sympy.Basic):
+            stack.extend(a for a in e.atoms(sympy.Symbol) if isinstance(a, UWexpression))
 
+def _refuse_mixed_unit_leaves(expr):
+    """Refuse an expression that puts a field without units beside dimensional
+    factors, in a model with reference quantities (#771, #904).
+
+    A field without units stores a non-dimensional number of unknown dimension.
+    Alone, or times a combination of dimensional leaves that reduces to a pure
+    number (``eta1/eta0``), it is returned as a pure number. Times a factor with
+    a dimension the result is incoherent: the gateway would re-dimensionalise
+    the product with that factor's scale only.
+    """
+    if _internal_resampling_depth or not uw.get_default_model().has_units():
+        return
+    _refuse_unset_dimensional_defaults([_as_symbolic(expr)])
+    unitless, dimensional = _unit_leaves(expr)
+    if not (unitless and dimensional):
+        return
+    offending = _mixed_product(expr)
+    if offending is None:
+        return
+    raise ValueError(
+        "evaluate: this expression puts fields without units "
+        f"({', '.join(unitless)}) beside factors with units "
+        f"({', '.join(dimensional)}), in a model with reference quantities, in "
+        f"{str(offending)[:120]}. A field without units holds a non-dimensional "
+        "number of unknown dimension, so the product has no coherent units. Give "
+        "the field units (MeshVariable(..., units=...), or units='dimensionless' "
+        "for a pure multiplier), or evaluate the pieces separately (#771, #904)."
+    )
 
 def _refuse_points_far_outside(expr, coords_nd, collective):
     """Refuse query points further outside the mesh than its largest cell (#786).

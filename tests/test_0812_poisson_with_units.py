@@ -15,6 +15,7 @@ rejection contract.
 import pytest
 
 import underworld3 as uw
+from _units_helpers import model_units
 import numpy as np
 
 pytestmark = [pytest.mark.level_2, pytest.mark.tier_b]
@@ -32,6 +33,9 @@ def _set_reference_quantities():
     orchestration_model.set_reference_quantities(
         domain_depth=uw.quantity(500, "m"),  # Matches L_y
         material_density=uw.quantity(3300, "kg/m**3"),
+        # The diffusivity needs a time scale to have a value in a units model; the
+        # Poisson solution itself does not depend on it (ruling, 2026-11-13).
+        time=uw.quantity(1, "s"),
     )
 
 
@@ -53,7 +57,7 @@ def _setup_and_solve(L_x, L_y, T_bottom, T_top, gradient_variable=True):
 
     poisson = uw.systems.Poisson(mesh, u_Field=T)
     poisson.constitutive_model = uw.constitutive_models.DiffusionModel
-    poisson.constitutive_model.Parameters.diffusivity = 1
+    poisson.constitutive_model.Parameters.diffusivity = model_units(1, "m**2/s")
     poisson.f = 0.0
     poisson.add_dirichlet_bc(T_bottom, "Bottom")
     poisson.add_dirichlet_bc(T_top, "Top")

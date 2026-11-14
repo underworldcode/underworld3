@@ -11,6 +11,7 @@ import pytest
 import sympy
 
 import underworld3 as uw
+from _units_helpers import model_units
 
 pytestmark = [pytest.mark.level_1, pytest.mark.tier_a]
 
@@ -27,7 +28,7 @@ def _cavity(mesh, tag, **kwargs):
     p = uw.discretisation.MeshVariable(f"P_{tag}", mesh, 1, degree=1)
     ns = uw.systems.NavierStokes(mesh, v, p, **kwargs)
     ns.constitutive_model = uw.constitutive_models.ViscousFlowModel
-    ns.constitutive_model.Parameters.shear_viscosity_0 = 1.0
+    ns.constitutive_model.Parameters.shear_viscosity_0 = model_units(1.0, "Pa*s")
     for b in ("Left", "Right", "Bottom"):
         ns.add_dirichlet_bc((0.0, 0.0), b)
     ns.add_dirichlet_bc((1.0, 0.0), "Top")
@@ -70,7 +71,7 @@ def test_stokes_limit_reproduces_the_stokes_solver(mesh):
     ps = uw.discretisation.MeshVariable("P_stokes", mesh, 1, degree=1)
     stokes = uw.systems.Stokes(mesh, vs, ps)
     stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
-    stokes.constitutive_model.Parameters.shear_viscosity_0 = 1.0
+    stokes.constitutive_model.Parameters.shear_viscosity_0 = model_units(1.0, "Pa*s")
     for b in ("Left", "Right", "Bottom"):
         stokes.add_dirichlet_bc((0.0, 0.0), b)
     stokes.add_dirichlet_bc((1.0, 0.0), "Top")

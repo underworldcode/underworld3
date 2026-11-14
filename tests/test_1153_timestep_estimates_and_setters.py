@@ -21,6 +21,7 @@ import pytest
 import sympy
 
 import underworld3 as uw
+from _units_helpers import model_units
 
 pytestmark = [pytest.mark.level_1, pytest.mark.tier_b]
 
@@ -44,14 +45,14 @@ def _annulus_estimates(units, variable_units=False):
 
     slcn = uw.systems.AdvDiffusionSLCN(mesh, u_Field=T, V_fn=v.sym)
     slcn.constitutive_model = uw.constitutive_models.DiffusionModel
-    slcn.constitutive_model.Parameters.diffusivity = 1.0
+    slcn.constitutive_model.Parameters.diffusivity = model_units(1.0, "m**2/s")
     slcn.estimate_dt(direction_aware=True)
 
     T2 = uw.discretisation.MeshVariable("T1153e", mesh, 1, degree=2, units=T_units)
     T2.data[...] = T.data[...]
     eulerian = uw.systems.AdvDiffusion(mesh, u_Field=T2, V_fn=v.sym)
     eulerian.constitutive_model = uw.constitutive_models.DiffusionModel
-    eulerian.constitutive_model.Parameters.diffusivity = 1.0
+    eulerian.constitutive_model.Parameters.diffusivity = model_units(1.0, "m**2/s")
     eulerian.estimate_dt()
     first = float(eulerian.dt_accuracy)
     eulerian.solve(timestep=1.0e-3)
@@ -82,7 +83,7 @@ def test_the_accuracy_estimate_has_its_closed_form_step():
     T.data[:, 0] = np.sin(np.pi * np.asarray(T.coords)[:, 0])
     adv = uw.systems.AdvDiffusion(mesh, u_Field=T, V_fn=v.sym)
     adv.constitutive_model = uw.constitutive_models.DiffusionModel
-    adv.constitutive_model.Parameters.diffusivity = 1.0
+    adv.constitutive_model.Parameters.diffusivity = model_units(1.0, "m**2/s")
     dt = adv.estimate_dt()
     # u.grad(T) peaks at pi on [0, 1] and the range is 1, so dt = 0.02 / pi; the
     # recovered gradient is 1.6 % low at this cell size
@@ -191,7 +192,7 @@ def test_a_navier_stokes_step_given_as_a_ratio_of_times_is_reduced():
     def one_step(timestep):
         solver = _navier_stokes()
         solver.constitutive_model = uw.constitutive_models.ViscousFlowModel
-        solver.constitutive_model.Parameters.shear_viscosity_0 = 1.0
+        solver.constitutive_model.Parameters.shear_viscosity_0 = model_units(1.0, "Pa*s")
         solver.bodyforce = sympy.Matrix([0, 0]).T     # the default's shape is #1034
         for wall in ("Bottom", "Left", "Right"):
             solver.add_dirichlet_bc((0.0, 0.0), wall)

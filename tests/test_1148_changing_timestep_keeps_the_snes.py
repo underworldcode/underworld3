@@ -45,6 +45,7 @@ import pytest
 import sympy
 
 import underworld3 as uw
+from _units_helpers import model_units
 
 pytestmark = [pytest.mark.level_2, pytest.mark.tier_b]
 
@@ -67,7 +68,7 @@ def _slcn(tag):
                                             V.coords).reshape(-1, 2)
     s = uw.systems.AdvDiffusionSLCN(mesh, u_Field=T, V_fn=V.sym)
     s.constitutive_model = uw.constitutive_models.DiffusionModel
-    s.constitutive_model.Parameters.diffusivity = 0.1
+    s.constitutive_model.Parameters.diffusivity = model_units(0.1, "m**2/s")
     s.add_dirichlet_bc(0.0, "Bottom")
     return s, lambda: np.asarray(T.array[...]).copy()
 
@@ -80,7 +81,7 @@ def _diffusion(tag):
                                             T.coords).reshape(-1)
     s = uw.systems.Diffusion(mesh, u_Field=T, order=2, theta=1.0)
     s.constitutive_model = uw.constitutive_models.DiffusionModel
-    s.constitutive_model.Parameters.diffusivity = 0.1
+    s.constitutive_model.Parameters.diffusivity = model_units(0.1, "m**2/s")
     s.add_dirichlet_bc(0.0, "Bottom")
     return s, lambda: np.asarray(T.array[...]).copy()
 
@@ -94,7 +95,7 @@ def _transient_darcy(tag):
                                             h.coords).reshape(-1)
     s = uw.systems.TransientDarcy(mesh, h, v, order=1, theta=0.5)
     s.constitutive_model = uw.constitutive_models.DarcyFlowModel
-    s.constitutive_model.Parameters.permeability = 1.0
+    s.constitutive_model.Parameters.permeability = model_units(1.0, "m**2")
     s.constitutive_model.Parameters.s = sympy.Matrix([0, 0]).T
     s.storage = 1.0
     s.f = 0.0
@@ -109,8 +110,8 @@ def _viscoelastic_stokes(tag):
     s = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
     s.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel(
         s.Unknowns, order=1)
-    s.constitutive_model.Parameters.shear_viscosity_0 = 1.0
-    s.constitutive_model.Parameters.shear_modulus = 10.0
+    s.constitutive_model.Parameters.shear_viscosity_0 = model_units(1.0, "Pa*s")
+    s.constitutive_model.Parameters.shear_modulus = model_units(10.0, "Pa")
     s.constitutive_model.Parameters.dt_elastic = TIMESTEPS[0]
     s.add_dirichlet_bc((1.0, 0.0), "Top")
     s.add_dirichlet_bc((-1.0, 0.0), "Bottom")
@@ -129,7 +130,7 @@ def _navier_stokes_slcn(tag):
     p = uw.discretisation.MeshVariable(f"P{tag}", mesh, 1, degree=1)
     s = uw.systems.NavierStokesSLCN(mesh, velocityField=v, pressureField=p, rho=1.0)
     s.constitutive_model = uw.constitutive_models.ViscousFlowModel
-    s.constitutive_model.Parameters.shear_viscosity_0 = 1.0
+    s.constitutive_model.Parameters.shear_viscosity_0 = model_units(1.0, "Pa*s")
     return s, lambda: np.asarray(v.array[...]).copy()
 
 
@@ -215,7 +216,7 @@ def test_a_new_darcy_source_destroys_the_old_snes():
     v = uw.discretisation.MeshVariable("v_steady", mesh, 2, degree=1)
     s = uw.systems.SteadyStateDarcy(mesh, h, v)
     s.constitutive_model = uw.constitutive_models.DarcyFlowModel
-    s.constitutive_model.Parameters.permeability = 1.0
+    s.constitutive_model.Parameters.permeability = model_units(1.0, "m**2")
     s.constitutive_model.Parameters.s = sympy.Matrix([0, 0]).T
     s.f = sympy.sin(sympy.pi * x)
     s.add_dirichlet_bc(0.0, "Bottom")

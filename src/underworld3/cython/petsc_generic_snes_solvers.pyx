@@ -9574,11 +9574,17 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                     f"created beside it would have degree {degree - 1}. Pass "
                     f"degree={velocityField.degree}, or pass both fields (#844).")
             if pressureField is not None and pressureField.degree != degree - 1:
+                # A P0 pressure would pair with a P1 velocity, which locks; point
+                # to the stable P2/P1 pair instead.
+                advice = (f"Pass degree={pressureField.degree + 1}"
+                          if pressureField.degree >= 1 else
+                          "A P0 pressure locks against the P1 velocity degree=1 "
+                          "would create; pass a P1 pressure with degree=2 (P2/P1)")
                 raise ValueError(
                     f"Stokes: pressureField '{pressureField.clean_name}' has degree "
                     f"{pressureField.degree}, but degree={degree} asks for a pressure "
-                    f"of degree {degree - 1} beside the velocity created here. Pass "
-                    f"degree={pressureField.degree + 1}, or pass both fields (#844).")
+                    f"of degree {degree - 1} beside the velocity created here. "
+                    f"{advice}, or pass both fields (#844).")
         if velocityField is None or pressureField is None:
 
             # Note, ensure names are unique for each solver type

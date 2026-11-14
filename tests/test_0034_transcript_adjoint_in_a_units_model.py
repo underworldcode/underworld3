@@ -15,6 +15,7 @@ import numpy as np
 import pytest
 import sympy
 import underworld3 as uw
+from _units_helpers import model_units
 
 pytestmark = [pytest.mark.level_2, pytest.mark.tier_b]
 
@@ -46,7 +47,7 @@ def _build():
 
     adv = uw.systems.AdvDiffusion(mesh, u_Field=beta, V_fn=v.sym, theta=1.0)
     adv.constitutive_model = uw.constitutive_models.DiffusionModel
-    adv.constitutive_model.Parameters.diffusivity = 1.0e-3
+    adv.constitutive_model.Parameters.diffusivity = model_units(1.0e-3, "m**2/s")
     adv.tolerance = 1.0e-12
 
     X = np.asarray(beta.coords_nd)
