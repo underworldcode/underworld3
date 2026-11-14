@@ -2,7 +2,7 @@
 """Deprecated-pattern scanner for the UW3 style gates (stdlib only).
 
 Enforces the cheapest-to-check rules of ``docs/developer/UW3_STYLE_CHARTER.md``
-on ``src/``:
+on ``src/`` (and, for ``field-number`` alone, on ``tests/``):
 
 - ``access-context`` (Charter S7): ``with mesh.access(...)`` / ``with
   swarm.access(...)`` context-manager data access. New code uses the ``array``
@@ -14,6 +14,13 @@ on ``src/``:
 - ``except-pass`` (Charter S4): an ``except ...:`` block whose body is ``pass``
   with no comment nearby. Every intentional swallow states its sanctioned
   failure mode.
+- ``field-number`` (Charter S6): a variable's ``field_id`` (its index on the
+  mesh DM) used as a solver's field number: ``add_condition(`` whose first
+  argument ends in ``.field_id``, ``f_id=`` given one anywhere in a call, and
+  ``f_id`` compared with a ``.field_id`` by ``==`` or ``!=``. Also gated on ``tests/``.
+  Not flagged, because they stay on the mesh DM:
+  ``mesh.dm.createSubDM([p.field_id])`` and the auxiliary offsets in
+  ``_jitextension.py``.
 
 Detection is line-based and deliberately simple so any contributor can read
 this file and predict what it flags:
@@ -21,6 +28,9 @@ this file and predict what it flags:
 - Lines whose first non-space character is ``#`` are skipped entirely
   (commented-out legacy code does not trip the gate; Charter S4 says to delete
   it, but that is a review matter, not a machine gate).
+- ``field-number`` reads the ``add_condition(`` call across line breaks, so a
+  first argument on the line after the bracket is seen; the hit is reported on
+  the line of the call. Whole-line comments inside the call are skipped.
 - ``except-pass`` heuristic: an ``except`` header line followed (skipping
   blank lines) by a bare ``pass``, with no ``#`` comment on the line before
   the ``except``, the ``except`` line, the ``pass`` line, or the line after
@@ -41,7 +51,7 @@ scanner warns about stale (unused) entries so they are not forgotten.
 
 Usage
 -----
-    python scripts/check_deprecated_patterns.py                # gate src/
+    python scripts/check_deprecated_patterns.py                # gate src/ (+ tests/ for field-number)
     python scripts/check_deprecated_patterns.py --include-docs # + docs report
     python scripts/check_deprecated_patterns.py --no-allowlist # raw inventory
     python scripts/check_deprecated_patterns.py PATH [PATH...] # custom roots
@@ -80,7 +90,24 @@ LINE_PATTERNS = {
         "S3",
         "name the function for what it DOES (no maybe_/try_/do_ prefixes)",
     ),
+    "field-number": (
+        re.compile(
+            r"\bf_id\s*[!=]=\s*[\w.\[\]]*\.field_id\b"
+            r"|\.field_id\s*[!=]=\s*(?:\w+\.)*f_id\b"
+            r"|\bf_id\s*=(?!=)\s*[\w.\[\]]*\.field_id\b"
+        ),
+        "S6",
+        "a solver's field number is on its own DM (velocity 0, pressure 1, "
+        "multipliers from 2); never a variable's mesh-DM field_id",
+    ),
 }
+
+# The patterns gated on tests/ as well as on src/.
+TESTS_PATTERNS = {"field-number"}
+
+ADD_CONDITION_RE = re.compile(
+    r"\badd_condition\(\s*[\w.\[\]]*\.field_id\s*[,)]"
+)
 
 EXCEPT_RE = re.compile(r"^\s*except(\s+[^:]+)?:\s*(#.*)?$")
 PASS_RE = re.compile(r"^\s*pass\s*(#.*)?$")
@@ -108,6 +135,20 @@ def scan_file(path):
                 hits.append((pattern_id, lineno, line.strip()))
 
     hits.extend(scan_except_pass(lines))
+    hits.extend(scan_add_condition(lines))
+    return hits
+
+
+def scan_add_condition(lines):
+    """Find `add_condition(` calls whose first argument ends in `.field_id`,
+    with the argument on the call's line or on a later one."""
+    kept = [(n, line) for n, line in enumerate(lines, start=1)
+            if not is_comment_line(line)]
+    text = "\n".join(line for _n, line in kept)
+    hits = []
+    for match in ADD_CONDITION_RE.finditer(text):
+        row = text.count("\n", 0, match.start())
+        hits.append(("field-number", kept[row][0], " ".join(match.group(0).split())))
     return hits
 
 
@@ -204,6 +245,12 @@ def main(argv=None):
         file_key = relative_key(path)
         for pattern_id, lineno, text in scan_file(path):
             hits.append((file_key, pattern_id, lineno, text))
+    if not args.paths:
+        for path in collect_files([REPO_ROOT / "tests"], SOURCE_SUFFIXES):
+            file_key = relative_key(path)
+            for pattern_id, lineno, text in scan_file(path):
+                if pattern_id in TESTS_PATTERNS:
+                    hits.append((file_key, pattern_id, lineno, text))
 
     allowed = set() if args.no_allowlist else load_allowlist(args.allowlist)
     blocked = [h for h in hits if f"{h[0]}:{h[1]}" not in allowed]
