@@ -4473,8 +4473,8 @@ class Mesh(Stateful, uw_object):
             ``project(Y)`` slides+restores the slip vertices of ``Y`` in place
             and returns it.
         """
-        from underworld3.meshing.smoothing import (
-            _pinned_mask, _auto_pinned_labels, _owned_vertex_mask)
+        from underworld3.meshing.smoothing import _pinned_mask, _owned_vertex_mask
+        from underworld3.meshing.smoothing.graph import _pinned_labels_or_default
         from underworld3.meshing.smoothing import _boundary_facets
         from underworld3.meshing.bounding_surface import BoundingSurface
 
@@ -4486,8 +4486,7 @@ class Mesh(Stateful, uw_object):
             reference_coords = numpy.asarray(self.X.coords, dtype=float)
         ref = numpy.asarray(reference_coords, dtype=float)
 
-        all_labels = (tuple(boundary_labels) if boundary_labels is not None
-                      else _auto_pinned_labels(self))
+        all_labels = _pinned_labels_or_default(self, boundary_labels)
         # _pinned_mask closes every tagged point (edge in 2D, face in 3D)
         # down to its vertices, so face-only 3D labels classify correctly.
         # Which boundaries a vertex lies on is read from the labelled facets in
@@ -8917,11 +8916,13 @@ class Mesh(Stateful, uw_object):
         zone = numpy.zeros(cE - cS, dtype=bool)
 
         value = self.boundaries[name].value
-        label = dm.getLabel(name)
-        # An empty stratum hands back a null IS that segfaults in getIndices().
-        # A rank owning no part of the surface is the normal case at np>2.
-        if label is None or label.getStratumSize(value) == 0:
+        # A boundary the DM holds no label for supports no cell; getLabel does
+        # not return None for it (#1163). An empty stratum hands back a null IS
+        # that segfaults in getIndices(), and a rank owning no part of the
+        # surface is the normal case at np>2.
+        if not dm.hasLabel(name) or dm.getLabel(name).getStratumSize(value) == 0:
             return zone
+        label = dm.getLabel(name)
 
         fS, fE = dm.getHeightStratum(1)
         for f in label.getStratumIS(value).getIndices():

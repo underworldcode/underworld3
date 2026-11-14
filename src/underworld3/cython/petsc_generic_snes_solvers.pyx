@@ -6429,6 +6429,15 @@ class SolverBaseClass(uw_object):
             raise TypeError(
                 f"add_rotated_freeslip_bc() requires a boundary label string; "
                 f"got {type(boundary).__name__}")
+        # A wall the mesh holds no label for has no nodes to constrain: a solid
+        # disc names "Lower" and has no inner wall (#1163). Whether the label
+        # exists is a property of the distributed DM, so every rank refuses.
+        if not self.mesh.dm.hasLabel(boundary):
+            held = [b.name for b in self.mesh.boundaries
+                    if self.mesh.dm.hasLabel(b.name)]
+            raise ValueError(
+                f"add_rotated_freeslip_bc(): the mesh holds no boundary labelled "
+                f"{boundary!r}; the boundaries it holds are {held}")
         if conds is not None:
             if isinstance(conds, (sympy.MatrixBase, list, tuple, np.ndarray)):
                 raise TypeError(
@@ -12411,9 +12420,11 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         # Get the inactive region label
         label_name = self._inactive_region_label
-        bc_label = self.dm.getLabel(label_name)
-        if bc_label is None:
+        # dm.getLabel never returns None for a missing name (#1163): hasLabel
+        # is the test, and it answers the same on every rank.
+        if not self.dm.hasLabel(label_name):
             raise ValueError(f"DM label '{label_name}' not found")
+        bc_label = self.dm.getLabel(label_name)
         c_label = bc_label
 
         # Create a new DS with the same fields but no weak forms
