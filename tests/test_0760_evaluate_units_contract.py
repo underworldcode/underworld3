@@ -187,16 +187,21 @@ def test_stokes_keeps_a_pressure_passed_without_a_velocity():
     assert st.Unknowns.p is p
     assert st.Unknowns.u.degree == 2
     _solve_cavity(st)
-    assert float(np.abs(np.asarray(p.data)).max()) > 0.0
-    assert float(np.abs(np.asarray(st.Unknowns.u.data)).max()) == pytest.approx(1.0)
+    # The same problem with the fields Stokes creates itself, on the same mesh.
+    reference = uw.systems.Stokes(mesh)
+    _solve_cavity(reference)
+    assert np.allclose(np.asarray(p.data), np.asarray(reference.Unknowns.p.data),
+                       rtol=1e-8, atol=1e-10)
+    assert np.allclose(np.asarray(st.Unknowns.u.data),
+                       np.asarray(reference.Unknowns.u.data), rtol=1e-8, atol=1e-10)
 
 
 @pytest.mark.level_2
 @pytest.mark.tier_b
 def test_a_passed_field_of_the_wrong_degree_is_refused():
-    """The field created beside it takes its degree from ``degree``: a P1 velocity
-    would get a P1 pressure, and a P2 pressure a P2 velocity with a continuous
-    pressure, both unstable pairs that still converge."""
+    """A passed field whose degree does not match ``degree`` is refused: the field
+    created beside it takes its degree from ``degree``, so a P1 velocity would get
+    a P1 pressure, and a P2 pressure a P2 velocity with a continuous pressure."""
     mesh = _box()
     v1 = uw.discretisation.MeshVariable("v1_844", mesh, 2, degree=1)
     with pytest.raises(ValueError, match="degree=1"):
@@ -204,8 +209,10 @@ def test_a_passed_field_of_the_wrong_degree_is_refused():
     p2 = uw.discretisation.MeshVariable("p2_844", mesh, 1, degree=2)
     with pytest.raises(ValueError, match="degree=3"):
         uw.systems.Stokes(mesh, pressureField=p2)
-    # A degree that fits is accepted.
-    assert uw.systems.Stokes(mesh, velocityField=v1, degree=1).Unknowns.u is v1
+    # A degree that fits is accepted: P3 velocity, P2 pressure created beside it.
+    v3 = uw.discretisation.MeshVariable("v3_844", mesh, 2, degree=3)
+    st3 = uw.systems.Stokes(mesh, velocityField=v3, degree=3)
+    assert st3.Unknowns.u is v3 and st3.Unknowns.p.degree == 2
 
 
 @pytest.mark.level_2

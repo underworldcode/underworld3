@@ -9561,10 +9561,10 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         ## Create whichever of U, P was not passed, and keep the one that was (#844).
         ## In a model whose scales cover them, the created fields carry units (m/s,
         ## Pa), so the default path never builds a unitless field in a units model.
-        ## A field passed alone must fit `degree`: the one created beside it takes
-        ## its degree from `degree`, and a mismatch would pair the passed field
-        ## with one that does not fit it (P1/P1, or P2/P2 with a continuous
-        ## pressure) and solve an unstable pair without a word.
+        ## A field passed alone must match `degree`: the one created beside it
+        ## takes its degree from `degree` (velocity `degree`, pressure
+        ## `degree - 1`), and a passed field of another degree is refused rather
+        ## than paired with one that does not match it.
         u_units, p_units = _stokes_default_units()   # refuses a kinematic model
         if (velocityField is None) != (pressureField is None):
             if velocityField is not None and velocityField.degree != degree:
