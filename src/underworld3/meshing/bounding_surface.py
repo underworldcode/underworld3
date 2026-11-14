@@ -94,8 +94,9 @@ class BoundingSurface:
             if self.centre is None or self.radius is None:
                 raise ValueError(
                     "radial BoundingSurface requires centre and radius")
-            # radius == 0 is legitimate: a *solid* sphere/annulus registers its
-            # inner ("Lower") boundary at radius 0 (the centre point). Reject
+            # radius == 0 describes a point, which the class accepts; the
+            # constructors never register one (register_radial_surfaces skips
+            # it, since a solid disc or ball has no inner boundary). Reject
             # only NEGATIVE or non-finite radii (those give invalid projections).
             if not (np.isfinite(self.radius) and self.radius >= 0.0):
                 raise ValueError(
