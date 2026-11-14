@@ -101,3 +101,23 @@ def test_a_point_on_a_vertex_gets_the_lowest_cell_of_its_star():
     # whatever the walk starts from
     for start in (np.zeros(len(X), dtype=np.int64), np.full(len(X), ce - cs - 1, dtype=np.int64)):
         assert np.array_equal(locator.locate(X, start) + cs, expected)
+
+
+def test_the_walk_finds_every_contained_point_on_a_non_convex_boundary(sheared_box):
+    """On #1123's mesh the most violated face of a cell near the wavy boundary can
+    be a boundary face although the point is inside, further along the wall. The
+    walk crosses the most violated face that has a neighbour instead, and finds
+    every contained point from its start cell alone (it lost 7 of 2e5 when it left
+    through the boundary)."""
+    if uw.mpi.size > 1:
+        pytest.skip("serial: local cells")
+    mesh, _ = sheared_box
+    locator = mesh._simplex_locator()
+    X, cellv = _cells_and_vertices(mesh)
+    rng = np.random.default_rng(9)
+    cells = rng.integers(0, cellv.shape[0], 200000)
+    P = np.einsum("nk,nkd->nd", rng.dirichlet(np.ones(4), cells.shape[0]), X[cellv][cells])
+    _, nearest = mesh._index.query(P, k=1, sqr_dists=False)
+    start = mesh._indexMap[np.asarray(nearest).reshape(-1)] - mesh.dm.getHeightStratum(0)[0]
+    found, _, _ = locator.walk(P, start)
+    assert (found >= 0).all(), f"{int((found < 0).sum())} contained points not found by the walk"

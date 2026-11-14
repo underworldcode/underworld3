@@ -7,7 +7,8 @@ tolerance is needed: the one guard, ``ROUNDOFF``, bounds the rounding in the
 barycentric coordinates themselves, which are dimensionless. The face a point
 fails worst (its most negative coordinate) is the face to cross, so a walk from
 any start cell reaches the containing cell in about the number of cells between
-them.
+them. On a non-convex boundary the walk crosses the most violated face that has a
+neighbour, so it follows the boundary instead of leaving through it.
 
 A point that several cells contain (on a shared face, edge or vertex) is given
 the lowest-numbered local cell in the star of that entity, so the answer depends
@@ -131,12 +132,20 @@ class SimplexLocator:
             if active.shape[0] == 0:
                 break
             lam = self.barycentric(points[active], cur)
-            k = lam.argmin(axis=1)
-            worst = lam[np.arange(active.shape[0]), k]
-            inside = worst >= -self.ROUNDOFF
+            inside = lam.min(axis=1) >= -self.ROUNDOFF
             cells[active[inside]] = cur[inside]
             lam_out[active[inside]] = lam[inside]
-            nxt = self.nbr[cur, k]
+            # Cross the most violated face that has a neighbour. On a non-convex
+            # boundary the most violated face can be a boundary face although
+            # the point is inside, further along the boundary (measured on
+            # #1123's sheared mesh: 7 of 2e5 contained points). Only when every
+            # violated face is on the local boundary has the point left the
+            # local mesh.
+            neighbours = self.nbr[cur]
+            ranked = np.where((lam < -self.ROUNDOFF) & (neighbours >= 0), lam, np.inf)
+            k = ranked.argmin(axis=1)
+            can_cross = np.isfinite(ranked[np.arange(active.shape[0]), k])
+            nxt = np.where(can_cross, neighbours[np.arange(active.shape[0]), k], -1)
             left = ~inside & (nxt < 0)
             exit_cell[active[left]] = cur[left]
             go = ~inside & (nxt >= 0)

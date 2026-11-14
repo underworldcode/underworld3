@@ -43,6 +43,56 @@ def _inside_some_local_cell(mesh, P):
     return inside
 
 
+def _sheared_box():
+    mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0., 0., 0.), maxCoords=(1., 1., 1.),
+                                             cellSize=1 / 6, qdegree=3)
+    X = np.asarray(mesh.X.coords).copy()
+    A = np.array([[1.0, 1.2, 0.3], [0.1, 0.7, 0.5], [0.0, 0.2, 0.5]])
+    Y = X @ A.T
+    Y[:, 0] += 0.03 * np.sin(2 * np.pi * X[:, 1])
+    Y[:, 1] += 0.03 * np.sin(2 * np.pi * X[:, 2])
+    Y[:, 2] += 0.03 * np.sin(2 * np.pi * X[:, 0])
+    mesh.deform(Y)
+    return mesh
+
+
+def _near_interior_edges(mesh):
+    """Points 1e-8, 1e-6 and 1e-4 off every edge midpoint, the same on every rank."""
+    dm = mesh.dm
+    es, ee = dm.getDepthStratum(1)
+    vs = dm.getDepthStratum(0)[0]
+    Xv = np.asarray(mesh._coords).reshape(-1, 3)
+    mids = np.array([0.5 * (Xv[dm.getCone(e)[0] - vs] + Xv[dm.getCone(e)[1] - vs])
+                     for e in range(es, ee)]).reshape(-1, 3)
+    mids = np.unique(np.round(np.vstack(uw.mpi.comm.allgather(mids)), 13), axis=0)
+    rng = np.random.default_rng(3)
+    unit = lambda n: n / np.linalg.norm(n, axis=1)[:, None]
+    return np.vstack([mids + d * unit(rng.normal(size=mids.shape)) for d in (1e-8, 1e-6, 1e-4)])
+
+
+def test_points_in_domain_and_a_swarm_keep_every_inside_point():
+    """Migration reads points_in_domain(strict); in parallel its later stages call
+    the exact locator. Every inside point is owned under it, and a swarm seeded at
+    the inside points keeps every one through migration with lost points deleted.
+    (Serially points_in_domain keeps its boundary-sign test, which still loses some
+    of these points: the swarm follow-up.)"""
+    if uw.mpi.size < 2:
+        pytest.skip("parallel: the serial migration path is unchanged by #1175")
+    mesh = _sheared_box()
+    P = _near_interior_edges(mesh)
+    inside = uw.mpi.comm.allreduce(_inside_some_local_cell(mesh, P).astype(np.int64), op=MPI.SUM) > 0
+    owned = np.asarray(mesh.points_in_domain(P, strict_validation=True), dtype=np.int64)
+    owners = uw.mpi.comm.allreduce(owned, op=MPI.SUM)
+    assert int((inside & (owners == 0)).sum()) == 0, (
+        f"{int((inside & (owners == 0)).sum())} inside points owned by no rank under points_in_domain")
+
+    swarm = uw.swarm.Swarm(mesh)
+    seed = P[inside] if uw.mpi.rank == 0 else np.zeros((0, 3))
+    swarm.add_particles_with_global_coordinates(seed, migrate=True, delete_lost_points=True)
+    total = uw.mpi.comm.allreduce(swarm.dm.getLocalSize(), op=MPI.SUM)
+    assert total == int(inside.sum()), f"{total} particles kept of {int(inside.sum())} inside"
+
+
 def test_every_inside_point_is_owned_and_exact():
     mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0., 0., 0.), maxCoords=(1., 1., 1.),
                                              cellSize=1 / 6, qdegree=3)
