@@ -1,6 +1,6 @@
 # Trial: a radially graded annulus base under the moving mesh and the fault
 
-Interim, 2026-11-14 00:45 UTC. The radially graded run is still going (step 28 of 60); a run on the windowed base (section 3) is queued behind it. Same model, driver and code as `mmpde_fault_sample_runs.md`, plus two new driver options, `uw_cell_inner` and `uw_cell_window`.
+Interim, 2026-11-14 01:25 UTC. The radially graded run is still going (step 46 of 60); a production-length run on the banded base with a slab region (section 4) is queued behind it. **Section 4 is the current design**; sections 2 and 3 are the steps that led to it. Same model, driver and code as `mmpde_fault_sample_runs.md`, plus new driver options for the base: `uw_cell_inner`, `uw_cell_window`, `uw_cell_band`, `uw_cell_grow`.
 
 ## 1. Does a graded base survive the refinement hierarchy?
 
@@ -63,7 +63,35 @@ The radially graded run, steps 0 and 10:
 
 ![evolution](graded_base_evolution.png)
 
-## 4. Cost
+## 4. A band of typical boundary-layer thickness, plus a slab region
+
+A fixed base cannot follow the boundary layer; it can only be fine over a typical boundary-layer thickness. So: 22 km cells in the top 100 km all round, growing quickly below (to about 220 km in the lower mantle), with no linear ramp. Three variants, each run for the three initial moves and one step on 2 ranks:
+
+- **Band only**: 34,752 cells.
+- **Band, gentler growth below**: 43,072 cells.
+- **Band plus a slab region**: the base is also held at 34 km (1.5 × the band) down to 700 km within 1000 km of the trench. 37,920 cells; the slab region costs about 3,200 of them.
+
+Cell edge (km), 10th percentile / median, in cold material (T < 0.5), after the initial moves:
+
+| Where | Band + slab region, 37,920 | Band only, 34,752 | Band, gentler growth, 43,072 | Uniform ref 5, 126,976 |
+|---|---|---|---|---|
+| Lid, top 100 km, all round | 12 / 16 | 12 / 17 | 11 / 16 | 23 / 26 |
+| Lid, within 1000 km of the trench | 14 / 20 | 14 / 19 | 13 / 18 | 30 / 35 |
+| Slab, 100–200 km | 20 / 24 | 19 / 34 | 20 / 28 | 30 / 36 |
+| Slab, 200–400 km | 18 / 29 | 30 / 45 | 25 / 41 | 27 / 34 |
+| Slab, 400–660 km | 22 / 29 | 93 / 113 | 59 / 69 | 26 / 30 |
+| Smallest cell anywhere | 7.5 | 7.9 | 7.4 | 19.8 |
+| Below 2000 km depth (median) | 237 | 231 | 231 | 43 |
+| Time step at step 0 | 3.9e-6 | 4.3e-6 | 3.1e-6 | 8.1e-6 |
+
+- **The band does the lid.** From 22 km the mover reaches 12 to 17 km everywhere, without tying the base to where the trench starts.
+- **The band alone leaves the slab unresolved.** Two thirds of all cells end up in the lid and the slab below 400 km stays at the base's size: the mover does not pull nodes down the slab.
+- **A coarse slab region fixes that cheaply.** With the base at 34 km there, the slab is at 24 to 29 km down to 660 km. This variant is finer than the uniform refinement-5 base with the moving mesh everywhere in cold material, on 30% of the cells.
+- The fault was placed and step 0 converged in all three.
+
+![band](graded_base_band_step0.png)
+
+## 5. Cost
 
 First steps only (0 to 10 for the graded run, 0 to 20 for the others), on a shared 96-thread Linux workstation, so indicative.
 
@@ -79,5 +107,6 @@ First steps only (0 to 10 for the graded run, 0 to 20 for the others), on a shar
 
 ## Limits of this trial
 
-- The window is fixed in the base. The trench moves about 14° (870 km) by t = 8e-4 in the production run, so a long run needs a wider or offset window.
-- The window is put in through a size callback wrapped round the library's annulus mesher from the driver. A proper option on the mesher is library work, not done here.
+- The window (section 3) and the slab region (section 4) are fixed in the base. The trench moves about 14° (870 km) by t = 8e-4 in the production run, so a long run needs a wider or offset window.
+- The banded base has only been run for one step; its history and cost per step await the queued run.
+- The band and the window are put in through a size callback wrapped round the library's annulus mesher from the driver. A proper option on the mesher is library work, not done here.
