@@ -236,10 +236,12 @@ def _geometric_mg_settings(coarse, smoother="robust"):
         # power-law AND Drucker-Prager with pressure-dependent yield, with a control
         # confirming the Newton term contributed 5-40% of ||A||. For an isotropic
         # eta(eps_II) the Newton term is a rank-one outer product a (x) a with
-        # a = eps_dot(u), which is symmetric. Non-symmetry does appear under
-        # transverse isotropy, but it appears under the PICARD tangent there too
-        # (7e-2), where a frozen-coefficient form is symmetric by construction --
-        # i.e. a defect signature, see #457. The likely real mechanism is operator
+        # a = eps_dot(u), which is symmetric. Under transverse isotropy the Newton
+        # block IS non-symmetric (1e-1): the TI tangent has no major symmetry. The
+        # Picard block is symmetric (6.6e-17), as a frozen-coefficient form must
+        # be. So symmetry does not explain the isotropic cases, where the Newton
+        # block is symmetric too (docs/developer/subsystems/solvers.md). The
+        # likely real mechanism is operator
         # CONDITIONING: at eta contrast 1e26 the SOR-preconditioned spectrum is
         # spread far enough that a stationary iteration stalls where a Krylov
         # smoother adapts its polynomial. That also predicts the cost measured on

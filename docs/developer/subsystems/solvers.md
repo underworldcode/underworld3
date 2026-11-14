@@ -505,18 +505,25 @@ calibration of 5e-17:
 | shear-thinning, isotropic | 5.3e-17 | 2.1e-01 |
 | power-law, isotropic | 5.3e-17 | 4.0e-01 |
 | Drucker–Prager, pressure-dependent yield | 5.1e-17 | 5.1e-02 |
-| transverse isotropic, Picard tangent | **7.2e-02** | — |
-| transverse isotropic, Newton tangent | **8.9e-02** | 2.0e-01 |
+| transverse isotropic, Picard tangent | 6.6e-17 | — |
+| transverse isotropic, Newton tangent | **1.0e-01** | — |
 
 The third column is the control: if the consistent tangent had contributed
 nothing, the symmetry reading would be vacuous. It contributed 5–40% of ‖A‖ in
 every case, and the block stayed symmetric anyway.
 
-Non-symmetry *does* appear under transverse isotropy — but it appears under the
-**Picard** tangent too, where a frozen-coefficient form ∫ ε̇(δu):C:ε̇(v) is
-symmetric by construction. That is a defect signature rather than a property of
-the tangent (see #457, and the linear TI rows, which are symmetric at 6.3e-17
-even with anisotropy fully active).
+Non-symmetry *does* appear under transverse isotropy, under the **Newton**
+tangent only, and it is a property of the tangent rather than a defect: the TI
+tangent ∂F/∂∇u has no major symmetry (test_1066 asserts this), while the Picard
+form ∫ ε̇(δu):C:ε̇(v) is symmetric by construction and measures so. The Newton
+tangent is consistent with the residual: PETSc's `-snes_test_jacobian` gives
+‖J−J_fd‖/‖J‖ of 4.3e-5 to 5.9e-4 over the iterations of a TI power law with
+η₁ = 0.01 η₀, against 6.2e-6 to 4.2e-4 for the isotropic control on the same
+mesh, both at the finite-difference floor of the regularised power law (#457 was
+fixed by #493). An earlier version of this table read 7.2e-02 for the TI Picard
+row and called it a defect signature; re-measured on development c2aa36b3, the
+TI rows are as above. (Measured on an 8 × 8 Q2/Q1 box with a shear lid,
+η₀ = (10⁻³ + ε̇_II)^(−2/3), director (1, 1)/√2, one rank.)
 
 The mechanism that does fit everything measured is **operator conditioning**: at
 η contrast 1e26 the SOR-preconditioned spectrum is spread far enough that a
