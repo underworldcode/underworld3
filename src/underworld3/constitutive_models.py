@@ -3760,6 +3760,17 @@ class DarcyFlowModel(Constitutive_Model):
         return self._q(ddu)
 
 
+def _director_as_column(value):
+    """A director as a column, the shape its default has and its readers assume
+    (``T = Edot * n``). A row, which is what a mesh variable's ``.sym`` is, is
+    transposed; a list or tuple becomes a column (#1185)."""
+    if isinstance(value, (list, tuple)):
+        return sympy.Matrix(value)
+    if isinstance(value, sympy.MatrixBase) and value.shape[0] == 1 and value.shape[1] > 1:
+        return value.T
+    return value
+
+
 class TransverseIsotropicFlowModel(ViscousFlowModel):
     # TODO(BUG): the CONSISTENT (Newton) tangent of this model is inconsistent
     # with its residual when the anisotropy is active (eta_1 != eta_0): PETSc
@@ -3851,6 +3862,7 @@ class TransverseIsotropicFlowModel(ViscousFlowModel):
             lambda inner_self: sympy.Matrix([0] * (inner_self._owning_model.dim - 1) + [1]),
             "Director orientation",
             units=None,  # Dimensionless unit vector
+            validator=_director_as_column,
         )
 
         def __init__(
@@ -4154,6 +4166,7 @@ class TransverseIsotropicVEPFlowModel(_ExponentialCoefficients, TransverseIsotro
             r"\hat{n}",
             lambda inner_self: sympy.Matrix([0] * (inner_self._owning_model.dim - 1) + [1]),
             "Director orientation (fault normal)", units=None,
+            validator=_director_as_column,
         )
 
         # Elastic parameter
