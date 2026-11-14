@@ -339,6 +339,10 @@ class ExpressionDescriptor:
                     f"nested inside another expression). Snapshot the current value "
                     f"explicitly instead, e.g. use `param.sym` or `float(param.value)`."
                 )
+            # A validator sees a named expression too; it may refuse it, but the
+            # expression itself is stored, so that it stays live.
+            if self.validator is not None:
+                self.validator(value)
             expr.sym = value  # Store symbolic reference, not inner value
 
         # Special case: Plain UWQuantity (not UWexpression) - has ._value and ._pint_qty

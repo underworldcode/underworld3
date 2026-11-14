@@ -154,7 +154,8 @@ def test_the_solver_is_given_whichever_realisation_was_built():
         else:
             assert net.ti["footprint"].sum() > 0
             params = stokes.constitutive_model.Parameters
-            assert params.director.shape == (1, mesh.dim)
+            # The director is stored as a column, whatever shape apply hands over (#1185).
+            assert params.director.shape == (mesh.dim, 1)
             with pytest.raises(RuntimeError, match="no fault pairs"):
                 net.apply_contact(stokes)
 
