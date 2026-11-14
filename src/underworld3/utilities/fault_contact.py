@@ -58,7 +58,7 @@ from underworld3.utilities.facet_normals import facet_measure_and_normal
 _VELOCITY_FIELD = 0
 
 
-def _collective_raise(problem):
+def _collective_raise(problem, error=RuntimeError, **error_kwargs):
     """One synchronisation point for rank-local failures in collective paths.
 
     ``problem`` is ``None`` or an error message string. The verdicts are
@@ -68,6 +68,10 @@ def _collective_raise(problem):
     leaves the other ranks blocked in the next collective (Q assembly, the
     trace-mass exchange, the Newton loop) instead of aborting: a deadlock
     where an error was meant. COLLECTIVE — every rank must reach it.
+
+    ``error`` (with ``error_kwargs``) is the class raised: a hierarchy build
+    passes ``custom_mg.CollectiveBuildError`` so the ranks retry or degrade
+    together, as its other checks do.
     """
     if mpi.size > 1:
         # on the verdict communicator: a rank still inside a collective of
@@ -76,7 +80,7 @@ def _collective_raise(problem):
         problems = [p for p in gathered if p is not None]
         problem = problems[0] if problems else None
     if problem is not None:
-        raise RuntimeError(problem)
+        raise error(problem, **error_kwargs)
 
 
 def warn_unpaired_split_faults(solver):

@@ -203,13 +203,12 @@ test: we have not measured a Nitsche + TI solve on a fault model, so its leakage
 its convergence there are not known.
 
 ```python
-# normal=None (the default) is measure-weighted and consistent with the assembly —
-# prefer it. An analytic nhat is exact for the TRUE circle but keeps a consistency
-# error against the faceted integral (#560); use it only when the constraint must
-# follow the geometry rather than the mesh.
-nhat = mesh.CoordinateSystem.unit_e_0                    # exact radial normal (annulus/sphere)
-stokes.add_rotated_freeslip_bc(0, "Upper", normal=nhat)
-stokes.add_rotated_freeslip_bc(0, "Lower", normal=nhat)
+# normal=None (the default) is measure-weighted and consistent with the assembly.
+# Keep it on an adapted mesh: the wall facets are of unequal length there, and a
+# given normal (even the exact radial one) costs most of the wall slip (#1168;
+# consistency error against the faceted integral, #560).
+stokes.add_rotated_freeslip_bc(0, "Upper")
+stokes.add_rotated_freeslip_bc(0, "Lower")
 stokes.petsc_use_pressure_nullspace = True               # enclosed -> pressure gauge
 stokes.solve()                                            # rigid-rotation gauge auto-removed
 # Convergence status: read stokes._rotated_freeslip_info = {ksp_reason,

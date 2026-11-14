@@ -417,6 +417,8 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   batch 3 tests/parallel/test_0874_mirrored_mesh_cut_parallel.py
   # So are the multigrid levels an adapt keeps, the same at any rank count (#865).
   batch 3 tests/parallel/test_1177_mg_levels_same_at_any_rank_count_parallel.py
+  # So is the monotone clamp by the containing cell, the same bound at any rank count for a point inside a cell (#682).
+  batch 3 tests/parallel/test_0682_clamp_by_containing_cell_parallel.py
   # test_106*/test_107* were held back pending "a triage/deselect decision". That
   # decision is made: the band is not the unit of exclusion. Of the 243 tests in
   # the deferred bands only 26 are level_3 or tier_c; 55 are level_1 AND tier_a —
