@@ -55,3 +55,29 @@ def test_the_director_is_stored_as_a_column(model):
     for given in (sympy.Matrix([[R2, R2]]), sympy.Matrix([[R2], [R2]]), n.sym):
         P.director = given
         assert P.director.sym.shape == (2, 1)
+
+
+@pytest.mark.level_1
+@pytest.mark.tier_b
+@pytest.mark.parametrize("model", ["TransverseIsotropicFlowModel",
+                                   "TransverseIsotropicVEPFlowModel"])
+def test_numpy_directors_become_columns_and_bad_ones_are_refused(model):
+    """A numpy array of any orientation becomes a column. A named expression
+    holding a row is refused at the setter: on development it solved, 1.24e-4
+    off the column's answer, with no error. A variable passed itself is refused,
+    naming ``.sym``."""
+    mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0),
+                                             cellSize=0.5)
+    n = uw.discretisation.MeshVariable(f"n_1185b_{model}", mesh, 2, degree=1)
+    st = uw.systems.Stokes(mesh)
+    st.constitutive_model = getattr(uw.constitutive_models, model)
+    P = st.constitutive_model.Parameters
+    r = float(R2)
+    for given in (np.array([r, r]), np.array([[r, r]]), np.array([[r], [r]])):
+        P.director = given
+        assert P.director.sym.shape == (2, 1)
+    with pytest.raises(ValueError, match="row"):
+        P.director = uw.expression(rf"n_{{row,{model[:4]}}}", sympy.Matrix([[R2, R2]]), "row")
+    P.director = uw.expression(rf"n_{{col,{model[:4]}}}", sympy.Matrix([[R2], [R2]]), "column")
+    with pytest.raises(TypeError, match=r"\.sym"):
+        P.director = n

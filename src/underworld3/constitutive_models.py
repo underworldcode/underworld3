@@ -3762,8 +3762,32 @@ class DarcyFlowModel(Constitutive_Model):
 
 def _director_as_column(value):
     """A director as a column, the shape its default has and its readers assume
-    (``T = Edot * n``). A row, which is what a mesh variable's ``.sym`` is, is
-    transposed; a list or tuple becomes a column (#1185)."""
+    (``T = Edot * n``), #1185.
+
+    - A row Matrix, which is what a mesh variable's ``.sym`` is, is transposed.
+    - A list, a tuple or a numpy array (1-D, row or column) becomes a column.
+    - A named expression (``uw.expression``) holding a row is refused: storing
+      it keeps it live, so it cannot be transposed here, and a row reads wrong
+      in the yield law without an error.
+    - A mesh variable passed itself is refused, naming ``.sym``.
+    """
+    import numpy
+    from underworld3.function.expressions import UWexpression
+
+    if isinstance(value, UWexpression):
+        inner = getattr(value, "_sym", None)
+        if isinstance(inner, sympy.MatrixBase) and inner.shape[0] == 1 and inner.shape[1] > 1:
+            raise ValueError(
+                f"director: the expression '{value.name}' holds a row {inner.shape}; "
+                "the director must be a column. Build the expression with a column, "
+                "e.g. sympy.Matrix([[a], [b]]), or assign its value's transpose (#1185).")
+        return value
+    if hasattr(value, "sym") and not isinstance(value, (sympy.Basic, sympy.MatrixBase)):
+        raise TypeError(
+            "director: pass the variable's symbolic form, e.g. "
+            "Parameters.director = n.sym, not the variable itself (#1185).")
+    if isinstance(value, numpy.ndarray):
+        return sympy.Matrix(numpy.asarray(value).reshape(-1).tolist())
     if isinstance(value, (list, tuple)):
         return sympy.Matrix(value)
     if isinstance(value, sympy.MatrixBase) and value.shape[0] == 1 and value.shape[1] > 1:
