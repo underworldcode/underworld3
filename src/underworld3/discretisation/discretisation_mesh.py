@@ -8146,7 +8146,7 @@ class Mesh(Stateful, uw_object):
         if cached is not None and cached[0] == key:
             return cached[1]
 
-        if bool(self.dm.isSimplex()) or (self.dim != self.cdim):
+        if bool(self.isSimplex) or (self.dim != self.cdim):
             cap = "exact"
         else:
             sag_rel, viol_rel = self._audit_cell_face_geometry()
@@ -9994,7 +9994,7 @@ class Mesh(Stateful, uw_object):
         # (adaptivity capstone stage 1c).
         _nvbx = None
         if engine == "nvb":
-            if not bool(self.dm.isSimplex()) or self.dim not in (2, 3):
+            if not bool(self.isSimplex) or self.dim not in (2, 3):
                 raise NotImplementedError(
                     "adapt(engine='nvb') supports 2D triangle and 3D "
                     "tetrahedral meshes."
