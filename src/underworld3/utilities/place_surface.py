@@ -9230,6 +9230,17 @@ def place_fault_ribbon(base_mesh, sheet, width, *, normals=None,
     return mesh, mid, info
 
 
+def _ribbon_region_marks(dm, extended, width, clearance, sizes, mesher):
+    """The region marks the add-on partition is given for a ribbon's bands.
+
+    ``extended`` are the bands' paths as the placement is given them, ``sizes``
+    their rung lengths. Returns ``marks(dm)`` for
+    :func:`~underworld3.utilities.addon_partition.partition_addon`.
+    """
+    from underworld3.utilities.addon_partition import mark_band
+    return mark_band(extended, width, clearance)
+
+
 def place_fault_ribbon_2d(base_mesh, traces, width, *, margin_rings=2,
                           band_label="Band", band_value=71,
                           clearance=0.3, split=True, mesher="ladder",
@@ -9372,10 +9383,12 @@ def place_fault_ribbon_2d(base_mesh, traces, width, *, margin_rings=2,
     # conform modes mesh across the seams in place, by design.
     host = base_mesh
     if base_mesh.dm.getComm().getSize() > 1 and seams == "gather":
-        from underworld3.utilities.addon_partition import (mark_band,
-                                                           partition_addon)
-        host = partition_addon(base_mesh, mark_band(extended, width, clearance),
-                               layers=2, verbose=verbose)
+        from underworld3.utilities.addon_partition import partition_addon
+        host = partition_addon(
+            base_mesh,
+            _ribbon_region_marks(base_mesh.dm, extended, width, clearance,
+                                 spacing_all, mesher),
+            layers=2, verbose=verbose)
     dm = host.dm
 
     if mesher == "network":
