@@ -171,6 +171,18 @@ class SimplexLocator:
         size = (self._box_hi - self._box_lo).max(axis=1)
         h = max(float(np.median(size)), 1e-300)
         origin = self._box_lo.min(axis=0)
+        extent = self._box_hi.max(axis=0) - origin
+        # Cap the bins at about the local cell count. On a graded mesh (refined
+        # toward a fault, most cells in a thin band) extent / median cell size
+        # is in the hundreds, and (extent / h)^dim bins would be 1e6 to 1e8 on
+        # every rank. Larger bins hold more candidates, but the search stays
+        # complete: the cap bounds the cost and never changes the answer.
+        cap = max(self.n_cells, 1)
+        uncapped = float(np.prod(np.floor(extent / h) + 1))
+        if uncapped > cap:
+            h *= (uncapped / cap) ** (1.0 / d)
+            while float(np.prod(np.floor(extent / h) + 1)) > cap:
+                h *= 1.01
         lo = np.floor((self._box_lo - origin) / h).astype(np.int64)
         hi = np.floor((self._box_hi - origin) / h).astype(np.int64)
         dims = hi.max(axis=0) + 1
@@ -190,6 +202,8 @@ class SimplexLocator:
         bins, owners = bins[order], owners[order]
         starts = np.searchsorted(bins, np.arange(int(np.prod(dims)) + 1))
         self._grid = (origin, h, dims, starts, owners)
+        self.grid_bins = int(np.prod(dims))
+        self.grid_bins_uncapped = int(uncapped)
         return self._grid
 
     def cells_containing(self, points):

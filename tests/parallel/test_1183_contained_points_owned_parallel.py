@@ -52,3 +52,38 @@ def test_every_contained_point_is_owned_on_the_sheared_mesh():
     owned = np.asarray(mesh._robust_owning_cells(P))
     lost = uw.mpi.comm.allreduce(int((owned < 0).sum()), op=MPI.SUM)
     assert lost == 0, f"{lost} contained points owned by no rank"
+
+
+def test_the_fallback_grid_is_capped_on_a_graded_mesh():
+    """Most cells packed into a corner of a large box, as on a mesh refined
+    toward a fault: each axis maps [0, 0.9] onto [0, 0.01] (monotone, so no cell
+    turns over), so about 73 % of the cells are about 1e-3 across in a box of
+    extent 1. An uncapped grid at the median cell size would hold about 8e7 bins
+    on one rank. The grid is capped at the local cell count, and every contained
+    point is still found."""
+    mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0., 0., 0.), maxCoords=(1., 1., 1.),
+                                             cellSize=1 / 8, qdegree=2)
+    X = np.asarray(mesh.X.coords).copy()
+    mesh.deform(np.where(X < 0.9, X * (0.01 / 0.9), 0.01 + (X - 0.9) * (0.99 / 0.1)))
+
+    locator = mesh._simplex_locator()
+    if locator.n_cells == 0:
+        # still takes part in the premise's reduction below
+        assert uw.mpi.comm.allreduce(0, op=MPI.MAX) > 0
+        return
+    cs = mesh.dm.getHeightStratum(0)[0]
+    Xl = np.asarray(mesh._coords).reshape(-1, 3)
+    V = Xl[mesh._coord_rows_for_points(
+        mesh.dm, closure_points(mesh.dm, np.arange(cs, cs + locator.n_cells), 0).ravel())
+    ].reshape(locator.n_cells, 4, 3)
+    rng = np.random.default_rng(5 + uw.mpi.rank)
+    cells = rng.integers(0, locator.n_cells, 20000)
+    P = np.einsum("nk,nkd->nd", rng.dirichlet(np.ones(4), cells.shape[0]), V[cells])
+
+    found = locator.cells_containing(P)
+    # The premise holds on the ranks that hold the packed corner (all of it in
+    # serial); a rank with only the large outer cells needs no cap.
+    over = locator.grid_bins_uncapped - locator.n_cells
+    assert uw.mpi.comm.allreduce(over, op=MPI.MAX) > 0, "premise: no rank would exceed the cap"
+    assert locator.grid_bins <= locator.n_cells, (locator.grid_bins, locator.n_cells)
+    assert (found >= 0).all(), f"{int((found < 0).sum())} contained points not found"
