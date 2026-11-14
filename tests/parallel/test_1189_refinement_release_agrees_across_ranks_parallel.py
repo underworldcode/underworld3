@@ -53,9 +53,17 @@ def test_a_wall_held_back_on_one_rank_is_released_on_every_rank():
         "test has nothing to release: choose another fixture")
     assert all(lower_refused), f"Lower refused by rank: {lower_refused}, holders: {holders}"
     assert not any(upper_refused), f"Upper refused by rank: {upper_refused}"
+    # What the case exists for is a rank holding none of the held-back vertices.
+    # Measured on Linux (MPICH), 2026-11-14: at two ranks both hold one, so the case
+    # can only check the verdicts and skips; at four, one rank holds none, and
+    # scripts/test.sh runs this file at four ranks for that. At four or more ranks a
+    # partition in which every rank holds one is a failure, not a skip, so that line
+    # cannot pass without showing the reduction.
     if all(holders):
-        # Measured on Linux (MPICH), 2026-11-14: both ranks hold one at two ranks; one
-        # rank of four holds none. scripts/test.sh runs this file at four ranks too.
+        if uw.mpi.size >= 4:
+            pytest.fail(f"every one of the {uw.mpi.size} ranks holds a held-back vertex on "
+                        "this host's partition, so the case shows nothing about a rank "
+                        "learning of it from another: choose a fixture where one does not")
         pytest.skip(f"every one of the {uw.mpi.size} ranks holds a held-back vertex, so "
                     "this rank count does not show a rank learning of it from another")
 

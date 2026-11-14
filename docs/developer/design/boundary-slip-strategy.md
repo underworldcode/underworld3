@@ -124,7 +124,9 @@ is_pinned, project = mesh.boundary_slip(slip_spec, reference_coords=X0)
 Y = project(Y_moved)
 
 # In-place convenience (built on the above) for callers that just want coords
-# snapped back — e.g. a checkpoint reload, a diagnostic, the free-surface module.
+# snapped back — e.g. a diagnostic, the free-surface module. It restores onto a
+# declared surface only: after a checkpoint reload (nothing declared) or a direct
+# write of saved coordinates (declarations released) it slides along the wall as it is.
 mesh.project_to_slip_surface(coords, slip_spec, reference_coords=X0)
 
 # Public registration so users can install a custom analytic surface object
@@ -495,7 +497,11 @@ authoritative while it is registered and not released.
   | a mesh loaded from a file | none: nothing is registered | |
 
   A released surface stays released: a later slip asked with restore on it
-  restores nothing, and warns once. `register_tangent_slip_provider` can declare a
+  slides the wall's vertices along the wall as it is, restores nothing, and warns
+  once per surface (interior surfaces, whose vertices are pinned, are not named).
+  Before this contract a direct write followed by a restoring slip put the wall
+  back on the constructor's circle; it now does not, because the write may have
+  moved the wall and nothing records that it did not. `register_tangent_slip_provider` can declare a
   label again and does not check the wall; that is the caller's declaration.
 - A constructor does not declare what the mesh does not hold: a solid disc or ball
   has no inner wall, and a refined `SphericalShellInternalBoundary` withdraws its

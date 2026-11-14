@@ -4586,6 +4586,18 @@ class Mesh(Stateful, uw_object):
            analytic normal), and a mover run differs from one made with the
            analytic normal at the 1e-5 level in the vertex positions. A later call asking for the label
            to be restored restores nothing, and warns.
+
+        .. note::
+
+           A boundary whose declared surface was released (by a free slip, by
+           :meth:`deform`, by a direct write to ``mesh.X.coords``, or by a
+           refinement that could not put its vertices on it) is not restored
+           onto that surface when a later call asks for it to be: its vertices
+           slide along the wall as it is. The call warns, once per surface for
+           the life of the mesh, so a later call on the same surface is silent.
+           Interior surfaces are not named: their vertices are pinned. A user
+           who knows the wall is still the circle, sphere or plane declares it
+           again with :meth:`register_tangent_slip_provider`.
         """
         from underworld3.meshing.smoothing import (
             _pinned_mask, _auto_pinned_labels, _owned_vertex_mask)
@@ -4628,10 +4640,11 @@ class Mesh(Stateful, uw_object):
             labels=free_labels)
         # A label asked to be restored whose surface has been released has
         # nothing to be restored onto. The surfaces' state is the same on every
-        # rank, so the ranks agree on what to say, and rank 0 says it once.
+        # rank, so the ranks agree on what to say, and rank 0 says it once. An
+        # interior surface is left out: its vertices are pinned, never slid.
         for label in slip_labels:
             surface = self.bounding_surfaces.get(label)
-            if (label in free_labels or surface is None
+            if (label in free_labels or surface is None or surface.interior
                     or surface._prev_kind is None or surface._restore_warning_given):
                 continue
             surface._restore_warning_given = True
@@ -4642,8 +4655,11 @@ class Mesh(Stateful, uw_object):
                     warnings.warn(
                         f"slip with restore was asked for boundary {label!r}, whose "
                         f"declared {surface._prev_kind} surface was released "
-                        f"({surface.release_reason}). Its vertices slide and are not "
-                        f"restored onto that surface.", UserWarning, stacklevel=2)
+                        f"({surface.release_reason}). Its vertices slide along the "
+                        f"wall as it is and are not restored onto that surface. If "
+                        f"the wall is still that surface, declare it again with "
+                        f"mesh.register_tangent_slip_provider.", UserWarning,
+                        stacklevel=2)
         # Per-label vertex masks (closure of each label's tagged facets). The
         # rank's own masks pick its reference facets below; the shared ones
         # classify the vertices.
@@ -4754,8 +4770,16 @@ class Mesh(Stateful, uw_object):
                                 reference_coords=None, boundary_labels=None):
         """In-place convenience over :meth:`boundary_slip`: slide+restore the
         slip vertices of ``coords`` (a full local-chart vertex array) and return
-        it. For callers that just want coordinates snapped back (a checkpoint
-        reload, a diagnostic, the free-surface module).
+        it. For callers that just want coordinates snapped back (a diagnostic,
+        the free-surface module).
+
+        It restores onto a declared surface only. A mesh reloaded from a file
+        declares none, and writing saved coordinates into ``mesh.X.coords``
+        releases the surfaces a constructor declared, so after a checkpoint
+        reload the slip vertices slide along the wall as it was saved and are
+        not put back on the constructor's circle or sphere. After the write the
+        call warns; on a reloaded mesh, which never declared a surface, it does
+        not.
 
         The projector of :meth:`boundary_slip` moves the vertices a rank owns.
         This method then copies each owner's value to the other ranks holding

@@ -199,6 +199,50 @@ def test_restoring_slip_on_a_released_surface_warns_that_nothing_is_restored():
 
 
 @pytest.mark.tier_b
+def test_restoring_slip_after_a_direct_write_follows_the_wall_until_it_is_declared_again():
+    """A direct write takes the outer wall 1 % of its radius off its circle. The
+    write released the declaration, so a restoring slip leaves the wall where the
+    write put it and warns, naming the way to declare it again (development, before
+    the release, put it back on the constructor's circle). Declared again, the next
+    restoring slip puts it on the circle."""
+    from underworld3.meshing.bounding_surface import BoundingSurface
+
+    mesh = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.5, cellSize=0.1)
+    X = np.array(mesh.X.coords, dtype=float)
+    upper = _pinned_mask(mesh.dm, ("Upper",))
+    r = np.linalg.norm(X, axis=1)
+    ripple = 1.0 + 0.01 * np.cos(3.0 * np.arctan2(X[:, 1], X[:, 0])) * (r - 0.5) / 0.5
+    mesh.X.coords[...] = X * ripple[:, None]
+
+    def upper_off(coords):
+        return float(np.max(np.abs(np.linalg.norm(coords[upper], axis=1) - 1.0)))
+
+    with pytest.warns(UserWarning, match="'Upper'.*register_tangent_slip_provider"):
+        slid = mesh.project_to_slip_surface(np.array(mesh.X.coords), True)
+    assert upper_off(slid) > 0.9e-2
+
+    mesh.register_tangent_slip_provider(
+        "Upper", BoundingSurface(mesh, "Upper", "radial", centre=(0.0, 0.0), radius=1.0))
+    restored = mesh.project_to_slip_surface(np.array(mesh.X.coords), {"Upper": True})
+    assert upper_off(restored) < ON_SURFACE
+
+
+@pytest.mark.tier_b
+def test_the_restore_warning_does_not_name_an_interior_surface():
+    """An interior surface (the Internal circle) never slides: its vertices are
+    pinned whatever the slip request, so its release is not a restore dropped."""
+    mesh = uw.meshing.AnnulusInternalBoundary(
+        radiusOuter=1.0, radiusInternal=0.75, radiusInner=0.5, cellSize_Inner=0.2,
+        cellSize_Internal=0.2, cellSize_Outer=0.2)
+    mesh.bounding_surfaces["Internal"].release("released by the test")
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        mesh.boundary_slip(True)
+    named = [str(w.message) for w in caught if "'Internal'" in str(w.message)]
+    assert not named, named
+
+
+@pytest.mark.tier_b
 def test_a_write_to_the_coordinates_of_a_mesh_without_variables_releases_every_surface():
     mesh = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.5, cellSize=0.2)
     mesh.X.coords[...] = 1.01 * np.array(mesh.X.coords)
