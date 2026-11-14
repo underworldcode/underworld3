@@ -10758,16 +10758,25 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         """Create a velocity nullspace basis vector from a user-supplied mode."""
 
         mode_values = np.asarray(uw.function.evaluate(mode, self.u.coords_nd), dtype=np.float64)
+        n_nodes = self.u.coords_nd.shape[0]
+        n_components = self.u.num_components
+        # Flatten the trailing (component) axes explicitly: reshape(n, -1) cannot
+        # infer -1 from an empty array, so a rank with no velocity nodes raised
+        # alone while the others went on into collectives (#1179).
         if mode_values.ndim == 1:
-            mode_values = mode_values.reshape(-1, 1)
+            mode_values = mode_values.reshape(n_nodes, -1) if n_nodes else mode_values.reshape(0, n_components)
         elif mode_values.ndim > 2:
-            mode_values = mode_values.reshape(mode_values.shape[0], -1)
-
-        if mode_values.shape != (self.u.coords_nd.shape[0], self.u.num_components):
+            mode_values = mode_values.reshape(
+                mode_values.shape[0], int(np.prod(mode_values.shape[1:], dtype=np.int64)))
+        # The component count comes from the field's declaration, which every
+        # rank shares, so a rank with no nodes reaches the same verdict.
+        if mode_values.shape[0] != n_nodes or (n_nodes and mode_values.shape[1] != n_components):
             raise ValueError(
                 "Velocity nullspace mode evaluation must return an array with shape "
-                f"({self.u.coords_nd.shape[0]}, {self.u.num_components}); got {mode_values.shape}."
+                f"({n_nodes}, {n_components}); got {mode_values.shape}."
             )
+        if n_nodes == 0:
+            mode_values = np.zeros((0, n_components))
 
         template_vec = self.dm.getGlobalVec()
         try:
