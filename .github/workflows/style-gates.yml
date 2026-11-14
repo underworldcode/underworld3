@@ -29,7 +29,7 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Scan src/ (and tests/ for field numbers) for Charter-banned patterns
+      - name: Scan src/ (and tests/, docs/ for field numbers) for Charter-banned patterns
         run: |
           echo "Running the deprecated-pattern scanner (stdlib only)..."
           if ! python scripts/check_deprecated_patterns.py; then

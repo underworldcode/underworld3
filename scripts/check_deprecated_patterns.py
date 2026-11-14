@@ -2,7 +2,7 @@
 """Deprecated-pattern scanner for the UW3 style gates (stdlib only).
 
 Enforces the cheapest-to-check rules of ``docs/developer/UW3_STYLE_CHARTER.md``
-on ``src/`` (and, for ``field-number`` alone, on ``tests/``):
+on ``src/`` (and, for ``field-number`` alone, on ``tests/`` and ``docs/``):
 
 - ``access-context`` (Charter S7): ``with mesh.access(...)`` / ``with
   swarm.access(...)`` context-manager data access. New code uses the ``array``
@@ -17,7 +17,8 @@ on ``src/`` (and, for ``field-number`` alone, on ``tests/``):
 - ``field-number`` (Charter S6): a variable's ``field_id`` (its index on the
   mesh DM) used as a solver's field number: ``add_condition(`` whose first
   argument ends in ``.field_id``, ``f_id=`` given one anywhere in a call, and
-  ``f_id`` compared with a ``.field_id`` by ``==`` or ``!=``. Also gated on ``tests/``.
+  ``f_id`` compared with a ``.field_id`` by ``==`` or ``!=``. Also gated on ``tests/``
+  and ``docs/``, since users copy the examples.
   Not flagged, because they stay on the mesh DM:
   ``mesh.dm.createSubDM([p.field_id])`` and the auxiliary offsets in
   ``_jitextension.py``.
@@ -30,7 +31,8 @@ this file and predict what it flags:
   it, but that is a review matter, not a machine gate).
 - ``field-number`` reads the ``add_condition(`` call across line breaks, so a
   first argument on the line after the bracket is seen; the hit is reported on
-  the line of the call. Whole-line comments inside the call are skipped.
+  the line of the call. Whole-line comments inside the call are skipped. In a
+  notebook only a call written on one line is seen.
 - ``except-pass`` heuristic: an ``except`` header line followed (skipping
   blank lines) by a bare ``pass``, with no ``#`` comment on the line before
   the ``except``, the ``except`` line, the ``pass`` line, or the line after
@@ -51,13 +53,14 @@ scanner warns about stale (unused) entries so they are not forgotten.
 
 Usage
 -----
-    python scripts/check_deprecated_patterns.py                # gate src/ (+ tests/ for field-number)
+    python scripts/check_deprecated_patterns.py                # gate src/ (+ tests/, docs/ for field-number)
     python scripts/check_deprecated_patterns.py --include-docs # + docs report
     python scripts/check_deprecated_patterns.py --no-allowlist # raw inventory
     python scripts/check_deprecated_patterns.py PATH [PATH...] # custom roots
 
 Exit status: 0 when every hit under the gated roots is allowlisted,
-1 otherwise. The docs report never affects the exit status.
+1 otherwise. The docs report never affects the exit status; a ``field-number``
+hit under ``docs/`` is gated, not reported.
 """
 
 import argparse
@@ -102,8 +105,8 @@ LINE_PATTERNS = {
     ),
 }
 
-# The patterns gated on tests/ as well as on src/.
-TESTS_PATTERNS = {"field-number"}
+# The patterns gated on tests/ and docs/ as well as on src/.
+EVERYWHERE_PATTERNS = {"field-number"}
 
 ADD_CONDITION_RE = re.compile(
     r"\badd_condition\(\s*[\w.\[\]]*\.field_id\s*[,)]"
@@ -246,10 +249,11 @@ def main(argv=None):
         for pattern_id, lineno, text in scan_file(path):
             hits.append((file_key, pattern_id, lineno, text))
     if not args.paths:
-        for path in collect_files([REPO_ROOT / "tests"], SOURCE_SUFFIXES):
+        for path in (collect_files([REPO_ROOT / "tests"], SOURCE_SUFFIXES)
+                     + collect_files([REPO_ROOT / "docs"], DOCS_SUFFIXES)):
             file_key = relative_key(path)
             for pattern_id, lineno, text in scan_file(path):
-                if pattern_id in TESTS_PATTERNS:
+                if pattern_id in EVERYWHERE_PATTERNS:
                     hits.append((file_key, pattern_id, lineno, text))
 
     allowed = set() if args.no_allowlist else load_allowlist(args.allowlist)
@@ -286,7 +290,8 @@ def main(argv=None):
         for path in docs_files:
             file_key = relative_key(path)
             for pattern_id, lineno, text in scan_file(path):
-                docs_hits.append((file_key, pattern_id, lineno, text))
+                if pattern_id not in EVERYWHERE_PATTERNS:
+                    docs_hits.append((file_key, pattern_id, lineno, text))
         print()
         if docs_hits:
             report_hits(docs_hits, f"docs/ report (informational only, {len(docs_hits)} hit(s)):")

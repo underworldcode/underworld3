@@ -13,7 +13,7 @@ a single stdlib-only scanner: `scripts/check_deprecated_patterns.py`.
 | `mesh-data` | §7 | `mesh.data` (coordinate read) | `mesh.X.coords` |
 | `hedging-name` | §3 | `def maybe_*` / `def try_*` / `def do_*` (and `_`-private forms) | a name stating what the function DOES |
 | `except-pass` | §4 | `except ...:` + bare `pass` with no comment nearby | a comment stating the sanctioned failure mode |
-| `field-number` | §6 | `add_condition(` whose first argument ends in `.field_id`; `f_id=` given a `.field_id`; `f_id` compared with a `.field_id` (also gated on `tests/`) | the solver's own field number: velocity 0, pressure 1, multipliers from 2 |
+| `field-number` | §6 | `add_condition(` whose first argument ends in `.field_id`; `f_id=` given a `.field_id`; `f_id` compared with a `.field_id` (also gated on `tests/` and `docs/`) | the solver's own field number: velocity 0, pressure 1, multipliers from 2 |
 
 Detection is line-based and deliberately simple; the exact heuristics (and the
 documented exclusions, e.g. commented-out lines and `self.data` inside Mesh
