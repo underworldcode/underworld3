@@ -163,15 +163,19 @@ def mark_sheets(sheets, clearance):
 
 
 def mark_band(paths, width, clearance):
-    """The marking rule for a placed fault band (``place_thin_volume``): a
-    superset of the placement's own mask, so its gather finds the region
-    rank-interior. The placement marks every vertex within
-    ``max(clearance h, 0.6 width) + h`` of the band's skin (``h`` the
-    smallest incident cell diameter); the skin lies within a mitred half
-    width of the band's path, so a vertex within that reach plus one band
-    width of the path is marked here. ``paths`` are the paths the band is
-    built along: ``(n, 2)`` polylines in 2-D, planar convex ``(n, 3)``
-    polygons in 3-D (the patches)."""
+    """The marking rule for a placed fault band (``place_thin_volume``) whose
+    skin stays within a mitred half width of its path: a superset of the
+    placement's own mask, so its gather finds the region rank-interior. The
+    placement marks every vertex within ``max(clearance h, 0.6 width) + h``
+    of the band's skin (``h`` the smallest incident cell diameter), so a
+    vertex within that reach plus one band width of the path is marked here.
+    ``paths`` are the paths the band is built along: ``(n, 2)`` polylines in
+    2-D, planar convex ``(n, 3)`` polygons in 3-D (the patches).
+
+    The condition on the skin holds for the 3-D band, which does not outcrop.
+    It does not hold for a 2-D ladder band that outcrops, whose cap runs
+    along the wall past the path's end; the ribbon marks from the skin itself
+    (``place_surface._ribbon_region_marks``)."""
     paths = [np.asarray(P, dtype=float) for P in paths]
 
     def marks(dm):
