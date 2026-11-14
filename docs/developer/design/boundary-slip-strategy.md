@@ -487,8 +487,9 @@ authoritative while it is registered and not released.
   that holds a wall vertex back all move a wall and leave its declaration standing.
   Each of those must release before a method relies on the accessor.
 - A constructor does not declare what the mesh does not hold: a solid disc or ball
-  has no inner wall, and a refined `SphericalShellInternalBoundary` withdraws its
-  `Internal` sphere, which refinement leaves on the coarse chords (#949).
+  has no inner wall. A refined `SphericalShellInternalBoundary` declares its
+  `Internal` sphere because the refinement callback moves that surface's new
+  vertices onto it, as it does the walls' (#949 item 3).
 - No tolerance appears at run time. A distance check belongs in the tests of each
   preserving operation, as a small multiple of machine epsilon times the radius.
 
