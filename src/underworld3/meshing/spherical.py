@@ -742,8 +742,9 @@ def SphericalShellInternalBoundary(
     # is called if the general mesh routine does some refinement
     # and the new dm object needs some tweeks
 
-    # TODO(BUG): the Internal surface is not snapped back onto radiusInternal, so
-    # after refinement it stays faceted while its normal is the analytic radial one.
+    # TODO(BUG): #949 item 3. The Internal surface is not snapped back onto
+    # radiusInternal, so after refinement it stays faceted while its normal is the
+    # analytic radial one (the constructor withdraws its declaration below).
     def spherical_mesh_refinement_callback(dm):
         r_o = radiusOuter
         r_i = radiusInner
@@ -833,10 +834,10 @@ def SphericalShellInternalBoundary(
                       "Internal": radiusInternal},
         interior=("Internal",))
 
-    # TODO(BUG): #949 item 3. Refinement places the new vertices of the Internal
-    # surface on the chords of the coarse one (the refinement callback moves only
-    # Upper and Lower), so a refined mesh is not on the sphere declared above.
-    # Until refinement moves them onto it, the declaration is withdrawn.
+    # Refinement places the new vertices of the Internal surface on the chords of
+    # the coarse one (the refinement callback moves only Upper and Lower; see the
+    # TODO(BUG) on the callback), so a refined mesh is not on the sphere declared
+    # above. Until refinement moves them onto it, the declaration is withdrawn.
     if refinement:
         new_mesh.bounding_surfaces["Internal"].release(
             "refinement placed its new vertices on the chords of the coarse surface, "
