@@ -287,8 +287,20 @@ def inherit_provenance(child, host):
     if not recorded and reference is None:
         return
     comm = child.dm.getComm().tompi4py()
-    fcent, vxy_child, cvf = _cell_centroids(child)
-    _c, vxy_h, cv_h = _cell_centroids(host)
+    # Everything above reads attributes every rank holds alike, so it cannot
+    # fail on one rank alone. The cell tables are read from each rank's own
+    # cells, so a failure there is raised on every rank, before any location:
+    # an exception on one rank alone would leave the others in the verdicts
+    # below, where an enclosing verdict (split_tail_levels) could pair with
+    # them on the same communicator (#874).
+    problem = None
+    try:
+        fcent, vxy_child, cvf = _cell_centroids(child)
+        _c, vxy_h, cv_h = _cell_centroids(host)
+    except Exception as err:   # sanctioned: raised on every rank just below
+        problem = (f"addon_partition: reading the cells of a surgery's result "
+                   f"or its host failed: {type(err).__name__}: {err}")
+    _collective_raise(problem)
     if recorded:
         cell = np.zeros(cvf.shape[0], dtype=np.int64)
         n_bad = 0

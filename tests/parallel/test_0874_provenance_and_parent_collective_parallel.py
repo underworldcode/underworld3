@@ -66,6 +66,9 @@ def _same_error_everywhere(call, name, message, when=None, error=RuntimeError):
             call()
         except RuntimeError as err:
             assert isinstance(err, error), type(err)
+            # another builder cannot change a failed location or weight: the
+            # build degrades at once instead of retrying (#1165 review)
+            assert not getattr(err, "builder_failure", False)
             caught = str(err)
     finally:
         setattr(fault_mg, name, original)
