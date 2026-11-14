@@ -4979,22 +4979,24 @@ class SolverBaseClass(uw_object):
             self.snes.destroy()
             self.snes = None
 
+        # The cached field index sets (Stokes specific but safe to check here)
+        # describe the section of the DM being replaced. They go whether or not
+        # that DM is still here: ``_reset()`` drops the DM and leaves them.
+        if hasattr(self, "_pressure_is") and self._pressure_is is not None:
+            self._pressure_is.destroy()
+            self._pressure_is = None
+        if hasattr(self, "_velocity_is") and self._velocity_is is not None:
+            self._velocity_is.destroy()
+            self._velocity_is = None
+
+        if getattr(self, "_multiplier_is", None):
+            for mis in self._multiplier_is.values():
+                mis.destroy()
+            self._multiplier_is = {}
+
         if self.dm is not None:
             if verbose and uw.mpi.rank == 0:
                 print(f"Destroy solver DM hierarchy", flush=True)
-
-            # Clean up field decomposition cache (Stokes specific but safe to check here)
-            if hasattr(self, "_pressure_is") and self._pressure_is is not None:
-                self._pressure_is.destroy()
-                self._pressure_is = None
-            if hasattr(self, "_velocity_is") and self._velocity_is is not None:
-                self._velocity_is.destroy()
-                self._velocity_is = None
-
-            if getattr(self, "_multiplier_is", None):
-                for mis in self._multiplier_is.values():
-                    mis.destroy()
-                self._multiplier_is = {}
 
             if hasattr(self, "_subdict") and self._subdict:
                 for name, (is_set, subdm) in self._subdict.items():
@@ -10683,11 +10685,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         except Exception:
             # Sanctioned: a Jacobian PETSc will not describe yet records "not attached"
             attached = False
-        try:
-            pbcs = sorted({bc.boundary for bc in self._pressure_dirichlet_bcs()})
-        except Exception:
-            # Sanctioned: no pressure field decomposition yet; recorded as none
-            pbcs = []
+        pbcs = sorted({bc.boundary for bc in self._pressure_dirichlet_bcs()})
         cm = getattr(self, "constitutive_model", None)
         reg = {}
         for name in ("plastic_rate_strengthening", "shear_viscosity_min", "yield_stress_min", "strainrate_inv_II_min"):
@@ -10755,11 +10753,10 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
     def _pressure_dirichlet_bcs(self):
         """Return essential boundary conditions applied to the pressure field."""
 
-        pressure_field_id = getattr(getattr(self, "p", None), "field_id", None)
-        if pressure_field_id is None:
-            raise RuntimeError("Pressure field is unavailable; cannot inspect pressure Dirichlet BCs.")
-
-        return [bc for bc in self.essential_bcs if bc.f_id == pressure_field_id]
+        # A condition carries the solver's field number (velocity 0, pressure 1).
+        # The pressure variable's position among the mesh's variables is another
+        # number: it depends on the order the variables were created in.
+        return [bc for bc in self.essential_bcs if bc.f_id == 1]
 
     def _build_pressure_nullspace_vector(self):
         """Create the constant-pressure basis vector for the coupled Stokes DM."""
@@ -12553,48 +12550,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                 finally:
                     cell_is.destroy()
 
-            local_section = self.dm.getLocalSection()
-            pStart, pEnd = local_section.getChart()
-            out = {}
-
-            for name, var in self.fields.items():
-                field_id = getattr(var, "_solver_field_id", None)
-                if field_id is None:
-                    field_id = getattr(var, "field_id", None)
-                if field_id is None:
-                    continue
-
-                is_field = None
-                created_is_field = False
-                if name == "velocity" and getattr(self, "_velocity_is", None) is not None:
-                    is_field = self._velocity_is
-                elif name == "pressure" and getattr(self, "_pressure_is", None) is not None:
-                    is_field = self._pressure_is
-                elif getattr(self, "_multiplier_is", None) is not None and name in self._multiplier_is:
-                    is_field = self._multiplier_is[name]
-                else:
-                    indices = []
-                    for point in range(pStart, pEnd):
-                        dof = local_section.getFieldDof(point, field_id)
-                        if dof > 0:
-                            offset = local_section.getFieldOffset(point, field_id)
-                            for i in range(dof):
-                                indices.append(offset + i)
-
-                    is_field = PETSc.IS().createGeneral(indices, comm=PETSc.COMM_SELF)
-                    created_is_field = True
-
-                try:
-                    subvec = flocal.getSubVector(is_field)
-                    try:
-                        out[name] = np.array(subvec.array, copy=True)
-                    finally:
-                        flocal.restoreSubVector(is_field, subvec)
-                finally:
-                    if created_is_field:
-                        is_field.destroy()
-
-            return out
+            return self._local_vector_by_field(flocal)
         finally:
             self.dm.restoreLocalVec(flocal)
             self.dm.restoreLocalVec(xlocal)
@@ -12691,48 +12647,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                 dm.dm, wf, key, xvec.vec, NULL, 0.0, fvec.vec,
             ))
 
-            local_section = self.dm.getLocalSection()
-            pStart, pEnd = local_section.getChart()
-            out = {}
-
-            for name, var in self.fields.items():
-                field_id = getattr(var, "_solver_field_id", None)
-                if field_id is None:
-                    field_id = getattr(var, "field_id", None)
-                if field_id is None:
-                    continue
-
-                is_field = None
-                created_is_field = False
-                if name == "velocity" and getattr(self, "_velocity_is", None) is not None:
-                    is_field = self._velocity_is
-                elif name == "pressure" and getattr(self, "_pressure_is", None) is not None:
-                    is_field = self._pressure_is
-                elif getattr(self, "_multiplier_is", None) is not None and name in self._multiplier_is:
-                    is_field = self._multiplier_is[name]
-                else:
-                    indices = []
-                    for point in range(pStart, pEnd):
-                        dof = local_section.getFieldDof(point, field_id)
-                        if dof > 0:
-                            offset = local_section.getFieldOffset(point, field_id)
-                            for i in range(dof):
-                                indices.append(offset + i)
-
-                    is_field = PETSc.IS().createGeneral(indices, comm=PETSc.COMM_SELF)
-                    created_is_field = True
-
-                try:
-                    subvec = flocal.getSubVector(is_field)
-                    try:
-                        out[name] = np.array(subvec.array, copy=True)
-                    finally:
-                        flocal.restoreSubVector(is_field, subvec)
-                finally:
-                    if created_is_field:
-                        is_field.destroy()
-
-            return out
+            return self._local_vector_by_field(flocal)
         finally:
             self.dm.restoreLocalVec(flocal)
             self.dm.restoreLocalVec(xlocal)
@@ -12998,6 +12913,25 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         gvec.restoreSubVector(gis, sub)
         out = np.array(gvec.array, copy=True)
         self.dm.restoreGlobalVec(gvec)
+        return out
+
+    def _local_vector_by_field(self, lvec):
+        """Copies of a solver-DM local vector's entries, one array for each of ``self.fields``.
+
+        The cached index sets split the vector by the solver's field numbers
+        (velocity 0, pressure 1, then the multipliers). A variable's position
+        among the mesh's variables is another number.
+        """
+        self._ensure_local_field_index_sets(lvec, self.dm.getLocalSection())
+        field_is = {"velocity": self._velocity_is, "pressure": self._pressure_is,
+                    **self._multiplier_is}
+        out = {}
+        for name in self.fields:
+            subvec = lvec.getSubVector(field_is[name])
+            try:
+                out[name] = np.array(subvec.array, copy=True)
+            finally:
+                lvec.restoreSubVector(field_is[name], subvec)
         return out
 
     def _ensure_local_field_index_sets(self, clvec, local_section):
