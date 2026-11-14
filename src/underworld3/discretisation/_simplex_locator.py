@@ -12,7 +12,11 @@ neighbour, so it follows the boundary instead of leaving through it.
 
 A point that several cells contain (on a shared face, edge or vertex) is given
 the lowest-numbered local cell in the star of that entity, so the answer depends
-on the mesh and not on where the walk started.
+on the mesh and not on where the walk started. The one exception is a point within
+about ``ROUNDOFF`` (in barycentric coordinates) of an entity: whether it counts as on
+the entity can depend on the cell the walk reached it from, so its owning cell can
+depend on the start. Its value is the same to round-off either way, and each call is
+reproducible.
 
 This is the locator behind ``Mesh._robust_owning_cells`` for simplex volume
 meshes with straight-sided cells. Quadrilaterals, hexahedra, curved cells and
