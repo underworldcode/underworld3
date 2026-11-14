@@ -474,6 +474,7 @@ def global_evaluate_nd(   expr,
                 force_l2=False,
                 smoothing=1e-6,
                 local_fallback=True,
+                limit=None,
             ):
 
     """
@@ -522,6 +523,11 @@ def global_evaluate_nd(   expr,
     other_arguments: dict
         Dictionary of other arguments necessary to evaluate function.
         Not yet implemented.
+    limit: callable, optional
+        Passed to :func:`evaluate_nd` in every pass, so a bound that needs the
+        cell a point was interpolated in (the monotone clamp, #682) is applied
+        on the rank that evaluated the point, where that cell and its
+        closure's DOFs are local. Rank-local; it adds no collective.
 
     """
 
@@ -547,6 +553,7 @@ def global_evaluate_nd(   expr,
             check_extrapolated=check_extrapolated,
             force_l2=force_l2,
             smoothing=smoothing,
+            limit=limit,
         )
 
     # If in parallel, define a swarm, migrate, evaluate, migrate back
@@ -621,7 +628,7 @@ def global_evaluate_nd(   expr,
     # Forward `simplify`: without it the local evaluator's default (True) ran
     # sympy.simplify on every call for any expression holding a mesh variable
     # (14 of 25 s in a semi-Lagrangian step with a tanh velocity, 2026-09-08).
-    values, extrapolated = evaluate_nd(expr, local_coords, rbf=rbf, evalf=evalf, verbose=verbose, check_extrapolated=True, simplify=simplify,)
+    values, extrapolated = evaluate_nd(expr, local_coords, rbf=rbf, evalf=evalf, verbose=verbose, check_extrapolated=True, simplify=simplify, limit=limit,)
 
     if local_coords.shape[0] > 0:
         # Into storage by _data_layout, which keeps a MATRIX by column: the read
@@ -733,7 +740,7 @@ def global_evaluate_nd(   expr,
             # value path — see DEADLOCK SAFETY above (must be rbf=True, never FE).
             ext_vals, ext_flag = evaluate_nd(
                 expr, all_ext, rbf=True, evalf=False, verbose=False, simplify=simplify,
-                check_extrapolated=True,)
+                check_extrapolated=True, limit=limit,)
             ext_vals = np.ascontiguousarray(
                 np.asarray(ext_vals, dtype=np.float64).reshape((n_ext_total,) + expr_shape))
             ext_flag = np.asarray(ext_flag).reshape(n_ext_total).astype(np.int32)
@@ -1122,7 +1129,8 @@ def evaluate_nd(   expr,
                 data_layout=None,
                 check_extrapolated=False,
                 force_l2=False,
-                smoothing=1e-6):
+                smoothing=1e-6,
+                limit=None):
     """
     Internal: Evaluate expression at coordinates (Cython implementation).
 
@@ -1154,6 +1162,12 @@ def evaluate_nd(   expr,
     other_arguments: dict
         Dictionary of other arguments necessary to evaluate function.
         Not yet implemented.
+    limit: callable, optional
+        ``limit(values, cells)`` returns ``values`` bounded, given for each
+        point the cell its value was interpolated in (``-1`` for a point no
+        cell owns, whose value comes from the bounded RBF rung). Applied here,
+        on the rank that evaluated the points, before any data_layout
+        packing. Used by the monotone clamp (#682).
     """
 
     # NOTE: Coordinates should be non-dimensional [0-1] at this point
@@ -1163,6 +1177,8 @@ def evaluate_nd(   expr,
     coords_array = np.array(coords, dtype=np.float64, copy=False).view(np.ndarray)
 
     dim = coords_array.shape[1]
+    # The cell each value was interpolated in, for `limit`; -1 = no cell (RBF).
+    evaluated_cells = np.full(coords_array.shape[0], -1, dtype=np.int64)
     mesh, varfns, derivfns = uw.function.fn_mesh_vars_in_expression(expr)
 
     # coercion - make everything at least a 1x1 matrix for consistent evaluation results
@@ -1267,7 +1283,10 @@ def evaluate_nd(   expr,
                                     mesh,
                                     simplify=simplify,
                                     verbose=verbose,
-                                    cell_hints=cell_hints[in_or_not], )
+                                    cell_hints=cell_hints[in_or_not],
+                                    return_cells=True, )
+        evaluation_interior, interior_cells = evaluation_interior
+        evaluated_cells[in_or_not] = interior_cells
 
         evaluation_interior = np.atleast_1d(evaluation_interior) # handle case where there is only 1 interior point
 
@@ -1291,6 +1310,9 @@ def evaluate_nd(   expr,
         evaluation[in_or_not,...] = evaluation_interior
         evaluation[~in_or_not,...] = evaluation_exterior
         # evaluation = evaluation.squeeze() # consistent behavior with mesh is None and only 1 coord input
+
+    if limit is not None:
+        evaluation = limit(evaluation, evaluated_cells)
 
     ## We should change this so both evaluation routines return an array that has
     ## shape == (N,i,j) where N is the number of points and where (i,j) is the shape of the evaluation type
@@ -1332,7 +1354,8 @@ def petsc_interpolate(   expr,
                 other_arguments=None,
                 simplify=False,
                 verbose=False,
-                cell_hints=None, ):
+                cell_hints=None,
+                return_cells=False, ):
     """
     Evaluate a given expression at a list of coordinates.
 
@@ -1359,6 +1382,11 @@ def petsc_interpolate(   expr,
         twice. Hints must have been located against ``mesh``; hints for any
         other mesh in the expression are ignored and that mesh locates its
         own.
+    return_cells: bool, optional
+        Also return, per coordinate, the cell of ``mesh`` the value was
+        interpolated in (the evaluator's own answer: the hint it was given or
+        the cell DMLocatePoints found), ``-1`` where no cell owns the point and
+        the value came from the RBF rung. Returns ``(values, cells)``.
 
     Notes
     -----
@@ -1393,7 +1421,10 @@ def petsc_interpolate(   expr,
     if uw.function.fn_is_constant_expr(expr):
 
         constant_value = uw.function.expressions.unwrap(expr, keep_constants=False)
-        return np.multiply.outer(np.ones(coords.shape[0]), np.array(constant_value, dtype=float))
+        constant_result = np.multiply.outer(np.ones(coords.shape[0]), np.array(constant_value, dtype=float))
+        if return_cells:
+            return constant_result, np.full(coords.shape[0], -1, dtype=np.int64)
+        return constant_result
 
 
     if (not coords is None) and not isinstance( coords, np.ndarray ):
@@ -1468,6 +1499,8 @@ def petsc_interpolate(   expr,
     # Any cell hints the caller supplied were located against THIS mesh; an
     # expression spanning two meshes must locate the second one itself.
     hinted_mesh = mesh
+    # The cells the evaluator used on that mesh, for return_cells.
+    evaluated_cells = {}
 
     def interpolate_vars_on_mesh( varfns, np.ndarray coords ):
         """
@@ -1683,6 +1716,14 @@ def petsc_interpolate(   expr,
                 var_start = var_start_index[var]
                 outarray[:, var_start:var_start + var.num_components] = \
                     var._nearest_point_values(coords, ip_cells)
+        if mesh is hinted_mesh:
+            located = getattr(cached_info, "located_cells", None)
+            if located is None:
+                located = np.full(coords.shape[0], -1, dtype=np.int64)
+            located = np.array(located, dtype=np.int64, copy=True)
+            if unlocated is not None:
+                located[np.asarray(unlocated, dtype=bool)] = -1
+            evaluated_cells["cells"] = located
         # === END CACHING ===
 
         # Create map between array slices and variable functions
@@ -1718,7 +1759,13 @@ def petsc_interpolate(   expr,
     #   - gradient_evaluation.compute_clement_gradient_at_nodes(var)
 
     # Symbol substitution, lambdify, and evaluate (shared with rbf_evaluate)
-    return _lambdify_and_evaluate(expr, coords, interpolated_results, coord_sys, mesh)
+    values = _lambdify_and_evaluate(expr, coords, interpolated_results, coord_sys, mesh)
+    if return_cells:
+        cells_used = evaluated_cells.get("cells")
+        if cells_used is None:
+            cells_used = np.full(coords.shape[0], -1, dtype=np.int64)
+        return values, cells_used
+    return values
 
 # Go ahead and substitute for the timed version.
 # Note that we don't use the @decorator sugar here so that

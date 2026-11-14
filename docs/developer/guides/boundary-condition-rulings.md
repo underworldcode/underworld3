@@ -52,6 +52,10 @@ Nitsche condition (`add_nitsche_bc`). Two rulings come with it:
   so a solver carrying it takes the matrix route for its adjoint and
   refuses a parameter in a Dirichlet datum until the boundary tangent is
   in the reaction term.
+- On Stokes, a parameter in a Nitsche datum also enters the condition's
+  continuity-row term, which is tested against the pressure adjoint: pass
+  `lam=` (the pressure part of the `adjoint_solve` target) to
+  `sensitivity`, which refuses without it (#1143).
 
 ## Natural conditions: tractions and fluxes
 

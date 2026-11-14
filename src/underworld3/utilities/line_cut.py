@@ -416,8 +416,11 @@ def _resolve_snapping(dm, X, ends, lines, snap_frac, scale, snap_quality=0.5,
     # repeatedly. Measured: a relative 0.5 over six refine-and-snap rounds
     # licenses 0.5**6 of the original, and the worst angle duly fell 15.4 -> 2.3
     # degrees while every individual round looked well behaved.
+    # The winding convention, voted over every rank once (#874).
+    flip = _global_flip(X[np.asarray(cell_verts, dtype=np.int64).reshape(-1, 3)],
+                        dm.getComm())
     floor = (None if snap_quality is None else
-             np.minimum(snap_quality, np.abs(_cell_quality(X, cell_verts))))
+             np.minimum(snap_quality, np.abs(_cell_quality(X, cell_verts, flip))))
     # Vertices ALREADY on the line — a tip or junction placed by
     # `pull_vertex_onto` — do not move, so they cannot ruin anything and must
     # never be vetoed. Vetoing one would unplace the very point that makes a
@@ -495,7 +498,7 @@ def _resolve_snapping(dm, X, ends, lines, snap_frac, scale, snap_quality=0.5,
         if proposed.any():
             X_try[proposed] = _project_onto_lines(X[proposed], lines)
         fresh = np.zeros(len(X), dtype=bool)
-        quality = _cell_quality(X_try, cell_verts)
+        quality = _cell_quality(X_try, cell_verts, flip)
         ruined = (np.zeros(len(cell_verts), dtype=bool) if floor is None
                   else (quality <= 0.0) | (quality < floor))
         if ruined.any():
@@ -616,7 +619,7 @@ def _face_is_on_the_domain_boundary(dm, face, on_wall, shared):
     return len(dm.getSupport(edge)) == 1 and not shared[edge - pStart]
 
 
-def _cell_quality(X, cell_verts):
+def _cell_quality(X, cell_verts, flip=None):
     """Scale-free triangle quality: 1 equilateral, 0 degenerate, <0 inverted.
 
     ``4 sqrt(3) A / sum(l^2)``, signed through the area. The sign matters: an
@@ -629,26 +632,63 @@ def _cell_quality(X, cell_verts):
     P = X[cell_verts]
     e = np.stack([P[:, 2] - P[:, 1], P[:, 0] - P[:, 2], P[:, 1] - P[:, 0]],
                  axis=1)
-    twice_area = _signed_twice_areas(P)
+    twice_area = _signed_twice_areas(P, flip)
     return 2.0 * np.sqrt(3.0) * twice_area / np.maximum(
         (e ** 2).sum(axis=(1, 2)), np.finfo(float).tiny)
 
 
-def _signed_twice_areas(P):
-    """Twice the signed area of each triangle ``P[:, 0:3]``: the planar cross
-    product in two dimensions; on a surface mesh in three, the cell normal
-    against the outward direction (the centroid's, the surface being a sphere
-    about the origin). A mesh is wound one way throughout, so the convention
-    is read off the majority and an inverted cell is one against it."""
-    if P.shape[2] == 2:
-        return ((P[:, 1, 0] - P[:, 0, 0]) * (P[:, 2, 1] - P[:, 0, 1])
-                - (P[:, 1, 1] - P[:, 0, 1]) * (P[:, 2, 0] - P[:, 0, 0]))
+def _outward_signed(P):
+    """On a surface mesh in three dimensions: each cell's normal against the
+    outward direction (the centroid's, the surface being a sphere about the
+    origin), before any orientation convention is applied."""
     n = np.cross(P[:, 1] - P[:, 0], P[:, 2] - P[:, 0])
     c = P.sum(axis=1)
-    signed = (n * c).sum(axis=1) / np.maximum(np.linalg.norm(c, axis=1), 1e-300)
-    if (signed < 0.0).sum() > 0.5 * len(signed):
-        signed = -signed
-    return signed
+    return (n * c).sum(axis=1) / np.maximum(np.linalg.norm(c, axis=1), 1e-300)
+
+
+def _global_flip(P, comm):
+    """The winding convention, voted over EVERY rank of ``comm`` (the mesh's
+    communicator; ``P`` is this rank's cells): True when most cells are wound
+    against the positive sense (inward on a surface mesh, clockwise in the
+    plane). A count, not a distance: each cell votes with the sign of its
+    own area. A tie or no cells at all gives no flip. Every rank gets the
+    same answer, so a rank whose own cells are mostly wound against the
+    majority still reads them as inverted, and a mesh wound clockwise
+    throughout reads none as inverted (#874). COLLECTIVE on ``comm``: only on
+    the collective paths (the snapping loop, the inversion count after a cut,
+    pull_vertex_onto)."""
+    if not len(P):
+        signed = np.zeros(0)
+    elif P.shape[2] == 2:
+        signed = _planar_signed(P)
+    else:
+        signed = _outward_signed(P)
+    neg, total = comm.tompi4py().allreduce(
+        np.array([int((signed < 0.0).sum()), len(signed)]), op=MPI.SUM)
+    return bool(neg > 0.5 * total)
+
+
+def _planar_signed(P):
+    """Twice each planar triangle's signed area (positive anticlockwise)."""
+    return ((P[:, 1, 0] - P[:, 0, 0]) * (P[:, 2, 1] - P[:, 0, 1])
+            - (P[:, 1, 1] - P[:, 0, 1]) * (P[:, 2, 0] - P[:, 0, 0]))
+
+
+def _signed_twice_areas(P, flip=None):
+    """Twice the signed area of each triangle ``P[:, 0:3]``: the planar cross
+    product in two dimensions; on a surface mesh in three, the cell normal
+    against the outward direction. A mesh is wound one way throughout, so the
+    convention is read off the majority and an inverted cell is one against
+    it: the global majority when ``flip`` is given (:func:`_global_flip`, on
+    a collective path), else this array's own (a rank-local caller). In the
+    plane a rank-local caller keeps the planar sign as it is."""
+    if P.shape[2] == 2:
+        signed = _planar_signed(P)
+        return -signed if flip else signed
+    signed = _outward_signed(P)
+    if flip is None:
+        flip = (signed < 0.0).sum() > 0.5 * len(signed)
+    return -signed if flip else signed
 
 
 def _cell_edge_counts(dm, crossed_edges, on_line_vertices):
@@ -741,7 +781,7 @@ def _label_cut_edges(dm, lines, tol, name, value):
     return marked
 
 
-def cell_areas(dm):
+def cell_areas(dm, global_vote=False):
     """Signed area of every triangle. Negative means the cell is inverted.
 
     A cell's cone holds its edges together with an orientation saying which way
@@ -760,7 +800,9 @@ def cell_areas(dm):
             ring.append(a if o >= 0 else b)
         rings.append(ring[:3])
     P = X[np.asarray(rings, dtype=np.int64)] if rings else np.empty((0, 3, X.shape[1]))
-    return 0.5 * _signed_twice_areas(P)
+    # global_vote is for a caller every rank reaches (it is collective): the
+    # inversion count after a cut. Rank-local callers keep their own vote.
+    return 0.5 * _signed_twice_areas(P, _global_flip(P, dm.getComm()) if global_vote else None)
 
 
 def min_angles(dm):
@@ -1039,7 +1081,7 @@ def cut_along_lines(dm, lines, snap_frac=0.10, label=CUT_LABEL, label_value=1,
     # on the partition, so this raise was rank-local at np>1 while its peers went
     # on into `Mesh(cut_dm, ...)` and waited there. Measured: snap_frac=0.49 on a
     # 1/12 box inverts a cell.
-    areas = cell_areas(cut)
+    areas = cell_areas(cut, global_vote=True)
     n_inverted = uw.mpi.comm.allreduce(int((areas <= 0.0).sum()), op=MPI.SUM)
     if n_inverted:
         raise RuntimeError(
@@ -1241,8 +1283,13 @@ def pull_vertex_onto(dm, targets, min_quality=0.1):
             "the mesh could take a boundary vertex. Pass the mesh without "
             "overlap; `Mesh.dm` has none.")
     # the way each cell is wound, read from the mesh as given: a cell that an
-    # earlier target of this call turned over is inverted, not wound backwards
-    wound = np.where(_cell_quality(X, cell_verts) < 0.0, -1.0, 1.0)
+    # earlier target of this call turned over is inverted, not wound backwards.
+    # On a surface mesh the sign is read under ONE convention for the whole
+    # call, voted over every rank (_global_flip, #874): a rank-local majority
+    # could change between the readings below and flip every cell's sign.
+    flip = _global_flip(X[np.asarray(cell_verts, dtype=np.int64).reshape(-1, 3)],
+                        dm.getComm())
+    wound = np.where(_cell_quality(X, cell_verts, flip) < 0.0, -1.0, 1.0)
 
     cdim = X.shape[1]
     for t in np.atleast_2d(np.asarray(targets, dtype=float))[:, :cdim]:
@@ -1369,10 +1416,10 @@ def pull_vertex_onto(dm, targets, min_quality=0.1):
             # have left it. The cells around a vertex are spread across the
             # ranks sharing it, so the count is reduced, on every rank: the
             # note is the same on all.
-            before = _cell_quality(arr, cell_verts) * wound
+            before = _cell_quality(arr, cell_verts, flip) * wound
             moved = arr.copy()
             moved[hit] = t
-            after = _cell_quality(moved, cell_verts) * wound
+            after = _cell_quality(moved, cell_verts, flip) * wound
             ruined = (np.isin(cell_verts, hit).any(axis=1)
                       & ((after <= 0.0)
                          | (after < np.minimum(min_quality, before))))

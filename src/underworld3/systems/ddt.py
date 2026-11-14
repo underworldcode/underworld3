@@ -2963,8 +2963,9 @@ class SemiLagrangian(_DDtBase):
         # preserving FE accuracy elsewhere.
         #   None    → pure FE (legacy; can overshoot at non-nodal
         #             points in cells with sharp gradients)
-        #   "clamp" → B.2: clip FE result to [nbr_min, nbr_max] of
-        #             the k=dim+1 nearest psi_star DOFs
+        #   "clamp" → B.2: clip FE result to the [min, max] of the
+        #             psi_star DOFs in the closure of the cell it was
+        #             interpolated in (#682)
         #   "pick"  → B.1: keep FE if in nbr bounds, else re-evaluate
         #             via RBF (Shepard) at out-of-bounds DOFs
         # Settable after construction:
@@ -3277,8 +3278,17 @@ class SemiLagrangian(_DDtBase):
             # behaviour for this DDt's stack.
             snap = {v: ctx.managed_snapshot[v]
                     for v in owned if v in ctx.managed_snapshot}
-            remap_var_set(self.mesh, owned,
-                          ctx.old_X, ctx.new_X, snap)
+            # The dispatcher does not let a hook's exception through, so a
+            # failed transfer is handed to the remesh, which raises on every
+            # rank once the move is complete (#960).
+            failed = remap_var_set(self.mesh, owned,
+                                   ctx.old_X, ctx.new_X, snap, raise_on_failure=False)
+            if failed:
+                pending = getattr(self.mesh, "_remesh_failed_transfer", None)
+                if pending is None:
+                    self.mesh._remesh_failed_transfer = list(failed)
+                else:
+                    pending.extend(failed)
             # The ALE pulse / old-frame reach are meaningless on a
             # discrete reset; clear any pending state so the next solve
             # does a plain (current-mesh) trace-back.

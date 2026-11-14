@@ -199,11 +199,21 @@ def test_a_field_valued_pin_is_reported_as_possibly_nonzero(capsys):
 
 
 @pytest.mark.tier_b
-def test_the_older_components_form_of_an_essential_condition_still_solves(capsys):
-    """``add_dirichlet_bc(0.05, "Left", 1)`` stores one value for one component."""
+def test_the_older_short_components_form_is_refused_on_every_rank(capsys):
+    """``add_dirichlet_bc(0.05, "Left", 1)``, a one-entry value naming component 1,
+    prescribed a value nobody wrote (#1129). It is refused at the call, with the
+    same message on every rank, before any record exists for the rotated-wall
+    check to read."""
+    message = ""
     with pytest.warns(DeprecationWarning):
-        warnings = _lid_against_a_pinned_wall(0.05, capsys, deprecated_component=1)
-    assert len(warnings) == 1 and "component of 0.04 along the wall normal" in warnings[0]
+        try:
+            _lid_against_a_pinned_wall(0.05, capsys, deprecated_component=1)
+        except ValueError as refusal:
+            message = str(refusal)
+    messages = uw.mpi.comm.allgather(message)
+    assert len(set(messages)) == 1, messages
+    assert "names component 1, which has none" in messages[0], messages[0]
+    assert "(None, 0.05)" in messages[0], messages[0]
 
 
 @pytest.mark.tier_b
