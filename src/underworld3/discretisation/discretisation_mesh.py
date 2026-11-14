@@ -8045,6 +8045,13 @@ class Mesh(Stateful, uw_object):
             cc = numpy.asarray(cc, dtype=numpy.int64).reshape(lost.shape[0], -1)
             cells[lost] = locator.locate(coords[lost], cc[:, 0],
                                          restarts=[cc[:, j] for j in range(1, cc.shape[1])])
+            # The walk and its restarts can still miss a contained point (on a
+            # strongly sheared mesh a partition seam or the wall can wall it off:
+            # #1183). The exact fallback tests every cell whose bounding box
+            # holds the point, so a point some local cell contains is found.
+            still = lost[cells[lost] < 0]
+            if still.shape[0] > 0:
+                cells[still] = locator.cells_containing(coords[still])
         found = cells >= 0
         cells[found] += locator.cStart
         exit_cell[cells >= 0] = -1
