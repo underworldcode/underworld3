@@ -145,8 +145,8 @@ stokes.penalty = 0.0
 # Boundary conditions (free-slip)
 stokes.add_dirichlet_bc((0.0), "Left", (0))
 stokes.add_dirichlet_bc((0.0), "Right", (0))
-stokes.add_dirichlet_bc((0.0), "Top", (1))
-stokes.add_dirichlet_bc((0.0), "Bottom", (1))
+stokes.add_dirichlet_bc((None, 0.0), "Top")
+stokes.add_dirichlet_bc((None, 0.0), "Bottom")
 
 # Buoyancy force
 buoyancy_force = params.uw_rayleigh * t_soln.sym[0]

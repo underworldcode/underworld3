@@ -114,6 +114,14 @@ its state until the fix is released:
 An open issue without either label is live. One with a label has a fix, and the label
 says where it is, so it is not investigated again.
 
+**An enhancement request that was filed as an issue is moved to the roadmap**
+(Louis, 2026-11-13). Create a draft item with Status Inbox and its Kind, Area and
+Added fields set. Its body says what is done, what is left and what would settle
+it, and links the issue. Label the issue `roadmap` (and `enhancement` if it is
+one), comment on it naming the roadmap item, and close it as "not planned". The
+comment says that the work is not rejected: GitHub has no state for "moved to the
+roadmap".
+
 ## Writing wiki pages
 
 **Structure.** Pages are organised by topic, with campaigns and benchmarks in their own

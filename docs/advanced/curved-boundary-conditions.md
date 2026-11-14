@@ -33,45 +33,128 @@ This can cause significant errors in free-slip boundary conditions.
 
 ---
 
-## Four Approaches
+## Five Approaches
 
-### 1. Nitsche Free-Slip (Recommended)
-
-Nitsche's method provides a variationally consistent alternative to penalty
-that is insensitive to the penalty magnitude and gives optimal convergence:
+### 1. Rotated Strong Free-Slip (Recommended)
 
 ```python
-stokes.add_nitsche_bc(0.0, "Upper", gamma=10)
+stokes.add_rotated_freeslip_bc(0, "Upper")
 ```
 
-The method automatically constructs penalty, consistency (stress flux),
-symmetry, and pressure coupling terms. The `gamma` parameter is dimensionless
-and mesh-independent — `gamma=10` works for P2 elements regardless of
-resolution or viscosity.
+The velocity at each boundary node is rotated into a (normal, tangential)
+frame and the normal component is fixed, as an essential condition would fix a
+Cartesian component on a flat wall. The value comes first: `0` is free slip, and
+a scalar expression or field prescribes the wall-normal velocity.
+
+What it gives:
+
+- `v·n = 0` at every boundary node to machine precision, on curved and deformed
+  boundaries, with nothing to tune.
+- The constraint reaction is the wall normal traction, read with
+  `stokes.boundary_normal_traction("Upper")` or written as topography with
+  `stokes.dynamic_topography(...)`.
+
+The default normal is the measure-weighted node normal of the mesh,
+`mesh.boundary_normal(boundary)`: the average of the facet normals at each node,
+weighted by facet length (area in 3-D). It is the normal consistent with what the
+solver integrates. **On a faceted curved wall, leave the normal to Underworld3.**
+Passing the surface's own normal with `normal=` adds one equation on the wall
+slip. Where the facets are of unequal length the solve meets that equation to
+round-off and loses most of the slip in doing so (issue #1168): on the elliptical
+annulus of the comparison at the end of this page, rotated free slip with the ellipse's own normal is 43.7 % and
+44.6 % from the reference at cell sizes 0.1 and 0.05, with a large constant
+pressure, while the default normal is 0.19 % at both (issue #1168, open). Where
+the facets on a wall are of equal length, as on an unrefined, unadapted circle,
+the two normals give the same answer; a graded or adapted circular wall has
+unequal facets.
+
+**Accuracy.** On the annulus with an exact solution (Kramer et al. 2021), the
+error of the reaction against the exact wall normal stress is 6.8e-3, 3.3e-3,
+2.1e-3 and 1.1e-3 at cell sizes 0.15, 0.10, 0.075 and 0.05, and the flow through
+the wall is 5e-11 to 1e-10, the solver's floor (Underworld technical note
+2026-016). On the Cartesian box in the table under approach 2, at cell size 1/8,
+the rotated answer differs from the essential one by 2e-8, the solver tolerance
+being 1e-6 (rerun, November 2026).
+
+**When to use:** free slip on any exterior boundary that carries the same kind
+of condition for the whole run. This is the default choice.
+Details are in the developer page
+[Rotated strong free-slip](../developer/subsystems/rotated-freeslip.md).
+
+
+### 2. Nitsche (For Conditions That Change During the Model)
+
+A rotated constraint is a hard (essential) condition, so it cannot be ramped from
+one kind of condition to another during the run, for example from a fixed
+velocity to a traction. Nitsche's method imposes the condition weakly, as boundary
+terms in the weak form, whose weight can change. Use it for a condition that must
+evolve in time:
+
+```python
+stokes.add_nitsche_bc(0.0, "Upper")
+```
+
+The method adds a penalty term, the consistency (stress flux) and symmetry
+terms, and the pressure coupling in the continuity equation.
+
+**Choosing `gamma`.** The penalty coefficient is `gamma * viscosity / h`, with
+`h` the local cell size, so `gamma` is dimensionless: the coefficient follows the
+viscosity and the cell size by construction. A larger `gamma` holds the wall
+more tightly. The flow through the wall falls as `gamma` rises, but it is a poor
+guide: choose `gamma` against the quantity you need, which is usually the stress
+at the wall, and check that the answer does not move when `gamma` changes. The
+Nitsche numbers of technical note 2026-016 are being corrected for #1145 (see
+the note below), so none is quoted here. The examples here leave `gamma` at its
+default.
+
+**Curved walls that are not circles.** On the one such wall measured so far,
+the elliptical annulus of the comparison at the end of this page, Nitsche is 35.2 % and 39.5 % from the
+reference at the default `gamma` (cell sizes 0.1 and 0.05), 46.9 % and 46.2 % at
+`gamma = 1000`, with a large constant pressure in both, and 19.5 % and 11.3 %
+with the ellipse's own normal passed as `normal=` (issue #1168, open). Use
+rotated free slip with its default normal on such a wall.
 
 **Prescribed normal velocity:**
 ```python
-stokes.add_nitsche_bc(1.0, "Inlet", gamma=10)
+stokes.add_nitsche_bc(1.0, "Inlet")
 ```
 
-**Custom constraint direction** (e.g., fault normal different from surface normal):
+**Constraint along a direction that is not the wall normal** (e.g. basal shear
+on an exterior boundary; see *Internal Boundaries* below for why not on an
+internal label):
 ```python
-fault_normal = sympy.Matrix([0.6, 0.8])
-stokes.add_nitsche_bc(0.0, "Fault", direction=fault_normal, gamma=10)
+shear_direction = sympy.Matrix([0.6, 0.8])
+stokes.add_nitsche_bc(0.0, "Bottom", direction=shear_direction)
 ```
 
 **When to use:**
-- Free-slip on any geometry (boxes, annuli, spherical shells)
-- Spherical shell models where penalty is fragile
-- When you don't want to tune a penalty parameter
-- Basal shear constraints with custom direction
+- A boundary condition that switches on or off, or changes kind, during the run
+- A constraint along a direction that is not the wall normal (basal shear)
 
-**Accuracy:** Optimal convergence rate. On a Cartesian box test, Nitsche at
-`gamma=10` gives 0.08% velocity error vs the essential BC solution (penalty
-at 1e4 gives 0.15%).
+**Accuracy.** On a Cartesian box (buoyancy-driven flow, free slip on the top and
+bottom, P2/P1, cell size 1/8) the velocity differs from the essential-condition
+answer by the amounts below, and the wall-normal velocity it leaves is given
+relative to the largest speed (rerun, November 2026, on the code with the
+correction of #1145, described in the note after the table):
+
+| Condition | Difference from essential | Wall-normal velocity |
+|---|---|---|
+| Rotated free slip | 2e-8 | 0 |
+| Nitsche, `gamma = 10` | 0.20 % | 7.0e-3 |
+| Nitsche, default `gamma = 12.5` | 0.12 % | 4.3e-3 |
+| Nitsche, `gamma = 100` | 0.010 % | 3.3e-4 |
+| Nitsche, `gamma = 1000` | 0.0010 % | 3.3e-5 |
+| Penalty, coefficient 1e4 | 0.15 % | 1.5e-3 |
+
+```{note}
+Before November 2026 the pressure coupling of `add_nitsche_bc` in the
+continuity equation was not assembled (issue #1072, corrected in #1145). A
+Stokes answer with a Nitsche condition normal to a wall, computed before that
+correction, should be recomputed.
+```
 
 
-### 2. Penalty Free-Slip (Simple, and Only With the Node Normal)
+### 3. Penalty Free-Slip (Simple, and Only With the Node Normal)
 
 ```python
 n = mesh.boundary_normal("Boundary")     # measure-weighted node normal
@@ -98,7 +181,7 @@ leaks 1e-7 and is 26% wrong. This is the classical over-constraint that the
 
 **When to use:**
 - Quick prototyping where high accuracy isn't critical
-- When Nitsche is not yet available for your solver type
+- A solver that has neither the rotated nor the Nitsche condition
 
 **Limitations:**
 - Penalty must be tuned: too small → loose constraint, too large → ill-conditioning
@@ -107,7 +190,7 @@ leaks 1e-7 and is 26% wrong. This is the classical over-constraint that the
   evidence that the solution is right
 
 
-### 3. Projected Normals (Superseded by `mesh.boundary_normal`)
+### 4. Projected Normals (Superseded by `mesh.boundary_normal`)
 
 `mesh.boundary_normal(boundary)` assembles the measure-weighted node normal
 directly, tracks mesh deformation, and is correct in parallel, so the recipe
@@ -143,19 +226,20 @@ n_proj.data[:] /= mag
 stokes.add_natural_bc(penalty * n_proj.sym.dot(v.sym) * n_proj.sym, "Boundary")
 ```
 
-**When to use:**
-- Curved boundaries where you don't have an analytical formula
-- Complex geometries from CAD/imaging data
-- When you want good accuracy without deriving surface equations
+**When to use:** for a penalty condition on a version of Underworld3 without
+`mesh.boundary_normal`; otherwise use that.
 
-**Accuracy:** ~0.1% error compared to analytical normals
+**Accuracy:** on the elliptical annulus of the comparison at the end of this page, the penalty with projected normals
+is 0.10 % and 0.023 % from the reference at cell sizes 0.1 and 0.05 (rerun,
+November 2026). `mesh.boundary_normal` gives 0.19 % and 0.045 % (#1168).
 
 **Why it works:** The projection solves a weak-form problem that naturally smooths the discontinuous facet normals into a continuous field. The finite element basis functions interpolate between facets, approximating the true surface direction.
 
 
-### 4. Analytical Normals (Most Accurate)
+### 5. Analytical Normals (Penalty Only)
 
-Derive the surface normal from the mathematical definition of the boundary:
+For the penalty condition, the surface normal can be derived from the
+mathematical definition of the boundary:
 
 ```python
 import sympy
@@ -173,11 +257,17 @@ stokes.add_natural_bc(penalty * unit_normal.dot(v.sym) * unit_normal, "Outer")
 ```
 
 **When to use:**
-- Known geometric shapes (ellipses, superellipses, spheroids)
-- Highest accuracy requirements
-- Benchmarking and validation
+- A penalty condition on a known geometric shape (ellipses, superellipses,
+  spheroids), for example as a reference in a benchmark
 
-**Accuracy:** Exact (limited only by mesh resolution and quadrature)
+**Accuracy:** on the elliptical annulus of the comparison at the end of this page it agrees with the penalty with
+`mesh.boundary_normal` to 0.19 % and 0.045 % at cell sizes 0.1 and 0.05.
+
+```{warning}
+This applies to the penalty only. Do not pass the analytical normal to
+`add_rotated_freeslip_bc(..., normal=...)` on a faceted curved wall: there it
+makes the answer worse, not better (approach 1, issue #1168).
+```
 
 
 ---
@@ -236,18 +326,35 @@ unit_normal = normal / sympy.sqrt(normal.dot(normal))
 
 ## Experimental Comparison
 
-We tested the approaches on an elliptical annulus (ellipticity = 1.5) with a free-slip boundary condition:
+The elliptical annulus of the worked example (outer semi-axes 1.5 and 1, inner
+circle of radius 0.5, radial body force `cos(4 theta)`, P2/P1, free slip on both
+walls). The worked example itself uses only the penalty, with the facet normal
+`mesh.Gamma`, the projected normal and the ellipse's own normal; the other rows
+were run for this comparison. There is no exact solution for this geometry; the reference is the
+penalty (coefficient 1e4) with the ellipse's own normal. The measure is the
+relative L2 difference of the nodal velocity from the reference. Measured in
+November 2026 on two machines independently, which agree to the printed figures
+on every row both measured (table in issue #1168). Three rows were measured on
+one machine only: the projected normal, the `mesh.boundary_normal` penalty, and
+Nitsche with the ellipse's own normal. The penalty rows use coefficient 1e4.
 
-| Approach | Error vs Analytical | Notes |
-|----------|---------------------|-------|
-| Penalty + raw `mesh.Gamma` | 26.88% | Penalty-sensitive |
-| Penalty + projected normals | 0.06% | Requires projection solve |
-| Penalty + analytical normals | 0% (reference) | Requires surface formula |
-| Nitsche (default) | ~0.1% | No penalty tuning needed |
+| Wall condition | Cell 0.1 | Cell 0.05 |
+|---|---|---|
+| Rotated free slip, default normal | 0.19 % | 0.19 % |
+| Penalty, `mesh.boundary_normal` | 0.19 % | 0.045 % |
+| Penalty, projected normals | 0.10 % | 0.023 % |
+| Penalty, `mesh.Gamma` (facet) | 32.6 % | 15.1 % |
+| Nitsche, `normal=` the ellipse's own | 19.5 % | 11.3 % |
+| Nitsche, default | 35.2 % | 39.5 % |
+| Nitsche, `gamma = 1000` | 46.9 % | 46.2 % |
+| Rotated free slip, `normal=` the ellipse's own | 43.7 % | 44.6 % |
 
-Nitsche is recommended for most use cases — it matches the accuracy of
-projected normals without requiring a separate projection solve or penalty
-tuning.
+The first three are each within 0.2 % of the reference. That is inside the
+reference's own sensitivity: raising its coefficient from 1e4 to 1e6 moves it by
+9.9e-3, 2.1e-3 and 1.9e-3 at cell sizes 0.1, 0.05 and 0.025, so the comparison
+cannot separate these three. The facet-normal penalty and Nitsche with the
+ellipse's own normal approach the reference as the cells shrink. The last three
+do not, and carry a large constant pressure; their cause is open (issue #1168).
 
 ---
 
@@ -260,7 +367,7 @@ The error in boundary normals affects:
 3. **Traction boundary conditions**: Force direction errors
 4. **Stress computations**: Errors in computed surface stresses
 
-For many geodynamics applications, the ~25% error from raw normals may be acceptable for exploratory work but problematic for:
+For many geodynamics applications, the error from raw facet normals (32.6 % and 15.1 % on the ellipse above) is too large for:
 - Benchmark comparisons
 - Convergence studies
 - Quantitative predictions
@@ -295,7 +402,9 @@ adjacent cells with opposite normals. The Nitsche consistency and pressure
 terms flip sign between the two sides and partially cancel, injecting
 a spurious residual that degrades the solution. Testing on an annulus
 with an internal boundary showed that Nitsche produced *worse* constraint
-enforcement than no constraint at all.
+enforcement than no constraint at all. (That test predates the correction
+of the Nitsche pressure coupling, #1145 of November 2026, and has not been
+repeated since; the reason given here does not depend on it.)
 
 **For internal boundary constraints, continue using the penalty approach:**
 
@@ -319,13 +428,13 @@ in 3D spherical models where penalty sensitivity becomes problematic.
 
 ## Tips for Success
 
-1. **Start with Nitsche**: `stokes.add_nitsche_bc(0.0, "Upper", gamma=10)` — no penalty tuning needed
+1. **Start with rotated free slip**: `stokes.add_rotated_freeslip_bc(0, "Upper")` — nothing to tune; keep `add_nitsche_bc` for a condition that changes during the run
 2. **For penalty BCs, always normalize**: Analytical formulas need explicit normalization
 3. **Check orientation**: Ensure normals point outward (use `sign(r.dot(normal))`)
 4. **Verify visually**: Plot the normal field to catch errors
-5. **Use analytical normals for validation**: Compare against exact surface geometry when possible
+5. **Leave the normal to Underworld3 for rotated free slip**: on a faceted curved wall a given `normal=` makes the answer worse (issue #1168); analytical normals are for penalty references
 6. **Custom constraint direction**: Use `direction=` parameter when the constraint
-   direction differs from the surface normal (faults, basal shear)
+   direction differs from the surface normal (for example basal shear)
 
 ---
 
@@ -333,8 +442,10 @@ in 3D spherical models where penalty sensitivity becomes problematic.
 
 - [Custom Mesh Creation](custom-meshes.md) — Creating elliptical and complex meshes
 - [Stokes Ellipse Example](../examples/fluid_mechanics/intermediate/Ex_Stokes_Ellipse_Cartesian.py) — Complete worked example
+- [Rotated strong free-slip](../developer/subsystems/rotated-freeslip.md) — How the rotated constraint and its reaction work
+- Underworld technical note 2026-016, *Free-slip boundary conditions on curved boundaries* — The annulus comparison quoted on this page (its Nitsche numbers are being corrected for #1145)
 - Sime & Wilson (2020), [arXiv:2001.10639](https://arxiv.org/abs/2001.10639) — Nitsche free-slip for geodynamics
 
 ---
 
-*Last updated: April 2026*
+*Last updated: November 2026*

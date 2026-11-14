@@ -11,7 +11,7 @@ import numpy as np
 
 import underworld3 as uw
 
-from .graph import (_auto_pinned_labels, _pinned_mask,
+from .graph import (_pinned_labels_or_default, _pinned_mask,
                     _build_adjacency_matrix, _build_local_to_owned_map,
                     _tri_cells, _signed_areas,
                     _global_sum, _global_min, _global_max)
@@ -338,9 +338,7 @@ def _smooth_mesh_interior_bare(
     form to avoid nesting the snapshot/restore dance. End-users should
     keep using :func:`smooth_mesh_interior`.
     """
-    if pinned_labels is None:
-        pinned_labels = _auto_pinned_labels(mesh)
-    pinned_labels = tuple(pinned_labels)
+    pinned_labels = _pinned_labels_or_default(mesh, pinned_labels)
 
     # Resolve strategy defaults — individual kwargs override.
     # "off" → early-exit, mesh stays uniform.
