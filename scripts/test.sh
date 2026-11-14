@@ -415,6 +415,8 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   batch 3 tests/parallel/test_0874_mirrored_mesh_cut_parallel.py
   # So are the multigrid levels an adapt keeps, the same at any rank count (#865).
   batch 3 tests/parallel/test_1177_mg_levels_same_at_any_rank_count_parallel.py
+  # So is the monotone clamp by the containing cell, the same bound at any rank count for a point inside a cell (#682).
+  batch 3 tests/parallel/test_0682_clamp_by_containing_cell_parallel.py
   # test_106*/test_107* were held back pending "a triage/deselect decision". That
   # decision is made: the band is not the unit of exclusion. Of the 243 tests in
   # the deferred bands only 26 are level_3 or tier_c; 55 are level_1 AND tier_a —
@@ -583,6 +585,11 @@ if [ $PARALLEL_RANKS -gt 0 ] && shard_owns 4; then
     # (The variable lets Open MPI start three ranks on a two-slot host; MPICH ignores it.)
     OMPI_MCA_rmaps_base_oversubscribe=1 $SUPERVISE mpirun -n 3 python -m pytest --with-mpi \
       tests/parallel/test_1084_rotated_datum_collectives.py || status=1
+
+    # At two ranks the triangle of cells in this file is skipped (one cell, nothing
+    # to solve for), so the solve on it with a rank without cells runs at np 3 always.
+    OMPI_MCA_rmaps_base_oversubscribe=1 $SUPERVISE mpirun -n 3 python -m pytest --with-mpi \
+      tests/parallel/test_0786_stokes_rank_without_cells_parallel.py || status=1
 
     # Four ranks give a rank that shares an interface vertex and holds none of the
     # interface's facets, which the pressure split must still be told about: with

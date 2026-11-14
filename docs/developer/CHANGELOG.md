@@ -6,6 +6,46 @@ This log tracks significant development work at a conceptual level, suitable for
 
 ## 2026 Q4 (October – December)
 
+### The monotone clamp bounds a value by the cell it was interpolated in (November 2026, #682, #994)
+
+`evaluate` and `global_evaluate` with `monotone="clamp"` (or `True`) used to clip each
+value into the range of the `dim + 1` source DOFs nearest the point, from a kd-tree over
+the asking rank's own nodes. Those nodes need not enclose the point, so a P1 field
+linear in x and y was clipped at 5 of 400 interior points in serial (by up to 1.7e-2).
+In parallel they are the wrong rank's nodes for a point another rank owns: 48 and 74 of
+400 points were wrong at np 2, by up to 0.61. On a rank with fewer than `dim + 1` DOFs
+the query failed on that rank alone. The bound is now the per-component range of the
+source variable's DOFs in the closure of the cell the evaluator interpolated the value
+in, P2 and higher edge, face and cell DOFs included, applied on the rank that evaluated
+the point. The cell is the evaluator's own (`DMInterpolationEvaluate_UW` takes its
+closure), so nothing is located twice. A point no cell owns keeps its inverse-distance
+value, which is bounded already. The bound does not depend on the partition for a
+point inside a cell; a point exactly on a face cells share takes the bound of the cell
+the evaluating rank found, until the locator settles such ties by the mesh. Clamped
+results change wherever the clamp acted: the
+semi-Lagrangian `monotone_mode="clamp"`, which the free-surface solver's composition
+transport sets, and `REMESH_MONOTONE=clamp` (off by default).
+`UW_MONOTONE_CLAMP_BOUND=nearest` restores the earlier bound. `"pick"` is unchanged.
+
+### A Stokes solve completes on a mesh with a rank that holds no cells (November 2026, #962)
+
+A Stokes or constrained solve assembles two matrices, the Jacobian and the one its
+preconditioner is built from. PETSc assembles both in one pass, and on a rank with
+no cells that pass leaves early and skips an assembly of the Jacobian that every
+other rank makes: the solve stopped in MPI or hung. A small mesh on many ranks
+and a region extracted from a parent can both leave a rank without cells. The
+solvers now hand PETSc one matrix and one set of kernels to a call, which every
+rank assembles alike; on one rank both matrices are bit for bit the ones PETSc's
+single pass gives. The refusal that stood in front of the defect is removed. A
+constrained solve and a multigrid hierarchy with such a rank have no test yet.
+
+This is a workaround for a defect in PETSc (3.25.0 to 3.26.1 and `main`), and it
+reads tables PETSc keeps private, so the build now stops on any PETSc outside
+3.25.x and every stated requirement says 3.25.x: the pixi environments,
+`pyproject.toml`, `setup.cfg`, the conda recipe, `uw doctor`, the custom PETSc
+build script and the install page. The workaround goes when PETSc assembles alike
+on every rank.
+
 ### An adapted mesh keeps the same multigrid levels at any rank count (November 2026, #865)
 
 `Mesh.adapt` keeps one refinement generation per halving of the cell size as a

@@ -2844,7 +2844,8 @@ class SolverBaseClass(uw_object):
                     f"also carries a {kind} constraint whose tangent the reaction "
                     f"term does not include yet")
         for bc in (getattr(self, "natural_bcs", None) or []):
-            for fn in (getattr(bc, "fn_f", None), getattr(bc, "fn_F", None)):
+            for fn in (getattr(bc, "fn_f", None), getattr(bc, "fn_F", None),
+                       getattr(bc, "fn_p", None)):
                 if fn is None:
                     continue
                 import sympy
@@ -3036,26 +3037,66 @@ class SolverBaseClass(uw_object):
         (:meth:`_essential_datum_sensitivity`), which for a saddle point
         needs the pressure adjoint ``lam`` as well, and the misfit's own
         dual on every node, ``misfit_dual``, where the misfit reads the
-        prescribed values.
+        prescribed values. A parameter in a Stokes Nitsche datum needs
+        ``lam`` too: it enters the condition's continuity-row term, which is
+        tested against the pressure adjoint, and ``sensitivity`` refuses
+        without it.
         """
         from underworld3.adjoint import integral
         total = integral(self.mesh, self.adjoint_integrand(mu, wrt))
         total += self._essential_datum_sensitivity(mu, wrt, lam, misfit_dual)
-        # A parameter that enters through a natural condition — a prescribed
-        # traction or flux — has a facet part: (d bd_F0 / dm) . mu on that boundary.
+        # A parameter that enters through a natural or Nitsche condition has a
+        # facet part, from every boundary term the condition assembles: the
+        # value term fn_f tested against mu, and the flux term fn_F tested
+        # against grad(mu). Reading fn_f alone missed a Nitsche condition's
+        # symmetric term: a datum imposed by Nitsche then had the wrong sign
+        # (#1143). A Stokes Nitsche condition's continuity-row term fn_p
+        # (assembled on the pressure field, #1072) is tested against the
+        # pressure adjoint lam.
         import sympy
         mu_sym = mu.sym
+        comps = getattr(mu, "num_components", 1)
+        cdim = self.mesh.cdim
+        grad_mu = None
         for bc in (getattr(self, "natural_bcs", None) or []):
             fn = getattr(bc, "fn_f", None)
-            if fn is None:
-                continue
-            d = diff_wrt_field(self._peel_except(sympy.Matrix(fn), wrt), wrt)
-            if d.is_zero_matrix:
-                continue
-            values = list(d)
-            comps = getattr(mu, "num_components", 1)
-            integrand = sum(values[i] * mu_sym[i] for i in range(min(len(values), comps)))
-            total += integral(self.mesh, integrand, bc.boundary)
+            if fn is not None:
+                d = diff_wrt_field(self._peel_except(sympy.Matrix(fn), wrt), wrt)
+                if not d.is_zero_matrix:
+                    values = list(d)
+                    integrand = sum(values[i] * mu_sym[i] for i in range(min(len(values), comps)))
+                    total += integral(self.mesh, integrand, bc.boundary)
+            flux = getattr(bc, "fn_F", None)
+            if flux is not None:
+                dF = sympy.Matrix(diff_wrt_field(self._peel_except(sympy.Matrix(flux), wrt), wrt))
+                if not dF.is_zero_matrix:
+                    if grad_mu is None:
+                        grad_mu = (sympy.Matrix(self.mesh.vector.gradient(mu_sym[0])).reshape(1, cdim)
+                                   if comps == 1 else sympy.Matrix(self.mesh.vector.jacobian(mu_sym)))
+                    dF = dF.reshape(grad_mu.shape[0], grad_mu.shape[1])
+                    integrand = sum(dF[c, k] * grad_mu[c, k]
+                                    for c in range(grad_mu.shape[0]) for k in range(grad_mu.shape[1]))
+                    total += integral(self.mesh, integrand, bc.boundary)
+            cont = getattr(bc, "fn_p", None)
+            if cont is not None:
+                dp = diff_wrt_field(self._peel_except(sympy.Matrix(cont), wrt), wrt)
+                if not dp.is_zero_matrix:
+                    # Decided from the condition and the arguments alone, the
+                    # same on every rank.
+                    # A tangential datum with the default (field) normal reaches
+                    # this too: n.d is zero in value but not symbolically, so the
+                    # derivative cannot be shown zero here. Passing lam gives the
+                    # right answer in every case.
+                    if lam is None:
+                        name = getattr(wrt, "name", None) or str(wrt)
+                        raise ValueError(
+                            f"sensitivity: {name} enters the continuity-row term of the "
+                            f"Nitsche condition on {bc.boundary!r}, which is tested against "
+                            "the pressure adjoint: pass lam=, the pressure part of the "
+                            "adjoint_solve target. (A tangential datum with the default "
+                            "normal also needs it: its continuity-row derivative is zero in "
+                            "value but not symbolically.)")
+                    total += integral(self.mesh, list(dp)[0] * lam.sym[0], bc.boundary)
         return total
 
     def _constraint_mechanisms(self):
@@ -7291,7 +7332,7 @@ class SNES_Scalar(SolverBaseClass):
             self.snes.setFromOptions()
 
 
-            UW_DMPlexSetSNESLocalFEM(cdm.dm, PETSC_FALSE, NULL)
+            CHKERRQ( UW_DMPlexSetSNESLocalFEM(cdm.dm, PETSC_FALSE, NULL) )
 
         self.is_setup = True
         self._form_facts = None     # forms (re)built: cached symbolic facts are stale
@@ -8397,7 +8438,7 @@ class SNES_Vector(SolverBaseClass):
             self.snes.setOptionsPrefix(self.petsc_options_prefix)
             self.snes.setFromOptions()
 
-            UW_DMPlexSetSNESLocalFEM(cdm.dm, PETSC_FALSE, NULL)
+            CHKERRQ( UW_DMPlexSetSNESLocalFEM(cdm.dm, PETSC_FALSE, NULL) )
 
 
         self.is_setup = True
@@ -9151,7 +9192,7 @@ class SNES_MultiComponent(SolverBaseClass):
             self.snes.setOptionsPrefix(self.petsc_options_prefix)
             self.snes.setFromOptions()
 
-            UW_DMPlexSetSNESLocalFEM(cdm.dm, PETSC_FALSE, NULL)
+            CHKERRQ( UW_DMPlexSetSNESLocalFEM(cdm.dm, PETSC_FALSE, NULL) )
 
         self.is_setup = True
         self._form_facts = None     # forms (re)built: cached symbolic facts are stale
@@ -11879,8 +11920,11 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                 if Sold.getFieldDof(p, fid_h) > 0 and p not in keep:
                     iset.add(p)
 
-        # Nothing to constrain (e.g. boundary-only multiplier discretisation).
-        if not any(interior_pts.values()):
+        # Nothing to constrain on any rank (e.g. boundary-only multiplier
+        # discretisation). COLLECTIVE, and reached on every rank: the global
+        # section is rebuilt below, so a rank with nothing of its own to
+        # constrain (one without cells, say) goes through it with its peers.
+        if not uw.mpi.comm.allreduce(int(any(interior_pts.values())), op=uw.MPI.MAX):
             return
 
         # 2. Build a new local section mirroring the old (chart, fields, dofs and
@@ -11946,37 +11990,6 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         return
 
 
-    def _refuse_a_rank_without_cells(self):
-        """Raise, on every rank alike, if some rank holds no cells of the solver's DM (#962).
-
-        This solver registers a Jacobian preconditioner, so SNES assembles two
-        matrices. PETSc's ``DMPlexComputeJacobianByKey`` (3.25.3 and ``main``) then
-        leaves early on a rank without cells and skips the assembly of the Jacobian
-        that every other rank makes: MPI stops the run, or it hangs. A solver whose
-        Jacobian and preconditioner are one matrix is not affected.
-
-        The test is the one PETSc makes on a DM with one discrete system, which is
-        what every default set-up builds. Its cell range is the rank's own top
-        stratum of the ``depth`` label, ghost cells included, and
-        ``getHeightStratum(0)`` is that range. COLLECTIVE on the DM's communicator.
-        """
-        comm = self.dm.comm.tompi4py()
-        if comm.size == 1:
-            return
-        start, end = self.dm.getHeightStratum(0)
-        counts = comm.allgather(end - start)
-        # with no cells anywhere every rank leaves early alike
-        if min(counts) > 0 or max(counts) == 0:
-            return
-        raise RuntimeError(
-            f"{type(self).__name__}: ranks without cells of this mesh: "
-            f"{counts.count(0)} of {comm.size} ({sum(counts)} cells in all). PETSc does "
-            f"not assemble the Jacobian on a rank without cells when the "
-            f"preconditioner is a second matrix (DMPlexComputeJacobianByKey, PETSc "
-            f"3.25.3), and the solve would stop in MPI or hang (#962). A refined mesh "
-            f"keeps its base's partition and an extracted region its parent's, so "
-            f"the base, or the region, must reach every rank.")
-
     @timing.routine_timer_decorator
     def _setup_solver(self, verbose=False, _rewire_only=False):
 
@@ -11984,10 +11997,6 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             if verbose and uw.mpi.rank == 0:
                 print(f"Stokes Saddle Pt ({self.name}): SNES solver does not need to be rebuilt", flush=True)
             return
-
-        # A rewire keeps the DM, which a full set-up has already been through.
-        if not _rewire_only:
-            self._refuse_a_rank_without_cells()
 
         # set functions
         cdef PetscInt ind=1
@@ -12325,7 +12334,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             self.snes.setOptionsPrefix(self.petsc_options_prefix)
             self.snes.setFromOptions()
 
-            UW_DMPlexSetSNESLocalFEM(cdm.dm, PETSC_FALSE, NULL)
+            CHKERRQ( UW_DMPlexSetSNESLocalFEM(cdm.dm, PETSC_FALSE, NULL) )
 
             # Setup subdms here too.
             # These will be used to copy back/forth SNES solutions
