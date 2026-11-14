@@ -2963,8 +2963,9 @@ class SemiLagrangian(_DDtBase):
         # preserving FE accuracy elsewhere.
         #   None    → pure FE (legacy; can overshoot at non-nodal
         #             points in cells with sharp gradients)
-        #   "clamp" → B.2: clip FE result to [nbr_min, nbr_max] of
-        #             the k=dim+1 nearest psi_star DOFs
+        #   "clamp" → B.2: clip FE result to the [min, max] of the
+        #             psi_star DOFs in the closure of the cell it was
+        #             interpolated in (#682)
         #   "pick"  → B.1: keep FE if in nbr bounds, else re-evaluate
         #             via RBF (Shepard) at out-of-bounds DOFs
         # Settable after construction:

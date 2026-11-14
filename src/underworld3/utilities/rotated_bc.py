@@ -3819,9 +3819,11 @@ def _wall_vertex_rows(dm, name):
     label can also hold points off the wall (SegmentedSphericalShell's ``Upper``
     labels interior vertices directly), so its own vertex stratum is not read."""
     rows = set()
-    label = dm.getLabel(name)
-    if label is None:
+    # dm.getLabel never returns None: a missing name gives a label with a null
+    # handle, and a query on it is a segmentation fault (#1163).
+    if not dm.hasLabel(name):
         return np.empty(0, dtype=np.int64)
+    label = dm.getLabel(name)
     fs, fe = dm.getHeightStratum(1)
     vs, ve = dm.getDepthStratum(0)
     csec = dm.getCoordinateSection()
