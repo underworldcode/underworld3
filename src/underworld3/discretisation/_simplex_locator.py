@@ -56,6 +56,8 @@ class SimplexLocator:
             self.Tinv = np.zeros((0, d, d))
             self.nbr = np.zeros((0, d + 1), dtype=np.int64)
             self._star_table = np.zeros((0, 1 << (d + 1)), dtype=np.int64)
+            self._box_lo = self._box_hi = np.zeros((0, d))
+            self._grid = None
             return
         verts = closure_points(dm, cells, 0)                       # (n, d+1)
         if verts.shape[1] != d + 1 or (verts < 0).any():
@@ -65,6 +67,10 @@ class SimplexLocator:
         if V.shape[2] != d:
             raise ValueError("SimplexLocator: a manifold mesh needs its tangent-plane map")
         self.v0 = V[:, 0, :].copy()
+        # per-cell bounding boxes, for the exact fallback (cells_containing)
+        self._box_lo = V.min(axis=1)
+        self._box_hi = V.max(axis=1)
+        self._grid = None
         T = np.transpose(V[:, 1:, :] - V[:, :1, :], (0, 2, 1))     # columns v_k - v_0
         self.Tinv = np.linalg.inv(T)
 
@@ -155,6 +161,86 @@ class SimplexLocator:
             go = ~inside & (nxt >= 0)
             active, cur = active[go], nxt[go]
         return cells, lam_out, exit_cell
+
+    def _bin_grid(self):
+        """A uniform grid over the local cells' bounding boxes: each bin lists
+        the cells whose box overlaps it (CSR). Built once, on first use."""
+        if self._grid is not None:
+            return self._grid
+        d = self.dim
+        size = (self._box_hi - self._box_lo).max(axis=1)
+        h = max(float(np.median(size)), 1e-300)
+        origin = self._box_lo.min(axis=0)
+        extent = self._box_hi.max(axis=0) - origin
+        # Cap the bins at about the local cell count. On a graded mesh (refined
+        # toward a fault, most cells in a thin band) extent / median cell size
+        # is in the hundreds, and (extent / h)^dim bins would be 1e6 to 1e8 on
+        # every rank. Larger bins hold more candidates, but the search stays
+        # complete: the cap bounds the cost and never changes the answer.
+        cap = max(self.n_cells, 1)
+        uncapped = float(np.prod(np.floor(extent / h) + 1))
+        if uncapped > cap:
+            h *= (uncapped / cap) ** (1.0 / d)
+            while float(np.prod(np.floor(extent / h) + 1)) > cap:
+                h *= 1.01
+        lo = np.floor((self._box_lo - origin) / h).astype(np.int64)
+        hi = np.floor((self._box_hi - origin) / h).astype(np.int64)
+        dims = hi.max(axis=0) + 1
+        span = hi - lo + 1
+        bins, owners = [], []
+        for shape in {tuple(r) for r in span}:
+            which = np.flatnonzero((span == shape).all(axis=1))
+            offsets = np.stack(np.meshgrid(*[np.arange(n) for n in shape], indexing="ij"),
+                               axis=-1).reshape(-1, d)
+            idx = lo[which][:, None, :] + offsets[None, :, :]          # (m, k, d)
+            flat = np.ravel_multi_index(idx.reshape(-1, d).T, dims)
+            bins.append(flat)
+            owners.append(np.repeat(which, offsets.shape[0]))
+        bins = np.concatenate(bins)
+        owners = np.concatenate(owners)
+        order = np.argsort(bins, kind="stable")
+        bins, owners = bins[order], owners[order]
+        starts = np.searchsorted(bins, np.arange(int(np.prod(dims)) + 1))
+        self._grid = (origin, h, dims, starts, owners)
+        self.grid_bins = int(np.prod(dims))
+        self.grid_bins_uncapped = int(uncapped)
+        return self._grid
+
+    def cells_containing(self, points):
+        """Exact fallback: the local cell containing each point (-1: none),
+        found among the cells whose bounding box holds the point, through the
+        bin grid. Complete, unlike any walk or nearest-centroid search, and
+        meant for the few points those miss (#1183)."""
+        points = np.asarray(points, dtype=np.float64)
+        n = points.shape[0]
+        cells = np.full(n, -1, dtype=np.int64)
+        if n == 0 or self.n_cells == 0:
+            return cells
+        origin, h, dims, starts, owners = self._bin_grid()
+        idx = np.floor((points - origin) / h).astype(np.int64)
+        valid = ((idx >= 0) & (idx < dims)).all(axis=1)
+        lam_out = np.zeros((n, self.dim + 1))
+        pts = np.flatnonzero(valid)
+        if pts.shape[0] == 0:
+            return cells
+        b = np.ravel_multi_index(idx[pts].T, dims)
+        count = starts[b + 1] - starts[b]
+        # every (point, candidate cell) pair, tested in one call
+        pair_point = np.repeat(pts, count)
+        first = np.repeat(starts[b], count)
+        within = np.arange(pair_point.shape[0]) - np.repeat(np.cumsum(count) - count, count)
+        pair_cell = owners[first + within]
+        if pair_point.shape[0] == 0:
+            return cells
+        lam = self.barycentric(points[pair_point], pair_cell)
+        ok = np.flatnonzero(lam.min(axis=1) >= -self.ROUNDOFF)
+        # the first containing candidate of each point
+        hit, at = np.unique(pair_point[ok], return_index=True)
+        cells[hit] = pair_cell[ok[at]]
+        lam_out[hit] = lam[ok[at]]
+        found = cells >= 0
+        cells[found] = self.lowest_in_star(cells[found], lam_out[found])
+        return cells
 
     def lowest_in_star(self, cells, lam):
         """For points located in local ``cells`` with coordinates ``lam``: the
