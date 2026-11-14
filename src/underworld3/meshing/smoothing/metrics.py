@@ -265,6 +265,26 @@ def mesh_metric_mismatch(mesh, metric, resolution_ratio=None):
 _MDG_CACHE: dict = {}
 
 
+def _owned_dof_rows(var):
+    """The local rows of a scalar MeshVariable that this rank owns, from the
+    field's global section (a negative offset marks a point another rank
+    owns): the point star forest's ownership, not coordinates."""
+    iset, subdm = var.mesh.dm.createSubDM(var.field_id)
+    try:
+        local, glob = subdm.getLocalSection(), subdm.getGlobalSection()
+        owned = np.zeros(np.asarray(var.data).shape[0], dtype=bool)
+        ncomp = var.num_components
+        for point in range(*local.getChart()):
+            dof = local.getDof(point)
+            if dof and glob.getOffset(point) >= 0:
+                offset = local.getOffset(point)
+                owned[offset // ncomp:(offset + dof) // ncomp] = True
+    finally:
+        iset.destroy()
+        subdm.destroy()
+    return owned
+
+
 def metric_density_from_gradient(
     mesh,
     field,
@@ -509,22 +529,28 @@ def metric_density_from_gradient(
     gp.solve()
     gmag = np.linalg.norm(np.asarray(uw.function.evaluate(
         g.sym, rho0.coords)).reshape(-1, cdim), axis=1)
-    # Parallel-correct percentile window. np.percentile on the
-    # rank-LOCAL gmag gives each rank its *own subdomain*
-    # distribution, so the same physical |∇field| maps to a
-    # different density on different ranks — a partition-dependent
-    # metric ("refine the top X%" silently becomes "each rank's own
-    # top X%"). Gather the global gmag so g_lo/g_hi are computed
-    # once from the whole-domain distribution and are identical on
-    # every rank. Serial (size==1) takes the local array unchanged
-    # ⇒ bit-for-bit identical to the previous behaviour. (Partition-
-    # boundary DOFs are shared across ranks, so the gathered array
-    # slightly over-weights them in the percentile value — a
-    # second-order effect vs. the rank-local bug this fixes; exact
-    # owned-only de-duplication is a follow-up if ever needed.)
+    # One value per node, ranked once. The gradient is evaluated at every local
+    # DOF, so a node shared by two ranks is evaluated twice, and the copies can
+    # differ in the last bit. Both copies used to enter the gathered list,
+    # which set the percentile window and the ranks, so whether a seam node's
+    # two copies tied or took neighbouring ranks turned on that bit: the
+    # metric differed from launch to launch (#1132). Now the owner's value is
+    # synced to every copy, and only owned DOFs (from the field's global
+    # section, the point star forest's ownership) enter the gathered list:
+    # every node counts once, at any rank count. Serial is unchanged.
+    rho0.pack_raw_data_to_petsc(gmag.reshape(-1, 1), sync=True)
+    gmag = np.asarray(rho0.data[:, 0]).copy()
+
+    def _write(values):
+        # Every copy of a node computes its density from the same synced
+        # |grad| and the same broadcast window; the owner's value is still
+        # synced to the ghosts, so the copies agree by construction.
+        rho0.pack_raw_data_to_petsc(
+            np.broadcast_to(np.asarray(values, dtype=float),
+                            gmag.shape).reshape(-1, 1), sync=True)
     if uw.mpi.size > 1:
         gmag_global = uw.utilities.gather_data(
-            gmag, bcast=True, dtype="float64")
+            gmag[_owned_dof_rows(rho0)], bcast=True, dtype="float64")
     else:
         gmag_global = gmag
     g_lo = float(np.percentile(gmag_global, lo_percentile))
@@ -593,7 +619,7 @@ def metric_density_from_gradient(
                     f"coarsening must be >= 1.0, got {coar_val}")
         # Trivial-case shortcut: no refinement asked ⇒ ρ ≡ 1
         if ref_val == 1.0 and coar_val == 1.0:
-            rho0.data[:, 0] = 1.0
+            _write(1.0)
             return rho0.sym[0]
         # Dimension-independent envelope (eigenvalue space)
         log_rho_max = 2.0 * np.log(ref_val)   # ρ at the densest cells
@@ -601,7 +627,7 @@ def metric_density_from_gradient(
         N = max(int(gmag_global.size), 1)
         if g_hi <= 1.0e-9:
             # Uniform (or near-uniform) field ⇒ no refinement
-            rho0.data[:, 0] = 1.0
+            _write(1.0)
             return rho0.sym[0]
         g_sorted = np.sort(gmag_global)
         ranks = np.linspace(0.0, 1.0, N)
@@ -629,7 +655,7 @@ def metric_density_from_gradient(
                     log_rho_max * (pct - p_star)
                     / max(1.0 - p_star, 1.0e-12),
                 )
-            rho0.data[:, 0] = np.exp(log_rho)
+            _write(np.exp(log_rho))
         elif metric_choice == "gradient-uniform":
             # ρ ∝ |∇field|² (dimension-independent), clipped to
             # the envelope. The mover's G normalisation then
@@ -637,8 +663,8 @@ def metric_density_from_gradient(
             # geomean |∇field|, which is field-dependent (in
             # contrast to front-following where ρ̄=1 by construction).
             rho_raw = np.maximum(gmag, 1.0e-30) ** 2
-            rho0.data[:, 0] = np.clip(
-                rho_raw, np.exp(log_rho_min), np.exp(log_rho_max))
+            _write(np.clip(
+                rho_raw, np.exp(log_rho_min), np.exp(log_rho_max)))
         elif metric_choice == "arc-length":
             # Smooth arc-length monitor rho = sqrt(1 + (A*ghat)^2),
             # ghat = |grad field|/g_hi, A = sqrt(ref^4 - 1) so rho = ref^2 at
@@ -647,8 +673,8 @@ def metric_density_from_gradient(
             A = np.sqrt(max(ref_val ** 4 - 1.0, 0.0))
             ghat = gmag / max(g_hi, 1.0e-30)
             rho_al = np.sqrt(1.0 + (A * ghat) ** 2)
-            rho0.data[:, 0] = np.clip(
-                rho_al, np.exp(log_rho_min), np.exp(log_rho_max))
+            _write(np.clip(
+                rho_al, np.exp(log_rho_min), np.exp(log_rho_max)))
         else:
             raise ValueError(
                 f"metric_choice must be 'front-following', "
@@ -663,11 +689,11 @@ def metric_density_from_gradient(
         # mean normaliser doesn't blow up).
         floor = max(1.0e-12,
                     float(np.max(gmag_global)) * 1.0e-6)
-        rho0.data[:, 0] = np.maximum(gmag, floor)
+        _write(np.maximum(gmag, floor))
         return rho0.sym[0] ** float(power)
     if g_hi <= 1.0e-9:
-        rho0.data[:, 0] = 0.0
+        _write(0.0)
     else:
-        rho0.data[:, 0] = np.clip(
-            (gmag - g_lo) / max(g_hi - g_lo, 1.0e-30), 0.0, 1.0)
+        _write(np.clip(
+            (gmag - g_lo) / max(g_hi - g_lo, 1.0e-30), 0.0, 1.0))
     return (1.0 + float(amp) * rho0.sym[0]) ** float(power)
