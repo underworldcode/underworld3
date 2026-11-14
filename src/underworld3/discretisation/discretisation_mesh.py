@@ -7832,12 +7832,15 @@ class Mesh(Stateful, uw_object):
         )
 
     # Face tolerance for the parallel evaluation locator (relative to the
-    # control-point separation). Tight: it admits points genuinely on a
-    # cell face/edge (containment value ~0) but rejects points sitting inside
-    # a *different* cell (value strongly negative), so a rank never claims a
-    # point another rank owns. A point in the (closed) domain is then found by
-    # exactly one rank (verified: 360/360, owners==1), and the migration routes
-    # it to that owner.
+    # control-point separation): a point within a thin slab outside a local
+    # cell's face (about 1e-2 of the separation, an absolute 1e-5 in model
+    # units) counts as in that cell. It admits points genuinely on a face or
+    # edge, and rejects points well inside a different cell. It does NOT make
+    # ownership unique: a point within the slab of a partition seam is claimed
+    # by the ranks on both sides (measured by H1 on #1175: 30 to 2,690 points
+    # per run claimed twice), and the rank that does not contain it evaluates
+    # it in a cell that does not (up to 2.8e-4 off, 1e-5 typical). Claiming by
+    # exact containment first is the follow-up named on #1175.
     _EVAL_FACE_TOL = 1.0e-2
     # Containment to rounding, relative like _EVAL_FACE_TOL. A point some local
     # cell contains to this tolerance is evaluated in that cell (#1115).
@@ -7948,8 +7951,11 @@ class Mesh(Stateful, uw_object):
         if cached is not None and cached[0] is self._index:
             return cached[1]
         locator = None
+        # Decided from mesh-wide facts only (isSimplex is agreed over ranks at
+        # construction), so every rank, an empty one included, takes the same
+        # path: a rank with no cells gets a locator that locates nothing.
         if (self._nav_dm is None and self.dm.getDimension() == self.cdim
-                and self.degree == 1):
+                and self.degree == 1 and self.isSimplex):
             from underworld3.discretisation._simplex_locator import SimplexLocator
             try:
                 locator = SimplexLocator(

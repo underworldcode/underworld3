@@ -47,6 +47,7 @@ mesh and every platform.
 import numpy as np
 import pytest
 import underworld3 as uw
+from mpi4py import MPI
 
 pytestmark = [pytest.mark.level_1, pytest.mark.tier_a]
 
@@ -669,7 +670,10 @@ def test_the_classifier_hands_over_the_cells_it_located(located_box):
     # — measured 0 hints for 1465 interior points in serial against 462 of 462
     # at np4, so the guarded version asserted nothing in the default test run.
     offered = in_or_not & (cells >= 0)
-    if mesh._simplex_locator() is not None:
+    # Decided on every rank alike (a rank-local test before the collective
+    # classifier call below would hang an empty rank).
+    exact = uw.mpi.comm.allreduce(mesh._simplex_locator() is not None, op=MPI.LOR)
+    if exact:
         # For evaluation the exact locator classifies by locating, at any rank
         # count, so every interior point comes with a cell that contains it
         # (#1123). points_in_domain (above) keeps the boundary-sign test.
@@ -681,7 +685,7 @@ def test_the_classifier_hands_over_the_cells_it_located(located_box):
         located = np.flatnonzero(offered)
         lam = mesh._simplex_locator().barycentric(
             query[located], cells[located] - mesh.dm.getHeightStratum(0)[0])
-        assert lam.min() >= -1.0e-12, lam.min()
+        assert lam.min(initial=0.0) >= -1.0e-12, lam.min(initial=0.0)
         return
     if uw.mpi.size == 1:
         assert not mesh._eval_use_robust_location()

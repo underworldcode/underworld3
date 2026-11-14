@@ -44,6 +44,14 @@ class SimplexLocator:
         self.cStart, cEnd = dm.getHeightStratum(0)
         cells = np.arange(self.cStart, cEnd, dtype=np.int64)
         self.n_cells = cells.shape[0]
+        if self.n_cells == 0:
+            # A rank with no cells has a locator that locates nothing, so every
+            # rank takes the same path through the callers.
+            self.v0 = np.zeros((0, d))
+            self.Tinv = np.zeros((0, d, d))
+            self.nbr = np.zeros((0, d + 1), dtype=np.int64)
+            self._star_table = np.zeros((0, 1 << (d + 1)), dtype=np.int64)
+            return
         verts = closure_points(dm, cells, 0)                       # (n, d+1)
         if verts.shape[1] != d + 1 or (verts < 0).any():
             raise ValueError("SimplexLocator: the cells are not all simplices")
