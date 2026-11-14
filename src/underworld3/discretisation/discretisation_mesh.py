@@ -805,12 +805,12 @@ def _facets_that_can_hold_the_nearest_point(pts, fpts, centroids, tree):
     return candidates
 
 
-def _outward_normals_at_nearest_points(closest, fpts, normals, found, span):
+def _outward_normals_at_nearest_points(closest, fpts, normals, vertex_ids, found, span):
     """The outward normals for the side test of points against their nearest
     boundary points ``closest``. Each lies on facet ``fpts[found]``, in the span of
     the facet's vertices marked in ``span`` (as the nearest-point search reports
-    it); ``normals`` are the facets' outward unit normals. Returns the nearest
-    points and the normals.
+    it); ``normals`` are the facets' outward unit normals and ``vertex_ids`` the
+    global numbers of their vertices. Returns the nearest points and the normals.
 
     Inside a facet the normal is that facet's. Where the nearest point is a vertex
     or (in 3-D) an edge, several facets hold it and no one facet's normal decides
@@ -821,11 +821,13 @@ def _outward_normals_at_nearest_points(closest, fpts, normals, found, span):
     the side of the boundary the point is on, at a convex corner and at a
     reentrant one alike (Baerentzen and Aanaes, IEEE TVCG 11, 2005). The vertex
     itself is returned as the nearest point, so the restore moves the point off
-    both walls. Vertices are matched by their coordinates, which the copies of a
-    vertex share exactly."""
+    both walls. The facets meeting at a vertex or an edge are found by the
+    vertices' global numbers."""
     nf, nv, cdim = fpts.shape
-    verts, vid = numpy.unique(fpts.reshape(-1, cdim), axis=0, return_inverse=True)
+    numbers, vid = numpy.unique(vertex_ids.ravel(), return_inverse=True)
     vid = vid.reshape(nf, nv)
+    verts = numpy.empty((len(numbers), cdim))
+    verts[vid.ravel()] = fpts.reshape(-1, cdim)
     closest = closest.copy()
     nvec = normals[found].copy()
     # A nearest point that is one of the facet's vertices is at that vertex,
@@ -4399,11 +4401,12 @@ class Mesh(Stateful, uw_object):
     def return_coords_to_bounds(self, fn):
         self._analytic_return_coords_to_bounds = fn
 
-    def _boundary_facet_geometry(self):
+    def _boundary_facet_geometry(self, with_vertex_ids=False):
         """Boundary facets of the CURRENT geometry of the whole mesh, gathered from
         every rank, as ``(facet_pts, outward_normals)``: the same arrays, in the same
-        order, on every rank (#1176). Cached against the coordinates, so it refreshes
-        after a deform. Collective."""
+        order, on every rank (#1176), each facet once. With ``with_vertex_ids``, also
+        the global numbers of each facet's vertices. Cached against the coordinates,
+        so it refreshes after a deform. Collective."""
         from mpi4py import MPI
         from underworld3.meshing.smoothing.graph import _boundary_facets
 
@@ -4414,7 +4417,7 @@ class Mesh(Stateful, uw_object):
         # the gather below is collective.
         stale = cache is None or cache[0] != stamp
         if not uw.mpi.comm.allreduce(stale, op=MPI.LOR):
-            return cache[1], cache[2]
+            return cache[1:] if with_vertex_ids else cache[1:3]
 
         cdim = self.cdim
         # The DM's boundary label separates domain faces from partition faces;
@@ -4430,9 +4433,11 @@ class Mesh(Stateful, uw_object):
         # Non-simplicial: no general restore. Agreed over ranks, so that every rank
         # takes the same path (a rank with no cells finds no facets, not None).
         if uw.mpi.comm.allreduce(facets is None, op=MPI.LOR):
-            self._bnd_restore_cache = (stamp, None, None)
-            return None, None
+            self._bnd_restore_cache = (stamp, None, None, None)
+            return self._bnd_restore_cache[1:] if with_vertex_ids else (None, None)
         fpts = coords[facets]                   # (nf, k, cdim)
+        numbering = numpy.asarray(self.dm.getVertexNumbering().getIndices(), dtype=numpy.int64)
+        gid = numpy.where(numbering < 0, -numbering - 1, numbering)[facets]
         if cdim == 2:
             e = fpts[:, 1] - fpts[:, 0]
             n = numpy.column_stack([e[:, 1], -e[:, 0]])
@@ -4449,10 +4454,17 @@ class Mesh(Stateful, uw_object):
         # another rank is tested against some other facet's plane, and an interior
         # point can be moved onto a wall (#1176). In rank order, so that every rank
         # holds the same arrays and takes the same nearest facet on a tie.
-        fpts = numpy.concatenate(uw.mpi.comm.allgather(fpts.reshape(-1, fpts.shape[1], cdim)))
+        k = fpts.shape[1]
+        fpts = numpy.concatenate(uw.mpi.comm.allgather(fpts.reshape(-1, k, cdim)))
         n = numpy.concatenate(uw.mpi.comm.allgather(n.reshape(-1, cdim)))
-        self._bnd_restore_cache = (stamp, fpts, n)
-        return fpts, n
+        gid = numpy.concatenate(uw.mpi.comm.allgather(gid.reshape(-1, k)))
+        # A facet two ranks both hold is gathered twice: keep its first copy, so
+        # that the facets meeting at a corner each count once in its normal.
+        _, first = numpy.unique(numpy.sort(gid, axis=1), axis=0, return_index=True)
+        keep = numpy.sort(first)
+        fpts, n, gid = fpts[keep], n[keep], gid[keep]
+        self._bnd_restore_cache = (stamp, fpts, n, gid)
+        return (fpts, n, gid) if with_vertex_ids else (fpts, n)
 
     def _labelled_boundary_facets(self):
         """Boundary facets and the opposite cell vertex from the DM's own
@@ -4490,7 +4502,7 @@ class Mesh(Stateful, uw_object):
         from underworld3.meshing.smoothing.graph import (
             _nearest_on_facets_2d, _nearest_on_facets_3d)
 
-        fpts, nrm = self._boundary_facet_geometry()
+        fpts, nrm, vertex_ids = self._boundary_facet_geometry(with_vertex_ids=True)
         if fpts is None:                        # fall back to the analytic closure
             fn = self._analytic_return_coords_to_bounds
             return fn(coords) if fn is not None else coords
@@ -4509,7 +4521,8 @@ class Mesh(Stateful, uw_object):
             closest[i], found[i], span[i] = near[0], candidates[which[0]], held[0]
         # side test against the outward normal where the nearest point lies: the
         # facet's, or the corner's where facets meet
-        closest, nvec = _outward_normals_at_nearest_points(closest, fpts, nrm, found, span)
+        closest, nvec = _outward_normals_at_nearest_points(
+            closest, fpts, nrm, vertex_ids, found, span)
         outside = numpy.einsum("ij,ij->i", pts - closest, nvec) > 0.0
         # get_min_radius is collective: read it on every rank, not only on the
         # ranks that have a point to restore
