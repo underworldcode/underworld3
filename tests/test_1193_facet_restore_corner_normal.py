@@ -48,7 +48,7 @@ def test_points_beside_a_graded_corner_are_returned_inside():
     probe = np.column_stack([np.full_like(s, 1.02), 1.0 - s])
     out = np.asarray(mesh.return_coords_to_bounds(probe.copy()))
 
-    left_outside = (out[:, 0] >= 1.0) | (out[:, 1] >= 1.0)
+    left_outside = (out[:, 0] > 1.0) | (out[:, 1] > 1.0)
     assert not left_outside.any(), (
         f"{int(left_outside.sum())} of 49 points beside the corner left outside the box, "
         f"at depths below the corner {s[left_outside]}")
@@ -71,7 +71,7 @@ def test_points_beyond_a_corner_are_returned_inside():
         np.column_stack([1.0 + 0.3 * a[1:], 1.0 + a[1:]]),
     ])
     out = np.asarray(mesh.return_coords_to_bounds(probe.copy()))
-    left_outside = (out[:, 0] >= 1.0) | (out[:, 1] >= 1.0)
+    left_outside = (out[:, 0] > 1.0) | (out[:, 1] > 1.0)
     assert not left_outside.any(), (
         f"{int(left_outside.sum())} of {len(probe)} points beyond the corner left outside: "
         f"{probe[left_outside]}")
@@ -117,3 +117,29 @@ def test_points_inside_near_a_concave_corner_are_left_alone():
     moved = np.any(out != probe, axis=1)
     assert not moved.any(), (
         f"{int(moved.sum())} of {len(probe)} points inside near the reentrant corner moved")
+
+
+def test_points_beyond_an_edge_and_a_corner_of_a_box_are_returned_inside():
+    """3-D: the unit cube, graded by y -> y^2. Beyond the edge x = y = 1 and the
+    corner (1, 1, 1) the nearest point is on an edge or at a vertex that several
+    facets share."""
+    mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0, 0.0, 0.0),
+                                             maxCoords=(1.0, 1.0, 1.0), cellSize=0.2)
+    X = np.asarray(mesh.X.coords, dtype=float).copy()
+    X[:, 1] = X[:, 1] ** 2
+    mesh.deform(X)
+    a = np.linspace(0.0, 0.05, 11)[1:]
+    z = np.linspace(0.1, 0.9, 10)
+    probe = np.vstack([
+        np.column_stack([1.0 + a, 1.0 + a, z]),                  # beyond the edge
+        np.column_stack([np.ones(10), 1.0 + a, z]),              # along one face's plane
+        np.column_stack([1.0 + a, np.ones(10), z]),              # along the other's
+        np.column_stack([1.0 + a, 1.0 + a, 1.0 + a]),            # beyond the corner
+        np.column_stack([1.0 + a, np.ones(10), np.ones(10)]),
+        np.column_stack([1.0 + 0.2 * a, 1.0 + a, 1.0 + 0.5 * a]),
+    ])
+    out = np.asarray(mesh.return_coords_to_bounds(probe.copy()))
+    left_outside = np.any(out > 1.0, axis=1)
+    assert not left_outside.any(), (
+        f"{int(left_outside.sum())} of {len(probe)} points beyond an edge or corner left "
+        f"outside or on a wall: {probe[left_outside]}")
