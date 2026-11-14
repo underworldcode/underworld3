@@ -411,6 +411,8 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   # Shell Inner/Outer cell labels follow the Internal surface, not a radius test:
   # the same assertions hold on one rank, so the file also runs serially.
   batch 3 tests/parallel/test_1175_shell_region_labels.py
+  # So is #1123's sheared mesh: every inside point owned at any rank count, exact serially.
+  batch 3 tests/parallel/test_1123_exact_locator_parallel.py
   # So is the line cut on a mesh wound clockwise throughout (#874).
   batch 3 tests/parallel/test_0874_mirrored_mesh_cut_parallel.py
   # So are the multigrid levels an adapt keeps, the same at any rank count (#865).
@@ -598,11 +600,23 @@ if [ $PARALLEL_RANKS -gt 0 ] && shard_owns 4; then
     OMPI_MCA_rmaps_base_oversubscribe=1 $SUPERVISE mpirun -n 4 python -m pytest --with-mpi \
       tests/test_1184_general_pressure_split.py || status=1
 
+    # A wall that refinement left off its surface is released on every rank, also on
+    # a rank holding none of the held-back vertices. At two ranks both hold one (the
+    # case then skips); at four, one rank holds none. So this file runs at np 4 always.
+    OMPI_MCA_rmaps_base_oversubscribe=1 $SUPERVISE mpirun -n 4 python -m pytest --with-mpi \
+      tests/parallel/test_1189_refinement_release_agrees_across_ranks_parallel.py || status=1
+
     # The facet-slip seam layouts: #1109's 3-D seam defect showed at np 3 and 4
     # (rand3), and the serial driver no longer launches four ranks (#1155), so
     # this one file runs at np 4 always. np 5 is run locally only.
     OMPI_MCA_rmaps_base_oversubscribe=1 $SUPERVISE mpirun -n 4 python -m pytest --with-mpi \
       tests/parallel/test_1103_facet_slip_against_serial_parallel.py || status=1
+
+    # The outcropping ribbon's base is dealt to four ranks by cell number, so the
+    # cells a path-measured partition leaves out are on other ranks (#1172); at
+    # two ranks the file is skipped. This one file runs at np 4 always.
+    OMPI_MCA_rmaps_base_oversubscribe=1 $SUPERVISE mpirun -n 4 python -m pytest --with-mpi \
+      tests/parallel/test_1097_outcropping_ribbon_partitioned_parallel.py || status=1
 
     # Further passes at three and four ranks, because two is a special case:
     # the failure this suite exists to catch is a collective entered by some

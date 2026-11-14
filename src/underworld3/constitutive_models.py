@@ -3799,15 +3799,11 @@ def _director_as_column(value):
 
 
 class TransverseIsotropicFlowModel(ViscousFlowModel):
-    # TODO(BUG): the CONSISTENT (Newton) tangent of this model is inconsistent
-    # with its residual when the anisotropy is active (eta_1 != eta_0): PETSc
-    # -snes_test_jacobian at bounded curvature reads ||J-Jfd||/||J|| ~ 2e-3-5e-3
-    # in developed flow where the isotropic control is FD-limited (~4e-6) — the
-    # dC/d(eps_II) director-coupled terms are missing or wrong, so TI "Newton"
-    # runs at Picard pace. Native-path evidence (no rotated machinery); the
-    # isotropic limit through this class is clean at rest but shares the defect
-    # once eta_1 differs. See issue #457 (incl. the checker-regularisation
-    # methodology: at 1e-12 the FD reference itself is invalid for power-law).
+    # The Newton tangent is consistent with the residual (#457, fixed by #493):
+    # -snes_test_jacobian for a TI power law with eta_1 = 0.01 eta_0 reads the
+    # same as the isotropic control, at the finite-difference floor. It has no
+    # major symmetry, so the assembled Newton velocity block is non-symmetric
+    # (1e-1); the Picard block is symmetric (docs/developer/subsystems/solvers.md).
     r"""
     Transversely isotropic (anisotropic) viscous flow model.
 

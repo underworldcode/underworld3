@@ -7337,23 +7337,12 @@ def _assembly_edges_on_polylines(asm_pts, edges, polylines, tol):
     return [keys[i] for i in np.flatnonzero(on)]
 
 
-def _place_thin_volume_2d(dm, polylines, width, label, label_value,
-                          clearance, size, assembly, verbose, mesher=None,
-                          seams="gather", ligament=None, grading=0.35):
-    """The ribbon: the identical construction one dimension down.
+def _thin_volume_assembly_2d(dm, polylines, width, size, assembly, mesher):
+    """The ribbon's assembly, clipped to the domain: meshed once (rank 0) and
+    broadcast. Collective.
 
-    Serial AND parallel through the same gather-first mechanism as the 3-D
-    volume: the assembly is meshed once (rank 0) and broadcast, the region
-    gathers to one rank, the carve and the holes fill run there, every rank
-    rebuilds collectively.
-
-    The specify-long contract holds as it does in 3-D: polylines may run
-    past the domain, the assembly is clipped to the box, and a clipped edge
-    left in a wall line is the ribbon's OUTCROP BAND — boundary edges
-    carrying both the skin label and the wall's labels. The 2-D cap is two
-    straight wall segments (the 3-D wall annulus one dimension down), so the
-    outcrop fill is one simply-connected polygon: the cavity ring with its
-    wall span replaced by the skin's interior chain.
+    Returns the domain boundary it was clipped to (``dom_verts``,
+    ``dom_edges`` and its loops) and the assembly (``asm_pts``, ``asm_tris``).
     """
     comm = uw.mpi.comm
 
@@ -7402,10 +7391,61 @@ def _place_thin_volume_2d(dm, polylines, width, label, label_value,
     if real:
         raise RuntimeError(f"place_thin_volume assembly failed: {real[0]}")
     asm_pts, asm_tris = comm.bcast(payload, root=0)
+    return dom_verts, dom_edges, domain_loops, asm_pts, asm_tris
 
+
+def _assembly_skin_edges(asm_pts, asm_tris):
+    """The assembly's skin, as edges between assembly nodes."""
     _skin_xyz, skin_local, skin_node_ids = _assembly_skin(asm_pts, asm_tris)
-    skin_edges = [(int(skin_node_ids[a]), int(skin_node_ids[b]))
-                  for a, b in skin_local]
+    return [(int(skin_node_ids[a]), int(skin_node_ids[b]))
+            for a, b in skin_local]
+
+
+def _skin_reach_2d(dm, asm_pts, skin_edges, width, clearance):
+    """What the 2-D placement measures on a mesh against a band's skin: the
+    vertex coordinates, the cells wound anticlockwise, each vertex's ``h``,
+    its distance to the skin, and the reach within which a vertex is carved.
+    Collective (``h`` is reconciled across ranks)."""
+    vS, vE = dm.getDepthStratum(0)
+    X = _coords(dm)[: vE - vS]
+    cells = _cells_anticlockwise(dm, X)
+    h_vertex, _hc = _vertex_h_3d(dm, cells, len(X))
+    d_skin = _segments_distance(X, asm_pts, skin_edges)
+    reach_v = np.maximum(clearance * h_vertex, 0.6 * width)
+    return X, cells, h_vertex, d_skin, reach_v
+
+
+def _gathered_vertices_2d(h_vertex, d_skin, reach_v):
+    """The vertices whose cell star the 2-D placement gathers to one rank:
+    those within one ``h`` beyond the carve's reach of the band's skin. The
+    add-on partition marks its regions with the same expression
+    (:func:`_ribbon_region_marks`), so on one mesh and one skin the two
+    agree."""
+    return d_skin < reach_v + 1.0 * h_vertex
+
+
+def _place_thin_volume_2d(dm, polylines, width, label, label_value,
+                          clearance, size, assembly, verbose, mesher=None,
+                          seams="gather", ligament=None, grading=0.35):
+    """The ribbon: the identical construction one dimension down.
+
+    Serial AND parallel through the same gather-first mechanism as the 3-D
+    volume: the assembly is meshed once (rank 0) and broadcast, the region
+    gathers to one rank, the carve and the holes fill run there, every rank
+    rebuilds collectively.
+
+    The specify-long contract holds as it does in 3-D: polylines may run
+    past the domain, the assembly is clipped to the box, and a clipped edge
+    left in a wall line is the ribbon's OUTCROP BAND — boundary edges
+    carrying both the skin label and the wall's labels. The 2-D cap is two
+    straight wall segments (the 3-D wall annulus one dimension down), so the
+    outcrop fill is one simply-connected polygon: the cavity ring with its
+    wall span replaced by the skin's interior chain.
+    """
+    comm = uw.mpi.comm
+    dom_verts, dom_edges, domain_loops, asm_pts, asm_tris = (
+        _thin_volume_assembly_2d(dm, polylines, width, size, assembly, mesher))
+    skin_edges = _assembly_skin_edges(asm_pts, asm_tris)
     loops_asm = _skin_loops(skin_edges)
 
     # The outcrop band: the skin's trace on the domain boundary. The
@@ -7426,18 +7466,15 @@ def _place_thin_volume_2d(dm, polylines, width, label, label_value,
 
     vS, vE = dm.getDepthStratum(0)
     pStart, pEnd = dm.getChart()
-    X = _coords(dm)[: vE - vS]
-    cells = _cells_anticlockwise(dm, X)
-    h_vertex, _hc = _vertex_h_3d(dm, cells, len(X))
-    d_skin = _segments_distance(X, asm_pts, skin_edges)
-    reach_v = np.maximum(clearance * h_vertex, 0.6 * width)
+    X, cells, h_vertex, d_skin, reach_v = _skin_reach_2d(
+        dm, asm_pts, skin_edges, width, clearance)
 
     area_before = np.array([float(cell_areas(dm).sum())
                             if len(cells) else 0.0])
     comm.Allreduce(MPI.IN_PLACE, area_before, op=MPI.SUM)
 
     mark = np.zeros(pEnd - pStart, dtype=np.int32)
-    mark[np.flatnonzero(d_skin < reach_v + 1.0 * h_vertex)
+    mark[np.flatnonzero(_gathered_vertices_2d(h_vertex, d_skin, reach_v))
          + vS - pStart] = 1
     if seams in ("ligament", "conform"):
         dm_work, moved = dm, 0          # no gather: each rank carves its own
@@ -7446,11 +7483,8 @@ def _place_thin_volume_2d(dm, polylines, width, label, label_value,
     if moved:
         vS, vE = dm_work.getDepthStratum(0)
         pStart, pEnd = dm_work.getChart()
-        X = _coords(dm_work)[: vE - vS]
-        cells = _cells_anticlockwise(dm_work, X)
-        h_vertex, _hc = _vertex_h_3d(dm_work, cells, len(X))
-        d_skin = _segments_distance(X, asm_pts, skin_edges)
-        reach_v = np.maximum(clearance * h_vertex, 0.6 * width)
+        X, cells, h_vertex, d_skin, reach_v = _skin_reach_2d(
+            dm_work, asm_pts, skin_edges, width, clearance)
 
     shared = _shared_point_flags(dm_work).astype(bool)
     on_wall = _true_wall_vertex_mask(dm_work, len(X))
@@ -9230,6 +9264,61 @@ def place_fault_ribbon(base_mesh, sheet, width, *, normals=None,
     return mesh, mid, info
 
 
+def _ribbon_bands(extended, sizes, mesher):
+    """The ribbon's bands as ``place_thin_volume`` is given them, one
+    ``(polylines, size)`` per placement: every strand on its own for the
+    ladder, the fused network in one."""
+    if mesher == "network":
+        return [(extended, float(np.mean(sizes)))]
+    return [([(S, _mitred_reach_2d(S))], size)
+            for S, size in zip(extended, sizes)]
+
+
+def _ribbon_region_marks(dm, extended, width, clearance, sizes, mesher):
+    """The region marks the add-on partition is given for a ribbon's bands:
+    the vertices each placement gathers, from the band's own skin.
+
+    ``extended`` are the bands' paths as the placement is given them, ``sizes``
+    their rung lengths; the bands are assembled against the boundary of
+    ``dm``. Collective. Returns ``marks(dm)`` for
+    :func:`~underworld3.utilities.addon_partition.partition_addon`, with one
+    region id per placement; ``marks`` is collective too.
+
+    The marks are the first placement's own. A later placement runs on the
+    mesh the earlier ones left, so its gather is held by the partition's
+    second layer and by the merging of regions that touch, not by
+    construction; a gather that does move a cell is refused where the
+    provenance is inherited.
+
+    A region measured from the band's path does not hold an outcropping
+    ladder band: its cap runs along the wall past the path's end.
+    """
+    width = float(width)
+    skins = []
+    for polylines, size in _ribbon_bands(extended, sizes, mesher):
+        # "fuse": the ribbon places its bands with place_thin_volume's default
+        _dv, _de, _loops, asm_pts, asm_tris = _thin_volume_assembly_2d(
+            dm, polylines, width, float(size), "fuse", mesher)
+        skins.append((asm_pts, _assembly_skin_edges(asm_pts, asm_tris)))
+
+    def marks(level_dm):
+        vS, vE = level_dm.getDepthStratum(0)
+        pStart, pEnd = level_dm.getChart()
+        ids = np.zeros(pEnd - pStart, dtype=np.int32)
+        X = None
+        for k, (asm_pts, skin_edges) in enumerate(skins, start=1):
+            if X is None:
+                X, _cells, h_vertex, d_skin, reach_v = _skin_reach_2d(
+                    level_dm, asm_pts, skin_edges, width, clearance)
+            else:       # only the distance depends on the band
+                d_skin = _segments_distance(X, asm_pts, skin_edges)
+            near = np.flatnonzero(
+                _gathered_vertices_2d(h_vertex, d_skin, reach_v)) + vS - pStart
+            ids[near] = np.maximum(ids[near], k)
+        return ids
+    return marks
+
+
 def place_fault_ribbon_2d(base_mesh, traces, width, *, margin_rings=2,
                           band_label="Band", band_value=71,
                           clearance=0.3, split=True, mesher="ladder",
@@ -9372,21 +9461,25 @@ def place_fault_ribbon_2d(base_mesh, traces, width, *, margin_rings=2,
     # conform modes mesh across the seams in place, by design.
     host = base_mesh
     if base_mesh.dm.getComm().getSize() > 1 and seams == "gather":
-        from underworld3.utilities.addon_partition import (mark_band,
-                                                           partition_addon)
-        host = partition_addon(base_mesh, mark_band(extended, width, clearance),
-                               layers=2, verbose=verbose)
+        from underworld3.utilities.addon_partition import partition_addon
+        host = partition_addon(
+            base_mesh,
+            _ribbon_region_marks(base_mesh.dm, extended, width, clearance,
+                                 spacing_all, mesher),
+            layers=2, verbose=verbose)
     dm = host.dm
 
+    bands = _ribbon_bands(extended, spacing_all, mesher)
     if mesher == "network":
         # ONE placement call for the whole network: the ribbons are fused
         # in CAD, so touching strands and shared bands are ordinary cells
         # of the union, and every spine is EMBEDDED, so the cut below
         # walks its own vertices (#595). The fused band is one region and
         # therefore carries one label value.
+        (polylines, size), = bands
         dm, _info = place_thin_volume(
-            dm, extended, width, label=band_label, label_value=band_value,
-            clearance=clearance, size=float(np.mean(spacing_all)),
+            dm, polylines, width, label=band_label, label_value=band_value,
+            clearance=clearance, size=size,
             mesher="network", verbose=verbose, seams=seams,
             ligament=ligament, grading=grading)
     else:
@@ -9394,15 +9487,15 @@ def place_fault_ribbon_2d(base_mesh, traces, width, *, margin_rings=2,
             raise ValueError(
                 "seams='ligament' needs mesher='network' (the spines must "
                 "be embedded for the label-only cut)")
-        for k, S in enumerate(extended):
+        for k, (polylines, size) in enumerate(bands):
             # the ladder places strands one after another, and a later
             # cavity may not take a cell of an earlier band's skin: the
             # linear fill keeps that room between close strands (the
             # harder grading is the network mesher's, one placement)
             dm, _info = place_thin_volume(
-                dm, [(S, _mitred_reach_2d(S))], width, label=band_label,
+                dm, polylines, width, label=band_label,
                 label_value=band_value + k, clearance=clearance,
-                size=spacing_all[k], mesher="ladder", verbose=verbose,
+                size=size, mesher="ladder", verbose=verbose,
                 grading=1.0)
 
     mesh = discretisation.Mesh(

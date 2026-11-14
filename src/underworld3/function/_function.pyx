@@ -461,6 +461,34 @@ def _global_fallback_indices(return_value, return_mask):
     return np.where(return_mask[:, 0, 0] | nonfinite)[0]
 
 
+def _agreed_on_every_rank(call):
+    """Run a rank-local step of ``global_evaluate_nd`` and agree on its failure.
+
+    The steps around it are collective (the swarm migrations, the Allreduces of
+    the containment round). A raise on one rank alone left the others waiting in
+    the next of them (#960). Every rank now learns of a failure here and raises,
+    the failing rank its own error, the others a RuntimeError naming it.
+    """
+    from mpi4py import MPI
+    error = None
+    result = None
+    try:
+        result = call()
+    except Exception as exc:
+        error = exc
+    if uw.mpi.size > 1:
+        failed = uw.mpi.comm.allreduce(error is not None, op=MPI.LOR)
+    else:
+        failed = error is not None
+    if failed:
+        if error is not None:
+            raise error
+        raise RuntimeError(
+            "global_evaluate: the local evaluation failed on another rank; "
+            "every rank stops here (#960)")
+    return result
+
+
 def global_evaluate_nd(   expr,
                 coords=None,
                 coord_sys=None,
@@ -628,7 +656,9 @@ def global_evaluate_nd(   expr,
     # Forward `simplify`: without it the local evaluator's default (True) ran
     # sympy.simplify on every call for any expression holding a mesh variable
     # (14 of 25 s in a semi-Lagrangian step with a tanh velocity, 2026-09-08).
-    values, extrapolated = evaluate_nd(expr, local_coords, rbf=rbf, evalf=evalf, verbose=verbose, check_extrapolated=True, simplify=simplify, limit=limit,)
+    values, extrapolated = _agreed_on_every_rank(lambda: evaluate_nd(
+        expr, local_coords, rbf=rbf, evalf=evalf, verbose=verbose,
+        check_extrapolated=True, simplify=simplify, limit=limit,))
 
     if local_coords.shape[0] > 0:
         # Into storage by _data_layout, which keeps a MATRIX by column: the read
@@ -738,9 +768,9 @@ def global_evaluate_nd(   expr,
 
             # This rank's local rbf extrapolation of the global set. NON-collective
             # value path — see DEADLOCK SAFETY above (must be rbf=True, never FE).
-            ext_vals, ext_flag = evaluate_nd(
+            ext_vals, ext_flag = _agreed_on_every_rank(lambda: evaluate_nd(
                 expr, all_ext, rbf=True, evalf=False, verbose=False, simplify=simplify,
-                check_extrapolated=True, limit=limit,)
+                check_extrapolated=True, limit=limit,))
             ext_vals = np.ascontiguousarray(
                 np.asarray(ext_vals, dtype=np.float64).reshape((n_ext_total,) + expr_shape))
             ext_flag = np.asarray(ext_flag).reshape(n_ext_total).astype(np.int32)
@@ -1276,7 +1306,7 @@ def evaluate_nd(   expr,
         # so petsc_interpolate does not look those points up again (#551
         # item 2).
         in_or_not, cell_hints = mesh._classify_points_in_domain(
-            coords_array, strict_validation=False)
+            coords_array, strict_validation=False, exact_location=True)
         evaluation_interior = petsc_interpolate( expr,
                                     coords_array[in_or_not],
                                     coord_sys,
