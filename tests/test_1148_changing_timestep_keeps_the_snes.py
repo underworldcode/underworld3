@@ -232,8 +232,11 @@ def test_a_new_darcy_source_destroys_the_old_snes():
 @pytest.fixture
 def time_scale_20_myr():
     uw.reset_default_model()
+    # A mass scale too: a solver that needs stress is refused in a kinematic
+    # (length and time only) model (units ruling, 2026-11-13).
     uw.get_default_model().set_reference_quantities(length_scale=1000 * uw.units.km,
-                                                    time_scale=20 * uw.units.Myr)
+                                                    time_scale=20 * uw.units.Myr,
+                                                    mass_scale=1.0e24 * uw.units.kg)
     yield
     uw.reset_default_model()
 

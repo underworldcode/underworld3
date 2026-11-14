@@ -275,12 +275,18 @@ class ExpressionDescriptor:
                 # Use a placeholder and will be updated on next access
                 initial_value = 0
 
-            # Create persistent expression with unique name generation
+            # Create persistent expression with unique name generation. The
+            # declared units go on the default only in a model with reference
+            # quantities: in a model without units a default must be a plain
+            # number, or it makes the expressions built on it dimensional (a
+            # viscoplastic stress came back in pascal, #881).
+            import underworld3 as _uw
+
             expr = expression(
                 name,
                 initial_value,
                 self.description,
-                units=self.units,
+                units=self.units if _uw.get_default_model().has_units() else None,
                 _unique_name_generation=True,
             )
 

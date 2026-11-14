@@ -9,10 +9,20 @@ companion "rules of engagement" to the
 
 The one sentence to remember:
 
-> **Everything from the DM downward — PETSc, the solvers, `evaluate` /
-> `global_evaluate`, point-location, the JIT residuals — runs in
+> **Everything from the DM downward — PETSc, the solvers, point-location, the
+> JIT residuals, and the inside of `evaluate` / `global_evaluate` — runs in
 > non-dimensional (model-unit) space. Units live *above* that line, in the
 > user-facing `MeshVariable` API.**
+
+**`evaluate` is the output gateway** (ruling, 2026-11-13; #771, #904). It
+takes ND or unit-aware coordinates, computes in ND, and in a model with
+reference quantities **returns dimensional values**, as the
+[units design](UNITS_SIMPLIFIED_DESIGN_2025-11.md) specifies. It refuses an
+expression that mixes a field without units with a leaf that has units: such a
+field holds a non-dimensional number of unknown dimension, so the product has
+no coherent units. A field without units on its own is returned as a pure
+number. Code that needs ND values reads `var.data`, or reduces an `evaluate`
+result with `uw.non_dimensionalise`.
 
 ## The boundary, concretely
 

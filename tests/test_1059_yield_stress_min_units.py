@@ -60,8 +60,10 @@ def _pure_shear_viscosity(tau_pa, floor_spelling):
     )
     v = uw.discretisation.MeshVariable("U", mesh, 2, degree=2, units="m/s")
     p = uw.discretisation.MeshVariable("P", mesh, 1, degree=1, units="Pa")
-    seed = uw.discretisation.MeshVariable("seed", mesh, 1, degree=1)
-    seed.array[...] = 1.0
+    # A weakening multiplier: declared dimensionless, so a units model reads it as
+    # a pure number rather than a field of unknown dimension (#904).
+    seed = uw.discretisation.MeshVariable("seed", mesh, 1, degree=1, units="dimensionless")
+    seed.data[...] = 1.0
 
     rate = 29.1e6 / ETA                     # 1/s
     x = np.asarray(v.coords.to("m"))
@@ -133,7 +135,7 @@ def test_sum_of_field_expression_and_quantity_expression_scales_each_operand():
         elementRes=(2, 2), minCoords=(0.0, 0.0),
         maxCoords=(uw.quantity(H, "m"), uw.quantity(H, "m")),
     )
-    seed = uw.discretisation.MeshVariable("seed_sum", mesh, 1, degree=1)
+    seed = uw.discretisation.MeshVariable("seed_sum", mesh, 1, degree=1, units="dimensionless")
     C0 = uw.expression(r"C_0", uw.quantity(29.1, "MPa"), "cohesion")
     tau = uw.expression(r"\tau", C0 * seed.sym[0], "yield stress")
     floor = uw.expression(r"f", uw.quantity(0.35, "MPa"), "floor")

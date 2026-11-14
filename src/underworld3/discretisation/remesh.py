@@ -565,10 +565,14 @@ def remap_var_set(mesh, vars_, old_X, new_X, old_data, *, verbose=False, raise_o
             # which is the same on every rank; an error inside the evaluation is
             # a failure, agreed below, never a reason to evaluate again on one
             # rank alone.
-            if _limiter_applies(var.sym):
-                val = uw.function.global_evaluate(var.sym, target, monotone=REMESH_MONOTONE)
-            else:
-                val = uw.function.global_evaluate(var.sym, target)
+            # The new nodes can lie more than a cell outside the old geometry:
+            # a library resampling, not a user query, so no far-point refusal.
+            from underworld3.function.functions_unit_system import _internal_resampling
+            with _internal_resampling():
+                if _limiter_applies(var.sym):
+                    val = uw.function.global_evaluate(var.sym, target, monotone=REMESH_MONOTONE)
+                else:
+                    val = uw.function.global_evaluate(var.sym, target)
             # Laid out by _data_layout, which a flat reshape is not for a MATRIX
             # or a symmetric tensor. var.data holds non-dimensional values, and
             # the helper reduces a dimensional evaluation to them.

@@ -9345,6 +9345,33 @@ class SNES_MultiComponent(SolverBaseClass):
 
 ### =================================
 
+def _stokes_default_units():
+    """Units for the velocity and pressure a Stokes solver creates for itself:
+    ``("m/s", "Pa")`` in a model with reference quantities, ``(None, None)`` in a
+    model without units.
+
+    A Stokes solve needs stress, so a units model must give length, time and
+    mass scales. A model with length and time only is purely kinematic: it can
+    run advection or diffusion, but a dynamic solver in it would get a velocity
+    with units and a pressure without, and is refused (ruling, 2026-11-13).
+    Called on every construction, whatever fields are passed.
+    """
+    orchestration_model = uw.get_default_model()
+    if not orchestration_model.has_units():
+        return None, None
+    scales = set(orchestration_model.get_fundamental_scales() or {})
+    missing = [s for s in ("length", "time", "mass") if s not in scales]
+    if missing:
+        raise ValueError(
+            "Stokes needs length, time and mass scales in a model with reference "
+            f"quantities; this model has no {' or '.join(missing)} scale. Add one "
+            "to set_reference_quantities, e.g. viscosity=uw.quantity(1e21, 'Pa*s') "
+            "or mass=uw.quantity(1e24, 'kg'). A model with length and time only is "
+            "kinematic: it can run advection and diffusion, but not a solver that "
+            "needs stress.")
+    return "m/s", "Pa"
+
+
 class SNES_Stokes_SaddlePt(SolverBaseClass):
     r"""
     Saddle point equation solver for constrained problems using PETSc SNES.
@@ -9531,13 +9558,35 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         self._degree = degree
 
-        ## Any problem with U,P, just define our own
-        if velocityField == None or pressureField == None:
+        ## Create whichever of U, P was not passed, and keep the one that was (#844).
+        ## In a model whose scales cover them, the created fields carry units (m/s,
+        ## Pa), so the default path never builds a unitless field in a units model.
+        ## A field passed alone must match `degree`: the one created beside it
+        ## takes its degree from `degree` (velocity `degree`, pressure
+        ## `degree - 1`), and a passed field of another degree is refused rather
+        ## than paired with one that does not match it.
+        u_units, p_units = _stokes_default_units()   # refuses a kinematic model
+        if (velocityField is None) != (pressureField is None):
+            if velocityField is not None and velocityField.degree != degree:
+                raise ValueError(
+                    f"Stokes: velocityField '{velocityField.clean_name}' has degree "
+                    f"{velocityField.degree}, but degree={degree}, so the pressure "
+                    f"created beside it would have degree {degree - 1}. Pass "
+                    f"degree={velocityField.degree}, or pass both fields (#844).")
+            if pressureField is not None and pressureField.degree != degree - 1:
+                raise ValueError(
+                    f"Stokes: pressureField '{pressureField.clean_name}' has degree "
+                    f"{pressureField.degree}, but degree={degree} asks for a pressure "
+                    f"of degree {degree - 1} beside the velocity created here. Pass "
+                    f"degree={pressureField.degree + 1}, or pass both fields (#844).")
+        if velocityField is None or pressureField is None:
 
             # Note, ensure names are unique for each solver type
             i = SNES_Stokes_SaddlePt._obj_count
-            self.Unknowns.u = uw.discretisation.MeshVariable(f"V{i}", self.mesh, self.mesh.dim, degree=degree, varsymbol=rf"{{\mathbf{{u}}^{{[{i}]}} }}" )
-            self.Unknowns.p = uw.discretisation.MeshVariable(f"P{i}", self.mesh, 1, degree=degree-1, continuous=p_continuous, varsymbol=rf"{{\mathbf{{p}}^{{[{i}]}} }}")
+            if velocityField is None:
+                self.Unknowns.u = uw.discretisation.MeshVariable(f"V{i}", self.mesh, self.mesh.dim, degree=degree, varsymbol=rf"{{\mathbf{{u}}^{{[{i}]}} }}", units=u_units)
+            if pressureField is None:
+                self.Unknowns.p = uw.discretisation.MeshVariable(f"P{i}", self.mesh, 1, degree=degree-1, continuous=p_continuous, varsymbol=rf"{{\mathbf{{p}}^{{[{i}]}} }}", units=p_units)
 
             if self.verbose and uw.mpi.rank == 0:
                 print(f"SNES Saddle Point Solver {self.instance_number}: creating new mesh variables for unknowns")
