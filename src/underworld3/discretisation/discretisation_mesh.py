@@ -3258,8 +3258,10 @@ class Mesh(Stateful, uw_object):
             # Evaluated at the non-dimensional coordinates the DM holds, and laid out
             # by _data_layout, which a flat reshape is not for a MATRIX or a
             # symmetric tensor.
-            out = _evaluated_in_storage_layout(
-                cv, uw.function.global_evaluate(pv.sym, numpy.asarray(cv.coords_nd)))
+            from underworld3.function.functions_unit_system import _internal_resampling
+            with _internal_resampling():
+                out = _evaluated_in_storage_layout(
+                    cv, uw.function.global_evaluate(pv.sym, numpy.asarray(cv.coords_nd)))
         else:
             from underworld3.utilities import custom_mg
             cc = numpy.asarray(self.parent._get_coords_for_basis(pv.degree, pv.continuous))
@@ -3293,8 +3295,10 @@ class Mesh(Stateful, uw_object):
             # Evaluated at the non-dimensional coordinates the DM holds, and laid out
             # by _data_layout, which a flat reshape is not for a MATRIX or a
             # symmetric tensor.
-            out = _evaluated_in_storage_layout(
-                pv, uw.function.global_evaluate(cv.sym, numpy.asarray(pv.coords_nd)))
+            from underworld3.function.functions_unit_system import _internal_resampling
+            with _internal_resampling():
+                out = _evaluated_in_storage_layout(
+                    pv, uw.function.global_evaluate(cv.sym, numpy.asarray(pv.coords_nd)))
         else:
             from underworld3.utilities import custom_mg
             cc = numpy.asarray(self.parent._get_coords_for_basis(pv.degree, pv.continuous))
@@ -10910,9 +10914,12 @@ class Mesh(Stateful, uw_object):
                 # worst on the wall x = 0 at 2 to 8 cells per rank (5 of 138 nodes,
                 # error 3.6e-2 on a field with values up to 3), and at interior
                 # points up to 50 cells per rank (error 1.1e-2). See issue #976.
-                transferred_data[var_name] = uw.function.global_evaluate(
-                    old_var.sym, target_coords
-                )
+                # A library resampling at the new mesh's nodes: no far-point refusal.
+                from underworld3.function.functions_unit_system import _internal_resampling
+                with _internal_resampling():
+                    transferred_data[var_name] = uw.function.global_evaluate(
+                        old_var.sym, target_coords
+                    )
             except Exception as e:
                 # Sanctioned swallow (verbose-only report): a variable that
                 # cannot be transferred comes back zeroed, which the reset path

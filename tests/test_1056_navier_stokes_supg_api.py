@@ -114,8 +114,11 @@ def test_estimate_dt_carries_time_units_on_both_bases():
     quantities (Copilot on #688: the accuracy basis returned a bare number
     while the resolution fallback returned a quantity)."""
     orchestration_model = uw.get_default_model()
+    # A mass scale too: a solver that needs stress is refused in a kinematic
+    # (length and time only) model (units ruling, 2026-11-13).
     orchestration_model.set_reference_quantities(
-        length=uw.quantity(1.0, "m"), time=uw.quantity(1.0, "s"))
+        length=uw.quantity(1.0, "m"), time=uw.quantity(1.0, "s"),
+        mass=uw.quantity(1.0, "kg"))
     try:
         mesh = uw.meshing.UnstructuredSimplexBox(
             minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.25, qdegree=3)

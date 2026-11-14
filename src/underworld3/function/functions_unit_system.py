@@ -925,6 +925,28 @@ def _warn_if_points_are_not_owned(extrapolated):
     )
 
 
+_internal_resampling_depth = 0
+
+
+class _internal_resampling:
+    """Context for the library's own resampling of a field at new points (a remap
+    after a mesh move, a refinement transfer). The far-point refusal (#786) is
+    for user queries; a library path that moved the mesh asks about points that
+    can lie more than a cell outside the old geometry, and extrapolates them on
+    purpose. Entered on every rank by collective code, so the check it switches
+    off is skipped on every rank alike."""
+
+    def __enter__(self):
+        global _internal_resampling_depth
+        _internal_resampling_depth += 1
+        return self
+
+    def __exit__(self, *exc):
+        global _internal_resampling_depth
+        _internal_resampling_depth -= 1
+        return False
+
+
 def _as_symbolic(expr):
     """``expr`` as sympy: a mesh or swarm variable passed itself, rather than its
     ``.sym``, is read through ``.sym``, as the evaluators read it."""
@@ -933,6 +955,19 @@ def _as_symbolic(expr):
     if not isinstance(expr, (sympy.Basic, sympy.MatrixBase)) and hasattr(expr, "sym"):
         return expr.sym
     return expr
+
+def _has_dimension(units):
+    """True for units with a physical dimension. Pint's ``dimensionless`` (and
+    any unit that reduces to it) is no units for every check here: a field or
+    constant declared dimensionless is a known pure number (#904)."""
+    if units is None:
+        return False
+    try:
+        return bool(dict((1.0 * uw.units(str(units))).dimensionality))
+    except Exception:
+        # Sanctioned fallback: a unit label pint cannot parse is treated as
+        # dimensional, the safe side for a refusal that names it.
+        return True
 
 def _unit_leaves(expr):
     """The leaves of ``expr`` that decide its units, split by whether they carry
@@ -957,7 +992,8 @@ def _unit_leaves(expr):
             if id(e) in seen:
                 continue
             seen.add(id(e))
-            if getattr(e, "has_units", False) and getattr(e, "units", None) is not None:
+            if (getattr(e, "has_units", False)
+                    and _has_dimension(getattr(e, "units", None))):
                 dimensional.add(str(e.name))
             stack.append(e.sym)
             continue
@@ -973,9 +1009,12 @@ def _unit_leaves(expr):
             var = ref() if callable(ref) else ref
             if var is None:
                 continue
-            (dimensional if getattr(var, "units", None) is not None else unitless).add(
-                str(getattr(var, "name", var))
-            )
+            units = getattr(var, "units", None)
+            if units is None:
+                unitless.add(str(getattr(var, "name", var)))
+            elif _has_dimension(units):
+                dimensional.add(str(getattr(var, "name", var)))
+            # declared dimensionless: a known pure number, in neither set
         for atom in e.atoms(sympy.Symbol):
             if isinstance(atom, UWexpression):
                 stack.append(atom)
@@ -1023,7 +1062,11 @@ def _refuse_points_far_outside(expr, coords_nd, collective):
     from mpi4py import MPI
     from .expressions import mesh_vars_in_expression
 
-    mesh = mesh_vars_in_expression(_as_symbolic(expr))[0]
+    if _internal_resampling_depth:
+        return
+    from .expressions import unwrap
+    # Unwrapped, so a field inside a named expression is seen too.
+    mesh = mesh_vars_in_expression(unwrap(_as_symbolic(expr)))[0]
     if mesh is None:
         return
     nodes = np.asarray(mesh._coords, dtype=np.float64).reshape(-1, mesh.cdim)

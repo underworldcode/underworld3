@@ -312,3 +312,40 @@ def test_a_variable_passed_itself_is_read_through_its_sym():
     assert inside[0] == pytest.approx(0.5)
     with pytest.raises(ValueError, match="outside"):
         uw.function.evaluate(v, np.array([[6.0e4, -3.0e4]]))
+
+
+@pytest.mark.level_1
+@pytest.mark.tier_b
+def test_a_field_inside_a_named_expression_is_checked_too():
+    mesh = _box()
+    T = uw.discretisation.MeshVariable("T_wrapped_760", mesh, 1, degree=1)
+    T.data[:, 0] = 1.0
+    wrapped = uw.expression(r"w_{760}", 2 * T.sym[0], "wrapped field")
+    with pytest.raises(ValueError, match="outside"):
+        uw.function.evaluate(wrapped, np.array([[6.0e4, -3.0e4]]))
+
+
+@pytest.mark.level_1
+@pytest.mark.tier_b
+def test_a_dimensionless_field_times_a_dimensional_constant_is_not_refused(units_model):
+    """A field declared dimensionless is a known pure number (a weakening
+    multiplier, say), unlike a field with no units at all."""
+    mesh = _box()
+    seed = uw.discretisation.MeshVariable("seed_760", mesh, 1, degree=1, units="dimensionless")
+    seed.data[:, 0] = 0.5
+    C0 = uw.expression(r"C_{760}", uw.quantity(1.0e6, "Pa"), "cohesion")
+    tau = uw.function.evaluate(C0 * seed.sym[0], _PTS)
+    assert float(np.asarray(tau.to("Pa")).ravel()[0]) == pytest.approx(5.0e5)
+
+
+@pytest.mark.level_2
+@pytest.mark.tier_b
+def test_a_remap_after_a_move_is_not_refused():
+    """The library's own resampling at moved nodes can ask about points more than
+    a cell outside the old geometry; the far-point refusal is for user queries."""
+    mesh = _box()
+    T = uw.discretisation.MeshVariable("T_remap_760", mesh, 1, degree=1)
+    T.data[:, 0] = np.asarray(T.coords_nd)[:, 0]
+    new = np.asarray(mesh._coords).copy() * 1.6      # nodes moved well outside
+    mesh.deform(new)
+    assert np.isfinite(np.asarray(T.data)).all()
