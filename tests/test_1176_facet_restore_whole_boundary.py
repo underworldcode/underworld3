@@ -19,7 +19,7 @@ from underworld3.discretisation.discretisation_mesh import (
     _facets_that_can_hold_the_nearest_point)
 from underworld3.meshing.smoothing.graph import _nearest_on_facets_2d, _nearest_on_facets_3d
 
-pytestmark = [pytest.mark.level_1, pytest.mark.tier_a]
+pytestmark = [pytest.mark.level_1, pytest.mark.tier_b]
 
 
 @pytest.mark.parametrize("dim", [2, 3])

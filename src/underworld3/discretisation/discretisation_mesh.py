@@ -4311,6 +4311,11 @@ class Mesh(Stateful, uw_object):
 
         Assigning to this attribute overrides both (the setter replaces the analytic
         closure and is honoured until the geometry deforms).
+
+        The general facet restore is collective: it tests every point against the
+        boundary facets gathered from all ranks, so a point gets the same answer
+        whichever rank asks (#1176), and every rank must call it, including a rank
+        with no points to restore. The analytic closures are local.
         """
         if (getattr(self, "_geometry_deformed", False)
                 or self._analytic_return_coords_to_bounds is None):

@@ -20,7 +20,7 @@ import pytest
 import underworld3 as uw
 from underworld3.meshing.smoothing.graph import _pinned_mask
 
-pytestmark = [pytest.mark.level_1, pytest.mark.tier_a,
+pytestmark = [pytest.mark.level_1, pytest.mark.tier_b,
               pytest.mark.timeout(300, method="thread"),
               pytest.mark.skipif(uw.mpi.size == 1,
                                  reason="the ranks' answers are compared with each other")]
