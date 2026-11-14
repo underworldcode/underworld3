@@ -58,13 +58,15 @@ The default normal is the measure-weighted node normal of the mesh,
 `mesh.boundary_normal(boundary)`: the average of the facet normals at each node,
 weighted by facet length (area in 3-D). It is the normal consistent with what the
 solver integrates. **On a faceted curved wall, leave the normal to Underworld3.**
-Passing the surface's own normal with `normal=` adds a condition the discrete
-wall slip cannot meet where the facets are of unequal length: on the elliptical
-annulus below, rotated free slip with the ellipse's own normal is 43.7 % and
+Passing the surface's own normal with `normal=` adds one equation on the wall
+slip. Where the facets are of unequal length the solve meets that equation to
+round-off and loses most of the slip in doing so (issue #1168): on the elliptical
+annulus of the comparison at the end of this page, rotated free slip with the ellipse's own normal is 43.7 % and
 44.6 % from the reference at cell sizes 0.1 and 0.05, with a large constant
-pressure, while the default normal is 0.19 % at both (issue #1168, open). On a
-circle, where the facets on a wall are of equal length, the two normals give the
-same answer.
+pressure, while the default normal is 0.19 % at both (issue #1168, open). Where
+the facets on a wall are of equal length, as on an unrefined, unadapted circle,
+the two normals give the same answer; a graded or adapted circular wall has
+unequal facets.
 
 **Accuracy.** On the annulus with an exact solution (Kramer et al. 2021), the
 error of the reaction against the exact wall normal stress is 6.8e-3, 3.3e-3,
@@ -105,8 +107,8 @@ Nitsche numbers of technical note 2026-016 are being corrected for #1145 (see
 the note below), so none is quoted here. The examples here leave `gamma` at its
 default.
 
-**Curved walls that are not circles.** Nitsche is not accurate on such a wall
-today. On the elliptical annulus below it is 35.2 % and 39.5 % from the
+**Curved walls that are not circles.** On the one such wall measured so far,
+the elliptical annulus of the comparison at the end of this page, Nitsche is 35.2 % and 39.5 % from the
 reference at the default `gamma` (cell sizes 0.1 and 0.05), 46.9 % and 46.2 % at
 `gamma = 1000`, with a large constant pressure in both, and 19.5 % and 11.3 %
 with the ellipse's own normal passed as `normal=` (issue #1168, open). Use
@@ -224,12 +226,10 @@ n_proj.data[:] /= mag
 stokes.add_natural_bc(penalty * n_proj.sym.dot(v.sym) * n_proj.sym, "Boundary")
 ```
 
-**When to use:**
-- Curved boundaries where you don't have an analytical formula
-- Complex geometries from CAD/imaging data
-- When you want good accuracy without deriving surface equations
+**When to use:** for a penalty condition on a version of Underworld3 without
+`mesh.boundary_normal`; otherwise use that.
 
-**Accuracy:** on the elliptical annulus below, the penalty with projected normals
+**Accuracy:** on the elliptical annulus of the comparison at the end of this page, the penalty with projected normals
 is 0.10 % and 0.023 % from the reference at cell sizes 0.1 and 0.05 (rerun,
 November 2026). `mesh.boundary_normal` gives 0.19 % and 0.045 % (#1168).
 
@@ -260,7 +260,7 @@ stokes.add_natural_bc(penalty * unit_normal.dot(v.sym) * unit_normal, "Outer")
 - A penalty condition on a known geometric shape (ellipses, superellipses,
   spheroids), for example as a reference in a benchmark
 
-**Accuracy:** on the elliptical annulus below it agrees with the penalty with
+**Accuracy:** on the elliptical annulus of the comparison at the end of this page it agrees with the penalty with
 `mesh.boundary_normal` to 0.19 % and 0.045 % at cell sizes 0.1 and 0.05.
 
 ```{warning}
@@ -328,11 +328,15 @@ unit_normal = normal / sympy.sqrt(normal.dot(normal))
 
 The elliptical annulus of the worked example (outer semi-axes 1.5 and 1, inner
 circle of radius 0.5, radial body force `cos(4 theta)`, P2/P1, free slip on both
-walls). There is no exact solution for this geometry; the reference is the
+walls). The worked example itself uses only the penalty, with the facet normal
+`mesh.Gamma`, the projected normal and the ellipse's own normal; the other rows
+were run for this comparison. There is no exact solution for this geometry; the reference is the
 penalty (coefficient 1e4) with the ellipse's own normal. The measure is the
 relative L2 difference of the nodal velocity from the reference. Measured in
 November 2026 on two machines independently, which agree to the printed figures
-(table in issue #1168; the projected-normal row was measured on one of them only):
+on every row both measured (table in issue #1168). Three rows were measured on
+one machine only: the projected normal, the `mesh.boundary_normal` penalty, and
+Nitsche with the ellipse's own normal. The penalty rows use coefficient 1e4.
 
 | Wall condition | Cell 0.1 | Cell 0.05 |
 |---|---|---|
@@ -345,10 +349,12 @@ November 2026 on two machines independently, which agree to the printed figures
 | Nitsche, `gamma = 1000` | 46.9 % | 46.2 % |
 | Rotated free slip, `normal=` the ellipse's own | 43.7 % | 44.6 % |
 
-The first three agree with each other to 0.2 % or better. The facet-normal
-penalty and Nitsche with the ellipse's own normal close as the cells shrink. The
-last three do not close and carry a large constant pressure; their cause is open
-(issue #1168).
+The first three are each within 0.2 % of the reference. That is inside the
+reference's own sensitivity: raising its coefficient from 1e4 to 1e6 moves it by
+9.9e-3, 2.1e-3 and 1.9e-3 at cell sizes 0.1, 0.05 and 0.025, so the comparison
+cannot separate these three. The facet-normal penalty and Nitsche with the
+ellipse's own normal approach the reference as the cells shrink. The last three
+do not, and carry a large constant pressure; their cause is open (issue #1168).
 
 ---
 
@@ -361,7 +367,7 @@ The error in boundary normals affects:
 3. **Traction boundary conditions**: Force direction errors
 4. **Stress computations**: Errors in computed surface stresses
 
-For many geodynamics applications, the error from raw facet normals (32.6 % and 15.1 % on the ellipse above) may be acceptable for exploratory work but problematic for:
+For many geodynamics applications, the error from raw facet normals (32.6 % and 15.1 % on the ellipse above) is too large for:
 - Benchmark comparisons
 - Convergence studies
 - Quantitative predictions
@@ -428,7 +434,7 @@ in 3D spherical models where penalty sensitivity becomes problematic.
 4. **Verify visually**: Plot the normal field to catch errors
 5. **Leave the normal to Underworld3 for rotated free slip**: on a faceted curved wall a given `normal=` makes the answer worse (issue #1168); analytical normals are for penalty references
 6. **Custom constraint direction**: Use `direction=` parameter when the constraint
-   direction differs from the surface normal (faults, basal shear)
+   direction differs from the surface normal (for example basal shear)
 
 ---
 

@@ -25,7 +25,10 @@ datum strongly.
   assembler evaluates (#560). Leave `normal=None` unless the constraint
   must follow the true surface rather than the mesh; an analytic normal is
   exact for the geometry but carries a consistency error against the
-  faceted assembly.
+  faceted assembly. Where the wall's facets are of unequal length (an
+  ellipse, or an adapted or graded circle) a given normal also costs most of
+  the wall slip: 43.7 % from the reference on an elliptical annulus against
+  0.19 % with the default (#1168, open).
 - It works inside the nonlinear SNES and with geometric multigrid, and is
   transparent to the tangent (`consistent_jacobian` behaves as it would
   without it).
