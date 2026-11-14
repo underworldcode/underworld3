@@ -1,6 +1,6 @@
 name: Style Gates
 
-# Machine-enforced subset of docs/developer/UW3_STYLE_CHARTER.md (S3, S4, S7).
+# Machine-enforced subset of docs/developer/UW3_STYLE_CHARTER.md (S3, S4, S6, S7).
 # Fast (<1 min): no PETSc build, no package install — the scanner is stdlib-only.
 #
 # The gate fails on deprecated patterns NOT recorded in
@@ -29,14 +29,14 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Scan src/ for Charter-banned patterns
+      - name: Scan src/ (and tests/, docs/ for field numbers) for Charter-banned patterns
         run: |
           echo "Running the deprecated-pattern scanner (stdlib only)..."
           if ! python scripts/check_deprecated_patterns.py; then
             echo ""
             echo "FAILED: your change introduces a pattern banned by the UW3 Style Charter."
             echo ""
-            echo "  Charter:    docs/developer/UW3_STYLE_CHARTER.md (S3 naming, S4 comments, S7 data access)"
+            echo "  Charter:    docs/developer/UW3_STYLE_CHARTER.md (S3 naming, S4 comments, S6 field numbers, S7 data access)"
             echo "  Guide:      docs/developer/guides/style-gates.md"
             echo "  Run local:  pixi run -e amr-dev python scripts/check_deprecated_patterns.py"
             echo ""
