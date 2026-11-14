@@ -7419,7 +7419,8 @@ def _gathered_vertices_2d(h_vertex, d_skin, reach_v):
     """The vertices whose cell star the 2-D placement gathers to one rank:
     those within one ``h`` beyond the carve's reach of the band's skin. The
     add-on partition marks its regions with the same expression
-    (:func:`_ribbon_region_marks`), so the two cannot differ."""
+    (:func:`_ribbon_region_marks`), so on one mesh and one skin the two
+    agree."""
     return d_skin < reach_v + 1.0 * h_vertex
 
 
@@ -9281,7 +9282,13 @@ def _ribbon_region_marks(dm, extended, width, clearance, sizes, mesher):
     their rung lengths; the bands are assembled against the boundary of
     ``dm``. Collective. Returns ``marks(dm)`` for
     :func:`~underworld3.utilities.addon_partition.partition_addon`, with one
-    region id per placement.
+    region id per placement; ``marks`` is collective too.
+
+    The marks are the first placement's own. A later placement runs on the
+    mesh the earlier ones left, so its gather is held by the partition's
+    second layer and by the merging of regions that touch, not by
+    construction; a gather that does move a cell is refused where the
+    provenance is inherited.
 
     A region measured from the band's path does not hold an outcropping
     ladder band: its cap runs along the wall past the path's end.
@@ -9298,9 +9305,13 @@ def _ribbon_region_marks(dm, extended, width, clearance, sizes, mesher):
         vS, vE = level_dm.getDepthStratum(0)
         pStart, pEnd = level_dm.getChart()
         ids = np.zeros(pEnd - pStart, dtype=np.int32)
+        X = None
         for k, (asm_pts, skin_edges) in enumerate(skins, start=1):
-            _X, _cells, h_vertex, d_skin, reach_v = _skin_reach_2d(
-                level_dm, asm_pts, skin_edges, width, clearance)
+            if X is None:
+                X, _cells, h_vertex, d_skin, reach_v = _skin_reach_2d(
+                    level_dm, asm_pts, skin_edges, width, clearance)
+            else:       # only the distance depends on the band
+                d_skin = _segments_distance(X, asm_pts, skin_edges)
             near = np.flatnonzero(
                 _gathered_vertices_2d(h_vertex, d_skin, reach_v)) + vS - pStart
             ids[near] = np.maximum(ids[near], k)

@@ -155,7 +155,9 @@ band's skin lies within a mitred half width of its path. That does not hold for 
 2-D ladder band that outcrops, whose cap runs along the wall past the end of the
 path, so the ribbon marks with the placement's own expression on the band's own
 skin (`place_surface._ribbon_region_marks`; both read `_gathered_vertices_2d`,
-#1172). The placement then moves nothing, `adopt_hierarchy` keeps the base's own
+#1172). The first placement then moves nothing by construction; a later strand is
+placed on the mesh the earlier ones left, where the same holds as measured and a gather
+that does move a cell is refused. `adopt_hierarchy` then keeps the base's own
 levels under the partitioned host instead of co-locating copies of them, and the pair the
 partition separated is read from the recorded provenance (`test_1099`). The ribbon's
 ligament and conform modes mesh across the seams in place and are unchanged.
