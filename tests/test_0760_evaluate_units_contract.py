@@ -178,26 +178,32 @@ def test_stokes_keeps_a_velocity_passed_without_a_pressure():
 
 @pytest.mark.level_2
 @pytest.mark.tier_b
-def test_a_pressure_passed_without_a_velocity_is_refused():
-    """The velocity Stokes would create comes after the passed pressure, and the
-    pressure-nullspace guard finds the pressure by creation order, so it would
-    refuse the problem with a misleading message (#1147). Refused here instead,
-    naming the fix."""
+def test_stokes_keeps_a_pressure_passed_without_a_velocity():
+    """The solver numbers its own fields since #1170, so a pressure created before
+    the velocity Stokes creates beside it is kept, and the solve writes into it."""
     mesh = _box()
     p = uw.discretisation.MeshVariable("p_844", mesh, 1, degree=1)
-    with pytest.raises(ValueError, match="velocity created first"):
-        uw.systems.Stokes(mesh, pressureField=p)
+    st = uw.systems.Stokes(mesh, pressureField=p)
+    assert st.Unknowns.p is p
+    assert st.Unknowns.u.degree == 2
+    _solve_cavity(st)
+    assert float(np.abs(np.asarray(p.data)).max()) > 0.0
+    assert float(np.abs(np.asarray(st.Unknowns.u.data)).max()) == pytest.approx(1.0)
 
 
 @pytest.mark.level_2
 @pytest.mark.tier_b
 def test_a_passed_field_of_the_wrong_degree_is_refused():
-    """The pressure created beside it takes its degree from ``degree``: a P1
-    velocity would get a P1 pressure, an unstable pair that still converges."""
+    """The field created beside it takes its degree from ``degree``: a P1 velocity
+    would get a P1 pressure, and a P2 pressure a P2 velocity with a continuous
+    pressure, both unstable pairs that still converge."""
     mesh = _box()
     v1 = uw.discretisation.MeshVariable("v1_844", mesh, 2, degree=1)
     with pytest.raises(ValueError, match="degree=1"):
         uw.systems.Stokes(mesh, velocityField=v1)
+    p2 = uw.discretisation.MeshVariable("p2_844", mesh, 1, degree=2)
+    with pytest.raises(ValueError, match="degree=3"):
+        uw.systems.Stokes(mesh, pressureField=p2)
     # A degree that fits is accepted.
     assert uw.systems.Stokes(mesh, velocityField=v1, degree=1).Unknowns.u is v1
 
