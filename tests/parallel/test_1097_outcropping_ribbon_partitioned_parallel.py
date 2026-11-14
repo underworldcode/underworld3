@@ -24,9 +24,7 @@ from petsc4py import PETSc
 import underworld3 as uw
 from underworld3.utilities import place_surface
 
-# Tier C until a parallel run has shown it to fail on a partition measured
-# from the path.
-pytestmark = [pytest.mark.mpi(min_size=4), pytest.mark.level_2, pytest.mark.tier_c,
+pytestmark = [pytest.mark.mpi(min_size=4), pytest.mark.level_2, pytest.mark.tier_b,
               pytest.mark.timeout(900)]
 
 N_COARSE = 17               # coarse cells along a side; one refinement halves them
