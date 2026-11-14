@@ -805,6 +805,75 @@ def _facets_that_can_hold_the_nearest_point(pts, fpts, centroids, tree):
     return candidates
 
 
+def _outward_normal_at_nearest_point(p, closest, facets, normals, found):
+    """The outward normal for the side test of ``p`` against its nearest boundary
+    point ``closest``, which lies on ``facets[found]``. ``facets`` are the facets
+    that can hold the nearest point (all those that do are among them), with
+    outward unit ``normals``. Returns the nearest point and the normal.
+
+    Inside a facet the normal is that facet's. Where the nearest point is a vertex
+    or (in 3-D) an edge, several facets hold it and no one facet's normal decides
+    the side: beyond a corner, the vector from the corner to ``p`` can lie along
+    one wall, square to the other's normal. The normal there is the angle-weighted
+    sum of the normals of the facets meeting at the vertex, or the sum of the two
+    meeting at the edge. The sign of ``p - closest`` along it is the side of the
+    boundary ``p`` is on, at a convex corner and at a reentrant one alike
+    (Baerentzen and Aanaes, IEEE TVCG 11, 2005). The vertex itself is returned as
+    the nearest point, so the restore moves the point off both walls."""
+    cdim = facets.shape[2]
+    if cdim == 2:
+        a, b = facets[found]
+        ab = b - a
+        t = numpy.dot(p - a, ab) / numpy.dot(ab, ab)
+        if 0.0 < t < 1.0:
+            return closest, normals[found]
+        vertex = a if t <= 0.0 else b
+        meeting = numpy.any(numpy.all(facets == vertex, axis=2), axis=1)
+        n = normals[meeting].sum(axis=0)
+        return vertex, n / numpy.linalg.norm(n)
+
+    # 3-D: the region of the triangle the nearest point is in, as
+    # _nearest_on_facets_3d clamps it
+    A, B, C = facets[found]
+    AB, AC = B - A, C - A
+    d1, d2 = numpy.dot(AB, p - A), numpy.dot(AC, p - A)
+    d3, d4 = numpy.dot(AB, p - B), numpy.dot(AC, p - B)
+    d5, d6 = numpy.dot(AB, p - C), numpy.dot(AC, p - C)
+    va, vb, vc = d3 * d6 - d5 * d4, d5 * d2 - d1 * d6, d1 * d4 - d3 * d2
+    v, w = vb / (va + vb + vc), vc / (va + vb + vc)
+    v, w = min(max(v, 0.0), 1.0), min(max(w, 0.0), 1.0)
+    if v + w > 1.0:
+        v, w = v / (v + w), w / (v + w)
+        on_bc = True
+    else:
+        on_bc = False
+    corner = None
+    if v == 0.0 and w == 0.0:
+        corner = A
+    elif v == 1.0:
+        corner = B
+    elif w == 1.0:
+        corner = C
+    if corner is not None:
+        holds = numpy.all(facets == corner, axis=2)          # (k, 3)
+        meeting = numpy.flatnonzero(numpy.any(holds, axis=1))
+        n = numpy.zeros(3)
+        for j in meeting:
+            at = int(numpy.flatnonzero(holds[j])[0])
+            e1 = facets[j, (at + 1) % 3] - facets[j, at]
+            e2 = facets[j, (at + 2) % 3] - facets[j, at]
+            cos = numpy.dot(e1, e2) / (numpy.linalg.norm(e1) * numpy.linalg.norm(e2))
+            n += numpy.arccos(min(max(cos, -1.0), 1.0)) * normals[j]
+        return corner, n / numpy.linalg.norm(n)
+    if on_bc or v == 0.0 or w == 0.0:
+        P, Q = (B, C) if on_bc else ((A, C) if v == 0.0 else (A, B))
+        meeting = (numpy.any(numpy.all(facets == P, axis=2), axis=1)
+                   & numpy.any(numpy.all(facets == Q, axis=2), axis=1))
+        n = normals[meeting].sum(axis=0)
+        return closest, n / numpy.linalg.norm(n)
+    return closest, normals[found]
+
+
 def _sum_over_sharers(dm, values):
     """The sum, over every rank's copy of each vertex, of ``values``, an array indexed
     like the local coordinate array; each copy gets the sum. Also returns how many
@@ -4434,12 +4503,14 @@ class Mesh(Stateful, uw_object):
         centroids = numpy.ascontiguousarray(fpts.mean(axis=1))
         tree = uw.kdtree.KDTree(centroids)
         closest = numpy.empty_like(pts)
+        nvec = numpy.empty_like(pts)
         for i, candidates in enumerate(_facets_that_can_hold_the_nearest_point(
                 pts, fpts, centroids, tree)):
-            closest[i] = nearest_on(pts[i:i + 1], fpts[candidates])[0]
-        # side test against the normal of the facet owning `closest` (nearest centroid)
-        owner = numpy.asarray(tree.query(numpy.ascontiguousarray(closest), 1)[1]).flatten()
-        nvec = nrm[owner]
+            near, found = nearest_on(pts[i:i + 1], fpts[candidates], with_facet=True)
+            # side test against the outward normal where the nearest point lies:
+            # the facet's, or the corner's where facets meet (#1192 review)
+            closest[i], nvec[i] = _outward_normal_at_nearest_point(
+                pts[i], near[0], fpts[candidates], nrm[candidates], found[0])
         outside = numpy.einsum("ij,ij->i", pts - closest, nvec) > 0.0
         # get_min_radius is collective: read it on every rank, not only on the
         # ranks that have a point to restore

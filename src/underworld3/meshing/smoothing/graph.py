@@ -793,29 +793,35 @@ def _resolve_slip(mesh, slip_spec):
     return labels
 
 
-def _nearest_on_facets_2d(pts, seg):
+def _nearest_on_facets_2d(pts, seg, with_facet=False):
     """Closest point on a set of 2D line segments. ``pts`` (m,2),
-    ``seg`` (nf,2,2). Returns (m,2) closest points (over all segments)."""
+    ``seg`` (nf,2,2). Returns (m,2) closest points (over all segments), and
+    with ``with_facet`` also the index of the segment each lies on (the first
+    on a tie)."""
     a = seg[:, 0]; b = seg[:, 1]            # (nf,2)
     ab = b - a
     ab2 = np.einsum('fi,fi->f', ab, ab)
     ab2 = np.where(ab2 > 1.0e-30, ab2, 1.0)
     out = np.empty_like(pts)
+    facet = np.empty(len(pts), dtype=int)
     for i, p in enumerate(pts):
         t = np.clip(((p - a) * ab).sum(axis=1) / ab2, 0.0, 1.0)
         proj = a + t[:, None] * ab           # (nf,2)
         d2 = ((proj - p) ** 2).sum(axis=1)
-        out[i] = proj[d2.argmin()]
-    return out
+        facet[i] = d2.argmin()
+        out[i] = proj[facet[i]]
+    return (out, facet) if with_facet else out
 
 
-def _nearest_on_facets_3d(pts, tri):
+def _nearest_on_facets_3d(pts, tri, with_facet=False):
     """Closest point on a set of 3D triangles. ``pts`` (m,3),
-    ``tri`` (nf,3,3). Returns (m,3). Per-point loop, vectorised over
-    triangles via the standard region-based closest-point algorithm."""
+    ``tri`` (nf,3,3). Returns (m,3), and with ``with_facet`` also the index of
+    the triangle each lies on (the first on a tie). Per-point loop, vectorised
+    over triangles via the standard region-based closest-point algorithm."""
     A = tri[:, 0]; B = tri[:, 1]; C = tri[:, 2]
     AB = B - A; AC = C - A
     out = np.empty_like(pts)
+    facet = np.empty(len(pts), dtype=int)
     for i, p in enumerate(pts):
         AP = p - A
         d1 = np.einsum('fi,fi->f', AB, AP)
@@ -842,5 +848,6 @@ def _nearest_on_facets_3d(pts, tri):
         w = np.where(over, w / np.where(s > 0, s, 1.0), w)
         proj = A + v[:, None] * AB + w[:, None] * AC
         dd = ((proj - p) ** 2).sum(axis=1)
-        out[i] = proj[dd.argmin()]
-    return out
+        facet[i] = dd.argmin()
+        out[i] = proj[facet[i]]
+    return (out, facet) if with_facet else out
