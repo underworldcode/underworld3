@@ -11,10 +11,17 @@ outside the zone. A repartition or a topology change kills the whole patch.
 The accuracy check: after each of several MMPDE moves, the solve with the kept patch
 matches a solve with the hierarchy registered again and the zone recomputed from the
 moved field, in velocity, pressure and fault slip, to the solver tolerance (solved at
-1e-8, so that convergence noise sits well inside the bounds), and takes no more than
-one velocity iteration more. The counts measured, with the patch kept, registered
-fresh and absent, are beside the bound in the test. A kept patch that is stale (its
-rows away from the band) fails the iteration bound on the zone.
+1e-8, so that convergence noise sits well inside the bounds).
+
+The iteration check. The mover holds the zone field where it is in space while the
+cells move under it, so the kept patch's cells hold less of the band at each move, and
+against a patch on the recomputed zone the kept one costs what that drift costs on the
+host's mesh. The kept solver must carry nothing else from before the move: on the zone,
+a registration made after the move with the kept solver's own mask takes the same
+velocity count, and both take fewer than a registration with no zone, which installs no
+patch. On a split level a move also drops the structural rows outside the zone, and the
+kept solver takes no more than one velocity iteration more than a fresh registration.
+The counts measured are beside the assertions.
 
 The fixture is test_1139's: a transverse-isotropic weak band beside a placed fault,
 the band's cells as the zone.
@@ -216,14 +223,18 @@ def _gauged(a):
 
 def _moves(split):
     """Solve after each of MOVES MMPDE moves with the patch kept and with a fresh
-    registration; yield (kept, fresh, errors, warnings, told) per move. ``told`` is
-    what a red run needs to explain itself: how each solve ended, the residual it
-    started from, and the worst cell the move left."""
+    registration; yield (kept, fresh, others, errors, warnings, told) per move. On the
+    zone, ``others`` holds two more registrations made after the move: ``same`` with
+    the kept solver's mask and ``none`` with no zone. It is empty on a split level.
+    ``told`` is what a red run needs to explain itself: how each solve ended, the
+    residual it started from, and the worst cell the move left."""
     mesh, levels, zone = _fixture(split)
     kept, vk, pk = _stokes(mesh, zone, split, "k")
-    set_custom_fmg(kept, levels, field_id=0,
-                   fac_zone=np.asarray(mesh.cells_labelled("Band", 72), dtype=bool))
+    kept_mask = np.asarray(mesh.cells_labelled("Band", 72), dtype=bool)
+    set_custom_fmg(kept, levels, field_id=0, fac_zone=kept_mask)
     fresh, vf, pf = _stokes(mesh, zone, split, "f")
+    others = {} if split else {"same": (_stokes(mesh, zone, split, "s")[0], kept_mask),
+                               "none": (_stokes(mesh, zone, split, "n")[0], None)}
     kept.solve(zero_init_guess=True)
     x, y = mesh.X
     for k in range(1, MOVES + 1):
@@ -239,6 +250,10 @@ def _moves(split):
                        fac_zone=np.asarray(zone.array[:, 0, 0] > 0.5))
         fresh.solve(zero_init_guess=True)
         told["fresh"] = _told(fresh, split)
+        for which, (solver, mask) in others.items():
+            set_custom_fmg(solver, levels, field_id=0, fac_zone=mask)
+            solver.solve(zero_init_guess=True)
+            told[which] = _told(solver, split)
         errors = {
             "velocity": _norm(np.asarray(vk.array) - np.asarray(vf.array)) / _norm(vf.array),
             "pressure": (_norm(_gauged(pk.array) - _gauged(pf.array))
@@ -248,25 +263,34 @@ def _moves(split):
             _s, slip_k, _l = fault_slip(kept, "Fault", kept._rotated_freeslip_info)
             _s, slip_f, _l = fault_slip(fresh, "Fault", fresh._rotated_freeslip_info)
             errors["slip"] = _norm(slip_k - slip_f) / _norm(slip_f)
-        yield k, kept, fresh, errors, said, told
+        yield (k, kept, fresh, {which: solver for which, (solver, _m) in others.items()},
+               errors, said, told)
 
 
 @pytest.mark.parametrize("split", [False, True], ids=["zone", "zone_on_a_split_level"])
 def test_a_kept_zone_patch_matches_a_fresh_registration(split, capsys):
-    for k, kept, fresh, errors, said, told in _moves(split):
-        # one line per move, past pytest's capture: on a loaded host a move takes over a
-        # minute at np 2 (hyperion at load 60: 157 s and 254 s for the two cases, 3-4
-        # times CI), and the MPI supervisor kills a job silent for 300 s
-        with capsys.disabled():
-            uw.pprint(f"test_1152[{'split' if split else 'zone'}] move {k}/{MOVES}",
-                      flush=True)
+    for k, kept, fresh, others, errors, said, told in _moves(split):
         its_k = _velocity_iterations(kept, split)
         its_f = _velocity_iterations(fresh, split)
-        told["velocity_its"] = (its_k, its_f)
-        if not (its_k <= its_f + 1 and errors["velocity"] < 100 * TOLERANCE
+        its = {which: _velocity_iterations(solver, split)
+               for which, solver in others.items()}
+        told["velocity_its"] = {"kept": its_k, "fresh": its_f, **its}
+        # one line per move, past pytest's capture: on a loaded host a move takes over a
+        # minute at np 2 (hyperion at load 60: 157 s and 254 s for the two cases, 3-4
+        # times CI), and the MPI supervisor kills a job silent for 300 s. It carries the
+        # counts, so a green run records them for its host too.
+        with capsys.disabled():
+            uw.pprint(f"test_1152[{'split' if split else 'zone'}] move {k}/{MOVES}: "
+                      f"velocity iterations kept {its_k}, zone recomputed {its_f}"
+                      + ("" if split else f", kept mask registered again {its['same']}, "
+                                          f"no zone {its['none']}"),
+                      flush=True)
+        counts_hold = (its_k <= its_f + 1 if split
+                       else its_k == its["same"] and its_k < its["none"])
+        if not (counts_hold and errors["velocity"] < 100 * TOLERANCE
                 and all(errors[key] < 1000 * TOLERANCE for key in errors)):
             record = _record("split" if split else "zone", k, errors, told,
-                             {"kept": kept, "fresh": fresh}, split)
+                             {"kept": kept, "fresh": fresh, **others}, split)
             # twice: past the capture for a run under mpirun, where the report of a
             # failure may never be written, and into it for a run under pytest-xdist,
             # whose workers' own output does not reach the log
@@ -275,13 +299,24 @@ def test_a_kept_zone_patch_matches_a_fresh_registration(split, capsys):
                     uw.pprint(line, flush=True)
             for line in record:
                 uw.pprint(line, flush=True)
-        # measured at np 1 on development f8c60140, kept and fresh at each move: 8 and
-        # 7, 8 and 7, 7 and 6 on the zone; 17 and 16, 17 and 17, 17 and 17 on the split
-        # level. Hyperion at np 2 and 4: 8 or 9 against 7 or 8 on the zone, 19 to 20 on
-        # the split level. With no patch registered, np 1: 13, 11, 10 on the zone and
-        # 19, 18, 17 on the split level, so the bound tells a lost patch on the zone at
-        # every move and on the split level at the first move only.
-        assert its_k <= its_f + 1, (k, its_k, its_f, told)
+        if split:
+            # np 1 on macOS (12-core Apple M4), kept and fresh at each move: 17 and 16,
+            # 17 and 17, 17 and 17. With no zone registered: 18, 18, 17, so the bound
+            # tells a lost patch at the first move only.
+            assert its_k <= its_f + 1, (k, told["velocity_its"])
+        else:
+            # Velocity iterations at moves 1, 2 and 3, np 1 on macOS (12-core Apple M4):
+            # kept 7, 7, 7; the kept mask registered again 7, 7, 7; the zone recomputed
+            # 6, 6, 6; no zone 12, 10, 9. The kept patch's cells hold 135 of the 330
+            # weak cells after the first move, 54 of 260 after the second and 31 of
+            # 208 after the third, which is the one iteration against the recomputed
+            # zone; on a GitHub-hosted Ubuntu runner that gap was two at the second
+            # move (8 against 6), so it is printed and not bounded.
+            assert its_k == its["same"], (k, told["velocity_its"])
+            assert its_k < its["none"], (k, told["velocity_its"])
+            # no zone and a moved mesh: nothing is installed on the finest level
+            none_rows = others["none"]._custom_mg["hierarchy"].level_patch_rows[-1]
+            assert none_rows is None, (k, none_rows)
         # to the solver tolerance: at 1e-8 kept and fresh agree to ~4e-9 (hyperion,
         # np 1, 2 and 4); a patch only preconditions, and the outer solve converges
         # on the true residual, so a stale one costs iterations and not accuracy

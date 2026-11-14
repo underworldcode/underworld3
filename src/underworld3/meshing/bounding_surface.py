@@ -70,6 +70,10 @@ class BoundingSurface:
         self.label = str(label)
         self.kind = kind
         self.is_free = bool(is_free) or kind == "free"
+        # Set by release(): the kind the surface was declared as, and what its
+        # boundary's vertices may have left it by.
+        self._prev_kind = None
+        self.release_reason = None
         # An INTERIOR surface (an embedded interface such as the Internal
         # circle/sphere of the *InternalBoundary meshes) is snapped-to by
         # adapt() so refinement follows its true geometry, but is NOT
@@ -90,8 +94,9 @@ class BoundingSurface:
             if self.centre is None or self.radius is None:
                 raise ValueError(
                     "radial BoundingSurface requires centre and radius")
-            # radius == 0 is legitimate: a *solid* sphere/annulus registers its
-            # inner ("Lower") boundary at radius 0 (the centre point). Reject
+            # radius == 0 describes a point, which the class accepts; the
+            # constructors never register one (register_radial_surfaces skips
+            # it, since a solid disc or ball has no inner boundary). Reject
             # only NEGATIVE or non-finite radii (those give invalid projections).
             if not (np.isfinite(self.radius) and self.radius >= 0.0):
                 raise ValueError(
@@ -210,11 +215,19 @@ class BoundingSurface:
         return coords
 
     # -- state transition ----------------------------------------------------
-    def release(self):
+    def release(self, reason=None):
         """Flip a rigid (``radial``/``plane``) surface to ``free``: subsequent
         :meth:`restore` follows the live discrete surface instead of the analytic
-        target. Records the previous kind on ``self._prev_kind``."""
-        self._prev_kind = self.kind
+        target. Records the previous kind on ``self._prev_kind``.
+
+        A released surface is no longer the mesh's declaration that the boundary
+        is that circle, sphere or plane (``mesh.analytic_surface`` refuses it).
+        ``reason`` says, for that refusal, what the boundary's vertices may have
+        left it by. Releasing a surface that is already released changes nothing.
+        """
+        if self.kind != "free":
+            self._prev_kind = self.kind
+            self.release_reason = reason
         self.kind = "free"
         self.is_free = True
         return self
@@ -241,6 +254,10 @@ def register_radial_surfaces(mesh, centre, label_radius, interior=()):
     centre = np.asarray(centre, dtype=float).ravel()
     interior = set(interior)
     for lab, r in label_radius.items():
+        # A radius of zero is the centre of a solid disc or ball: the mesh has no
+        # such boundary, and a point is not a wall to slide on.
+        if r == 0.0:
+            continue
         mesh.register_tangent_slip_provider(
             lab, BoundingSurface(mesh, lab, "radial", centre=centre, radius=r,
                                  interior=lab in interior))

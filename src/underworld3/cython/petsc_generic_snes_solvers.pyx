@@ -2844,7 +2844,8 @@ class SolverBaseClass(uw_object):
                     f"also carries a {kind} constraint whose tangent the reaction "
                     f"term does not include yet")
         for bc in (getattr(self, "natural_bcs", None) or []):
-            for fn in (getattr(bc, "fn_f", None), getattr(bc, "fn_F", None)):
+            for fn in (getattr(bc, "fn_f", None), getattr(bc, "fn_F", None),
+                       getattr(bc, "fn_p", None)):
                 if fn is None:
                     continue
                 import sympy
@@ -3036,26 +3037,91 @@ class SolverBaseClass(uw_object):
         (:meth:`_essential_datum_sensitivity`), which for a saddle point
         needs the pressure adjoint ``lam`` as well, and the misfit's own
         dual on every node, ``misfit_dual``, where the misfit reads the
-        prescribed values.
+        prescribed values. A parameter in a Stokes Nitsche datum needs
+        ``lam`` too: it enters the condition's continuity-row term, which is
+        tested against the pressure adjoint, and ``sensitivity`` refuses
+        without it.
         """
         from underworld3.adjoint import integral
         total = integral(self.mesh, self.adjoint_integrand(mu, wrt))
         total += self._essential_datum_sensitivity(mu, wrt, lam, misfit_dual)
-        # A parameter that enters through a natural condition — a prescribed
-        # traction or flux — has a facet part: (d bd_F0 / dm) . mu on that boundary.
+        # A parameter that enters through a natural or Nitsche condition has a
+        # facet part, from every boundary term the condition assembles: the
+        # value term fn_f tested against mu, and the flux term fn_F tested
+        # against grad(mu). Reading fn_f alone missed a Nitsche condition's
+        # symmetric term: a datum imposed by Nitsche then had the wrong sign
+        # (#1143). A Stokes Nitsche condition's continuity-row term fn_p
+        # (assembled on the pressure field, #1072) is tested against the
+        # pressure adjoint lam.
         import sympy
         mu_sym = mu.sym
+        comps = getattr(mu, "num_components", 1)
+        cdim = self.mesh.cdim
+        grad_mu = None
         for bc in (getattr(self, "natural_bcs", None) or []):
             fn = getattr(bc, "fn_f", None)
-            if fn is None:
-                continue
-            d = diff_wrt_field(self._peel_except(sympy.Matrix(fn), wrt), wrt)
-            if d.is_zero_matrix:
-                continue
-            values = list(d)
-            comps = getattr(mu, "num_components", 1)
-            integrand = sum(values[i] * mu_sym[i] for i in range(min(len(values), comps)))
-            total += integral(self.mesh, integrand, bc.boundary)
+            if fn is not None:
+                d = diff_wrt_field(self._peel_except(sympy.Matrix(fn), wrt), wrt)
+                if not d.is_zero_matrix:
+                    values = list(d)
+                    integrand = sum(values[i] * mu_sym[i] for i in range(min(len(values), comps)))
+                    total += integral(self.mesh, integrand, bc.boundary)
+            flux = getattr(bc, "fn_F", None)
+            if flux is not None:
+                dF = sympy.Matrix(diff_wrt_field(self._peel_except(sympy.Matrix(flux), wrt), wrt))
+                if not dF.is_zero_matrix:
+                    if grad_mu is None:
+                        grad_mu = (sympy.Matrix(self.mesh.vector.gradient(mu_sym[0])).reshape(1, cdim)
+                                   if comps == 1 else sympy.Matrix(self.mesh.vector.jacobian(mu_sym)))
+                    dF = dF.reshape(grad_mu.shape[0], grad_mu.shape[1])
+                    integrand = sum(dF[c, k] * grad_mu[c, k]
+                                    for c in range(grad_mu.shape[0]) for k in range(grad_mu.shape[1]))
+                    total += integral(self.mesh, integrand, bc.boundary)
+            cont = getattr(bc, "fn_p", None)
+            if cont is not None:
+                dp = diff_wrt_field(self._peel_except(sympy.Matrix(cont), wrt), wrt)
+                if not dp.is_zero_matrix:
+                    # Decided from the condition and the arguments alone, the
+                    # same on every rank.
+                    # A tangential datum with the default (field) normal reaches
+                    # this too: n.d is zero in value but not symbolically, so the
+                    # derivative cannot be shown zero here. Passing lam gives the
+                    # right answer in every case.
+                    if lam is None:
+                        name = getattr(wrt, "name", None) or str(wrt)
+                        raise ValueError(
+                            f"sensitivity: {name} enters the continuity-row term of the "
+                            f"Nitsche condition on {bc.boundary!r}, which is tested against "
+                            "the pressure adjoint: pass lam=, the pressure part of the "
+                            "adjoint_solve target. (A tangential datum with the default "
+                            "normal also needs it: its continuity-row derivative is zero in "
+                            "value but not symbolically.)")
+                    total += integral(self.mesh, list(dp)[0] * lam.sym[0], bc.boundary)
+        # The volume continuity term (a saddle point's PF0, e.g. Stokes
+        # ``constraints``) is tested against the pressure adjoint lam (#1161).
+        pf0 = getattr(self, "PF0", None)
+        if pf0 is not None:
+            dpf = diff_wrt_field(self._peel_except(sympy.Matrix(pf0.sym), wrt), wrt)
+            if not sympy.Matrix(dpf).is_zero_matrix:
+                if lam is None:
+                    name = getattr(wrt, "name", None) or str(wrt)
+                    raise ValueError(
+                        f"sensitivity: {name} enters the continuity term of this solver, "
+                        "which is tested against the pressure adjoint: pass lam=, the "
+                        "pressure part of the adjoint_solve target.")
+                total += integral(self.mesh, list(sympy.Matrix(dpf))[0] * lam.sym[0])
+        # The datum of an add_constraint_bc multiplier condition is tested
+        # against the multiplier's adjoint, which sensitivity is not given:
+        # refused by name rather than dropped (#1161).
+        for cbc in (getattr(self, "_block_constraint_bcs", None) or []):
+            datum = sympy.Matrix([cbc.g]) if not isinstance(cbc.g, sympy.MatrixBase) else cbc.g
+            if not sympy.Matrix(diff_wrt_field(self._peel_except(datum, wrt), wrt)).is_zero_matrix:
+                name = getattr(wrt, "name", None) or str(wrt)
+                raise NotImplementedError(
+                    f"sensitivity: {name} enters the datum {cbc.g} of the add_constraint_bc "
+                    f"condition on {cbc.boundary!r}. Its part of the gradient is tested "
+                    "against the constraint multiplier's adjoint, which is not computed "
+                    "yet, so it is refused rather than left out (#1161).")
         return total
 
     def _constraint_mechanisms(self):
@@ -5188,6 +5254,45 @@ class SolverBaseClass(uw_object):
         else:
             raise TypeError("Unsupported BC 'components' argument")
 
+        # The value holds one entry per field component, the free ones None:
+        # a component named by `components` must have its entry. A shorter
+        # value (the deprecated `components=` form with only the named values,
+        # e.g. add_dirichlet_bc(0.05, "Left", 1)) prescribed garbage on the
+        # wall: the generated function writes slot 0 only and PETSc reads the
+        # constrained slot, never written (#1129). Refused here, for essential
+        # and natural conditions alike, before anything is recorded.
+        n_entries = len(conds)
+        missing = sorted({int(c) for c in components if int(c) >= n_entries})
+        if missing:
+            # An example only where it follows from the call as written: one
+            # entry per named component, each put at its own component of the
+            # field. Anything else (more names than entries, a name repeated, a
+            # component the field does not have) has no single meaning, and a
+            # guessed example could free a constrained component, move a value
+            # to another, or name nothing at all and be accepted.
+            named = [int(c) for c in components]
+            if f_id == 0:
+                field_var = self.Unknowns.u
+            elif f_id == 1:
+                field_var = getattr(self.Unknowns, "p", None)
+            else:
+                field_var = None
+            n_field = getattr(field_var, "num_components", None)
+            example = ""
+            if (n_field is not None and n_entries == len(named)
+                    and len(set(named)) == len(named)
+                    and min(named) >= 0 and max(named) < n_field):
+                full = ["None"] * (max(named) + 1)
+                for c, value in zip(named, list(conds)):
+                    full[c] = repr(value)
+                example = f" (e.g. ({', '.join(full)}))"
+            raise ValueError(
+                f"add_condition: the value has {n_entries} entr"
+                f"{'y' if n_entries == 1 else 'ies'} but names component "
+                f"{', '.join(str(c) for c in missing)}, which has none. Give one "
+                f"entry per field component, None for the free ones{example}, "
+                f"rather than a short value with components=.")
+
         # ======================================================================
         # Apply non-dimensional scaling to BC values if ND is enabled
         # IMPORTANT: Only scale numeric values (floats, UWQuantity), NOT symbolic
@@ -6324,6 +6429,15 @@ class SolverBaseClass(uw_object):
             raise TypeError(
                 f"add_rotated_freeslip_bc() requires a boundary label string; "
                 f"got {type(boundary).__name__}")
+        # A wall the mesh holds no label for has no nodes to constrain: a solid
+        # disc names "Lower" and has no inner wall (#1163). Whether the label
+        # exists is a property of the distributed DM, so every rank refuses.
+        if not self.mesh.dm.hasLabel(boundary):
+            held = [b.name for b in self.mesh.boundaries
+                    if self.mesh.dm.hasLabel(b.name)]
+            raise ValueError(
+                f"add_rotated_freeslip_bc(): the mesh holds no boundary labelled "
+                f"{boundary!r}; the boundaries it holds are {held}")
         if conds is not None:
             if isinstance(conds, (sympy.MatrixBase, list, tuple, np.ndarray)):
                 raise TypeError(
@@ -7252,7 +7366,7 @@ class SNES_Scalar(SolverBaseClass):
             self.snes.setFromOptions()
 
 
-            UW_DMPlexSetSNESLocalFEM(cdm.dm, PETSC_FALSE, NULL)
+            CHKERRQ( UW_DMPlexSetSNESLocalFEM(cdm.dm, PETSC_FALSE, NULL) )
 
         self.is_setup = True
         self._form_facts = None     # forms (re)built: cached symbolic facts are stale
@@ -7296,10 +7410,15 @@ class SNES_Scalar(SolverBaseClass):
         debug_name : str, optional
             Name prefix for debug output files.
         time : float or Quantity, optional
-            Physical time for this solve. Passed as ``petsc_t`` to all
-            pointwise functions. Expressions using ``mesh.t`` evaluate at
-            this time. Non-dimensionalised when scaling is active.
+            Physical time for this solve, set as PETSc's time (``petsc_t``) on
+            the solver's DM. Non-dimensionalised when scaling is active.
             Default: None (petsc_t unchanged).
+
+            Expressions written with ``mesh.t`` do not follow this value.
+            ``mesh.t`` carries the model clock
+            (``uw.get_default_model().tracker.time``), in source terms and
+            in essential (Dirichlet) conditions alike: with ``time=2`` and
+            the clock at 0 they evaluate at 0 (#410). Set the clock.
         divergence_retries : int, default=0
             If SNES reports DIVERGED after the solve, re-call it with warm
             start up to this many times. A single retry rescues most VEP
@@ -8353,7 +8472,7 @@ class SNES_Vector(SolverBaseClass):
             self.snes.setOptionsPrefix(self.petsc_options_prefix)
             self.snes.setFromOptions()
 
-            UW_DMPlexSetSNESLocalFEM(cdm.dm, PETSC_FALSE, NULL)
+            CHKERRQ( UW_DMPlexSetSNESLocalFEM(cdm.dm, PETSC_FALSE, NULL) )
 
 
         self.is_setup = True
@@ -9107,7 +9226,7 @@ class SNES_MultiComponent(SolverBaseClass):
             self.snes.setOptionsPrefix(self.petsc_options_prefix)
             self.snes.setFromOptions()
 
-            UW_DMPlexSetSNESLocalFEM(cdm.dm, PETSC_FALSE, NULL)
+            CHKERRQ( UW_DMPlexSetSNESLocalFEM(cdm.dm, PETSC_FALSE, NULL) )
 
         self.is_setup = True
         self._form_facts = None     # forms (re)built: cached symbolic facts are stale
@@ -9694,7 +9813,10 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
           (boundary traction projected onto constraint direction)
         - Symmetry: :math:`-\theta \mu` adjoint consistency term
         - Pressure: :math:`p \, (\mathbf{n} \cdot \mathbf{d}) \, \mathbf{d}` on velocity
-          and :math:`(\mathbf{n} \cdot \mathbf{d})(\mathbf{u} \cdot \mathbf{d} - g)` on pressure
+          and :math:`-(\mathbf{n} \cdot \mathbf{d})(\mathbf{u} \cdot \mathbf{d} - g)` on pressure.
+          The volume terms are :math:`-p \, \nabla \cdot \mathbf{v}` in the momentum
+          rows and :math:`+q \, \nabla \cdot \mathbf{u}` in the continuity rows, and
+          the two wall terms are in the same relation.
 
         Parameters
         ----------
@@ -9899,10 +10021,14 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                     )
             fn_F = sympy.Matrix(f1_components).as_immutable()
 
-        # fn_p: pressure boundary residual
-        # Enforces continuity: (n.d)(u.d - g) on boundary
+        # fn_p: continuity-row boundary residual, -(n.d)(u.d - g).
+        # Its sign pairs it with the pressure flux in f0 as the volume terms are
+        # paired (-p div(v) in the momentum rows, +q div(u) in the continuity
+        # rows). For free slip (d = n, g = 0) the continuity residual summed
+        # over the pressure unknowns is then the flux through the other walls,
+        # whatever the velocity.
         # Vanishes when constraint direction is purely tangential
-        fn_p = sympy.Matrix([n_dot_d * constraint]).as_immutable()
+        fn_p = sympy.Matrix([-n_dot_d * constraint]).as_immutable()
 
         # Apply mask for one-sided internal boundary application
         if mask is not None:
@@ -11398,7 +11524,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                     fns_bd_jacobian += [bc.fns["up_G2"], bc.fns["up_G3"]]
 
                 # Pressure boundary residual and Jacobians (pu, pp blocks)
-                # Nitsche BCs provide fn_p (pressure boundary residual = u.n - g);
+                # Nitsche BCs provide fn_p (continuity-row boundary residual, g - u.n);
                 # standard natural BCs have fn_p = None → zeros.
                 if hasattr(bc, 'fn_p') and bc.fn_p is not None:
                     bd_PF0 = sympy.Array(bc.fn_p).reshape(1)
@@ -11628,7 +11754,11 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         cdef PetscInt ind=1
         cdef PetscInt [::1] comps_view  # for numpy memory view
+        cdef PetscInt [::1] continuity_comps_view
         cdef DM cdm = self.dm
+
+        # natural-bc index -> the boundary entry that carries its continuity-row term
+        self._continuity_row_boundary_ids = {}
 
         for index,bc in enumerate(self.natural_bcs):
 
@@ -11664,6 +11794,27 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
 
             self.natural_bcs[index] = self.natural_bcs[index]._replace(PETScID=bc, boundary_label_val=value)
+
+            # A Nitsche condition has a term in the continuity rows as well. PETSc
+            # integrates a boundary entry only for the field it is registered
+            # with, so that term needs an entry of its own on the pressure field
+            # (`_block_constraint_bcs` are registered once per field for the
+            # same reason).
+            if getattr(self.natural_bcs[index], "fn_p", None) is not None:
+                continuity_comps = np.array([0], dtype=PETSc.IntType)
+                continuity_comps_view = continuity_comps
+                self._continuity_row_boundary_ids[index] = PetscDSAddBoundary_UW(cdm.dm,
+                                bc_type,
+                                str(boundary + "_continuity").encode('utf8'),
+                                str("UW_Boundaries").encode('utf8'),
+                                1,  # pressure field: continuity-row term + pu Jacobian
+                                continuity_comps.shape[0],
+                                <const PetscInt *> &continuity_comps_view[0],
+                                <void (*)() noexcept>NULL,
+                                NULL,
+                                1,
+                                <const PetscInt *> &ind,
+                                NULL, )
 
 
         # Lagrange-multiplier constraint boundaries (block-constrained Stokes).
@@ -11855,8 +12006,11 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                 if Sold.getFieldDof(p, fid_h) > 0 and p not in keep:
                     iset.add(p)
 
-        # Nothing to constrain (e.g. boundary-only multiplier discretisation).
-        if not any(interior_pts.values()):
+        # Nothing to constrain on any rank (e.g. boundary-only multiplier
+        # discretisation). COLLECTIVE, and reached on every rank: the global
+        # section is rebuilt below, so a rank with nothing of its own to
+        # constrain (one without cells, say) goes through it with its peers.
+        if not uw.mpi.comm.allreduce(int(any(interior_pts.values())), op=uw.MPI.MAX):
             return
 
         # 2. Build a new local section mirroring the old (chart, fields, dofs and
@@ -11922,37 +12076,6 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         return
 
 
-    def _refuse_a_rank_without_cells(self):
-        """Raise, on every rank alike, if some rank holds no cells of the solver's DM (#962).
-
-        This solver registers a Jacobian preconditioner, so SNES assembles two
-        matrices. PETSc's ``DMPlexComputeJacobianByKey`` (3.25.3 and ``main``) then
-        leaves early on a rank without cells and skips the assembly of the Jacobian
-        that every other rank makes: MPI stops the run, or it hangs. A solver whose
-        Jacobian and preconditioner are one matrix is not affected.
-
-        The test is the one PETSc makes on a DM with one discrete system, which is
-        what every default set-up builds. Its cell range is the rank's own top
-        stratum of the ``depth`` label, ghost cells included, and
-        ``getHeightStratum(0)`` is that range. COLLECTIVE on the DM's communicator.
-        """
-        comm = self.dm.comm.tompi4py()
-        if comm.size == 1:
-            return
-        start, end = self.dm.getHeightStratum(0)
-        counts = comm.allgather(end - start)
-        # with no cells anywhere every rank leaves early alike
-        if min(counts) > 0 or max(counts) == 0:
-            return
-        raise RuntimeError(
-            f"{type(self).__name__}: ranks without cells of this mesh: "
-            f"{counts.count(0)} of {comm.size} ({sum(counts)} cells in all). PETSc does "
-            f"not assemble the Jacobian on a rank without cells when the "
-            f"preconditioner is a second matrix (DMPlexComputeJacobianByKey, PETSc "
-            f"3.25.3), and the solve would stop in MPI or hang (#962). A refined mesh "
-            f"keeps its base's partition and an extracted region its parent's, so "
-            f"the base, or the region, must reach every rank.")
-
     @timing.routine_timer_decorator
     def _setup_solver(self, verbose=False, _rewire_only=False):
 
@@ -11960,10 +12083,6 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             if verbose and uw.mpi.rank == 0:
                 print(f"Stokes Saddle Pt ({self.name}): SNES solver does not need to be rebuilt", flush=True)
             return
-
-        # A rewire keeps the DM, which a full set-up has already been through.
-        if not _rewire_only:
-            self._refuse_a_rank_without_cells()
 
         # set functions
         cdef PetscInt ind=1
@@ -12061,10 +12180,14 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         cdef DMLabel c_label
 
-        for bc in self.natural_bcs:
+        for index, bc in enumerate(self.natural_bcs):
 
             boundary = bc.boundary
             boundary_id = bc.PETScID
+            # the entry on the pressure field, where the condition has one:
+            # PETSc integrates the continuity-row residual and the pu block
+            # from that entry only
+            continuity_boundary_id = self._continuity_row_boundary_ids.get(index, boundary_id)
 
             value = self.mesh.boundaries[bc.boundary].value
             bc_label = self.dm.getLabel("UW_Boundaries")
@@ -12095,9 +12218,9 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                                     NULL,
                                     )
 
-                # Pressure boundary residual (Nitsche: f0_p = u.n - g)
+                # Pressure boundary residual (Nitsche: f0_p = g - u.n)
                 if "p_f0" in bc.fns:
-                    UW_PetscDSSetBdResidual(ds.ds, c_label.dmlabel, label_val, boundary_id,
+                    UW_PetscDSSetBdResidual(ds.ds, c_label.dmlabel, label_val, continuity_boundary_id,
                                     1, 0,
                                     ext.fns_bd_residual[i_bd_res[bc.fns["p_f0"]]],
                                     NULL)
@@ -12138,7 +12261,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                                     NULL, NULL)
 
                 # Pressure-velocity boundary Jacobian (pu block)
-                UW_PetscDSSetBdJacobian(ds.ds, c_label.dmlabel, label_val, boundary_id,
+                UW_PetscDSSetBdJacobian(ds.ds, c_label.dmlabel, label_val, continuity_boundary_id,
                                 1, 0, 0,
                                 ext.fns_bd_jacobian[i_bd_jac[bc.fns["pu_G0"]]],
                                 ext.fns_bd_jacobian[i_bd_jac[bc.fns["pu_G1"]]],
@@ -12182,7 +12305,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                                     ext.fns_bd_jacobian[i_bd_jac[bc.fns["up_G1"]]],
                                     NULL, NULL)
 
-                UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, boundary_id,
+                UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, continuity_boundary_id,
                                 1, 0, 0,
                                 ext.fns_bd_jacobian[i_bd_jac[bc.fns["pu_G0"]]],
                                 ext.fns_bd_jacobian[i_bd_jac[bc.fns["pu_G1"]]],
@@ -12254,8 +12377,10 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             print(f"=============", flush=True)
 
             print(f"Weak form(s) (Natural Boundaries)", flush=True)
-            for boundary in self.natural_bcs:
+            for index, boundary in enumerate(self.natural_bcs):
                 UW_PetscDSViewBdWF(ds.ds, boundary.PETScID)
+                if index in self._continuity_row_boundary_ids:
+                    UW_PetscDSViewBdWF(ds.ds, self._continuity_row_boundary_ids[index])
 
 
         # self.dm.setUp()
@@ -12295,7 +12420,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             self.snes.setOptionsPrefix(self.petsc_options_prefix)
             self.snes.setFromOptions()
 
-            UW_DMPlexSetSNESLocalFEM(cdm.dm, PETSC_FALSE, NULL)
+            CHKERRQ( UW_DMPlexSetSNESLocalFEM(cdm.dm, PETSC_FALSE, NULL) )
 
             # Setup subdms here too.
             # These will be used to copy back/forth SNES solutions
@@ -12347,9 +12472,11 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         # Get the inactive region label
         label_name = self._inactive_region_label
-        bc_label = self.dm.getLabel(label_name)
-        if bc_label is None:
+        # dm.getLabel never returns None for a missing name (#1163): hasLabel
+        # is the test, and it answers the same on every rank.
+        if not self.dm.hasLabel(label_name):
             raise ValueError(f"DM label '{label_name}' not found")
+        bc_label = self.dm.getLabel(label_name)
         c_label = bc_label
 
         # Create a new DS with the same fields but no weak forms
@@ -12525,11 +12652,12 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         This is a low-level diagnostic hook for weak-boundary-condition
         debugging. It assembles PETSc's boundary residual terms registered on
-        ``boundary`` through ``DMPlexComputeBdResidualSingle``. For Nitsche
-        free slip, this includes the full registered weak boundary residual,
-        not only the scalar penalty term. The returned arrays are local to each
-        rank and have the same flat layout as the corresponding MeshVariable
-        PETSc vector.
+        ``boundary`` through ``DMPlexComputeBdResidualSingle``, for the rows
+        of one field. For a Nitsche condition ``residual_field_id=0`` gives
+        every momentum-row term, not only the scalar penalty term, and
+        ``residual_field_id=1`` gives the continuity-row term. The returned
+        arrays are local to each rank and have the same flat layout as the
+        corresponding MeshVariable PETSc vector.
         """
         cdef DM _time_dm_boundary_residual
         cdef DM dm
@@ -12544,9 +12672,15 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         self._build(verbose, False, None)
 
         boundary_bc = None
-        for bc in self.natural_bcs:
-            if bc.boundary == boundary and bc.f_id == residual_field_id:
-                boundary_bc = bc
+        weak_form_id = None
+        for index, bc in enumerate(self.natural_bcs):
+            if bc.boundary != boundary:
+                continue
+            if bc.f_id == residual_field_id:
+                boundary_bc, weak_form_id = bc, bc.PETScID
+                break
+            if residual_field_id == 1 and index in self._continuity_row_boundary_ids:
+                boundary_bc, weak_form_id = bc, self._continuity_row_boundary_ids[index]
                 break
         if boundary_bc is None:
             raise ValueError(
@@ -12592,7 +12726,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                                                residual_time, NULL, NULL, NULL))
             CHKERRQ(DMGetDS(dm.dm, &ds))
             CHKERRQ(UW_PetscDSGetBoundaryWeakForm(
-                ds, <PetscInt>boundary_bc.PETScID, &wf,
+                ds, <PetscInt>weak_form_id, &wf,
             ))
 
             c_label = self.dm.getLabel("UW_Boundaries")
@@ -12682,6 +12816,10 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             why = (why + ". The forward solve used the Picard tangent, so the "
                    "consistent tangent is assembled for the adjoint (a rebuild "
                    "of the Jacobian kernel)")
+        if getattr(self, "_block_constraint_bcs", None):
+            why = (why + ". A parameter in an add_constraint_bc datum is refused by "
+                   "sensitivity: its part needs the constraint multiplier's adjoint, "
+                   "which is not computed yet (#1161)")
         rotated = list(getattr(self, "_rotated_freeslip_bcs", None) or [])
         if rotated:
             why = (why + f". {len(rotated)} rotated free-slip constraint(s): the "
@@ -13090,10 +13228,14 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         _force_setup : bool, default=False
             Force rebuild of the solver even if already set up.
         time : float or Quantity, optional
-            Physical time for this solve. Passed as ``petsc_t`` to all
-            pointwise residual and Jacobian functions. Expressions using
-            ``mesh.t`` will evaluate at this time. Non-dimensionalised
-            automatically when scaling is active. Default: None (petsc_t=0).
+            Physical time for this solve, set as PETSc's time (``petsc_t``) on
+            the solver's DM. Non-dimensionalised automatically when scaling
+            is active. Default: None (petsc_t=0).
+
+            Expressions written with ``mesh.t`` do not follow this value.
+            ``mesh.t`` carries the model clock
+            (``uw.get_default_model().tracker.time``), in source terms and
+            in essential (Dirichlet) conditions alike (#410). Set the clock.
         divergence_retries : int, default=0
             If the final SNES solve reports DIVERGED, re-call it with warm
             start up to this many times. A single retry rescues most VEP

@@ -656,15 +656,20 @@ def SphericalShellInternalBoundary(
         # and 1.0 at cell size 0.5 raise below). The tolerance belongs to the radii,
         # not the cell size.
         volumes = gmsh.model.getEntities(3)
+        # The OCC radii are exact, so a surface or volume is told from its
+        # neighbour by a fraction of the gap between the radii. Half a cell, the
+        # earlier tolerance, is the whole gap on a coarse shell (#949).
+        radius_tolerance = 0.25 * min(radiusOuter - radiusInternal,
+                                      radiusInternal - radiusInner)
         shell_vols = [
             vol
             for vol in volumes
-            if np.isclose(bbox_radius(vol), radiusOuter, atol=cellSize * 0.5)
+            if np.isclose(bbox_radius(vol), radiusOuter, atol=radius_tolerance)
         ]
         duplicate_vols = [
             vol
             for vol in volumes
-            if np.isclose(bbox_radius(vol), radiusInternal, atol=cellSize * 0.5)
+            if np.isclose(bbox_radius(vol), radiusInternal, atol=radius_tolerance)
         ]
 
         if len(shell_vols) != 1:
@@ -688,14 +693,14 @@ def SphericalShellInternalBoundary(
         for surface in gmsh.model.getEntities(2):
             surface_tag = surface[1]
             r_est = bbox_radius(surface)
-            if np.isclose(r_est, radiusInner, atol=cellSize * 0.5):
+            if np.isclose(r_est, radiusInner, atol=radius_tolerance):
                 if surface_tag in shell_boundary:
                     lower_surface_tags.append(surface_tag)
                 else:
                     duplicate_lower_tags.append(surface_tag)
-            elif np.isclose(r_est, radiusOuter, atol=cellSize * 0.5):
+            elif np.isclose(r_est, radiusOuter, atol=radius_tolerance):
                 upper_surface_tags.append(surface_tag)
-            elif np.isclose(r_est, radiusInternal, atol=cellSize * 0.5):
+            elif np.isclose(r_est, radiusInternal, atol=radius_tolerance):
                 internal_surface_tags.append(surface_tag)
 
         if not lower_surface_tags or not upper_surface_tags or not internal_surface_tags:
@@ -742,8 +747,9 @@ def SphericalShellInternalBoundary(
     # is called if the general mesh routine does some refinement
     # and the new dm object needs some tweeks
 
-    # TODO(BUG): the Internal surface is not snapped back onto radiusInternal, so
-    # after refinement it stays faceted while its normal is the analytic radial one.
+    # TODO(BUG): #949 item 3. The Internal surface is not snapped back onto
+    # radiusInternal, so after refinement it stays faceted while its normal is the
+    # analytic radial one (the constructor withdraws its declaration below).
     def spherical_mesh_refinement_callback(dm):
         r_o = radiusOuter
         r_i = radiusInner
@@ -832,6 +838,15 @@ def SphericalShellInternalBoundary(
         label_radius={"Upper": radiusOuter, "Lower": radiusInner,
                       "Internal": radiusInternal},
         interior=("Internal",))
+
+    # Refinement places the new vertices of the Internal surface on the chords of
+    # the coarse one (the refinement callback moves only Upper and Lower; see the
+    # TODO(BUG) on the callback), so a refined mesh is not on the sphere declared
+    # above. Until refinement moves them onto it, the declaration is withdrawn.
+    if refinement:
+        new_mesh.bounding_surfaces["Internal"].release(
+            "refinement placed its new vertices on the chords of the coarse surface, "
+            "not on the sphere")
 
     return new_mesh
 

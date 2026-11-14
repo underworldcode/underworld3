@@ -251,21 +251,36 @@ def _crossing_parameters(X, ends, lines, on_line):
     the child point star-forest conforming.
     """
     P, Q = X[ends[:, 0]], X[ends[:, 1]]
-    touches = on_line[ends[:, 0]] | on_line[ends[:, 1]]
     t = np.full(len(P), np.nan)
     multiply_crossed = np.zeros(len(P), dtype=bool)
-    for seg in _segments(lines):
-        sP, sQ = seg.side(P), seg.side(Q)
-        straddles = (sP * sQ < 0.0) & ~touches
-        with np.errstate(invalid="ignore", divide="ignore"):
-            tk = np.where(straddles, sP / (sP - sQ), np.nan)
-        # The crossing must lie between the segment's ends, not merely on the
-        # infinite line (or great circle) through them.
-        foot = P + np.where(straddles, tk, 0.0)[:, None] * (Q - P)
-        hit = straddles & seg.within(foot)
-        multiply_crossed |= hit & np.isfinite(t)
-        t = np.where(hit, tk, t)
+    # "Already on a line" is per line: an edge with an endpoint on line A is
+    # still crossed by line B, and skipping it left B's chain with a gap where
+    # the two lines run within an edge of each other (#494). A vertex on both
+    # (a junction) counts for both. Snapped vertices lie exactly on their line.
+    tol = 1e-12 * max(float(np.ptp(X, axis=0).max()) if len(X) else 1.0, 1.0)
+    for pts in lines:
+        on_this = on_line & (_distance_to_lines(X, [pts]) < tol)
+        touches = on_this[ends[:, 0]] | on_this[ends[:, 1]]
+        for seg in _segments([pts]):
+            t, multiply_crossed = _cross_one_segment(seg, P, Q, touches, t,
+                                                     multiply_crossed)
     return t, np.flatnonzero(multiply_crossed)
+
+
+def _cross_one_segment(seg, P, Q, touches, t, multiply_crossed):
+    """One segment's crossings of the edges ``P-Q`` (see
+    :func:`_crossing_parameters`)."""
+    sP, sQ = seg.side(P), seg.side(Q)
+    straddles = (sP * sQ < 0.0) & ~touches
+    with np.errstate(invalid="ignore", divide="ignore"):
+        tk = np.where(straddles, sP / (sP - sQ), np.nan)
+    # The crossing must lie between the segment's ends, not merely on the
+    # infinite line (or great circle) through them.
+    foot = P + np.where(straddles, tk, 0.0)[:, None] * (Q - P)
+    hit = straddles & seg.within(foot)
+    multiply_crossed = multiply_crossed | (hit & np.isfinite(t))
+    t = np.where(hit, tk, t)
+    return t, multiply_crossed
 
 
 def _vertex_h(X, ends):
@@ -279,8 +294,80 @@ def _vertex_h(X, ends):
     return total / np.maximum(count, 1.0)
 
 
+_UNPROTECTED_LABELS = {"depth", "celltype", "dim", "Elements", "Cell Sets",
+                       "Face Sets", "Vertex Sets", "Edge Sets"}
+
+
+def _owned_vertices(dm):
+    """This rank's owned vertices (not leaves of the point star-forest)."""
+    vS, vE = dm.getDepthStratum(0)
+    owned = np.ones(vE - vS, dtype=bool)
+    if dm.getComm().getSize() == 1:
+        return owned                     # serial: the point SF has no graph
+    leaves = dm.getPointSF().getGraph()[1]
+    if leaves is not None and len(leaves):
+        lv = np.asarray(leaves)
+        lv = lv[(lv >= vS) & (lv < vE)]
+        owned[lv - vS] = False
+    return owned
+
+
+def _internal_label_vertices(dm, exclude):
+    """Vertices on a labelled facet inside the domain: a region boundary such
+    as a placed band's skin (#595). Snapping one onto a cut moves that
+    boundary, silently, so the snap is refused. An interface is a label
+    stratum holding facets only; a stratum that also holds cells (a region
+    label, gmsh's ``Elements``) marks no interface and is skipped, as are the
+    topology and set labels and the cut's own label. Facets on the domain
+    boundary are left out (PETSc's boundary marking skips partition-seam
+    facets, so this is the same on any partition). COLLECTIVE: the mask is
+    OR-reduced over the ranks sharing each vertex."""
+    vS, vE = dm.getDepthStratum(0)
+    fS, fE = dm.getHeightStratum(1)
+    bname = "__line_cut_domain_boundary__"
+    dm.createLabel(bname)
+    dm.markBoundaryFaces(bname, 1)
+    bnd = dm.getLabel(bname)
+    mask = np.zeros(vE - vS, dtype=bool)
+    cS, cE = dm.getHeightStratum(0)
+    names = [dm.getLabelName(i) for i in range(dm.getNumLabels())]
+    names = [n for n in names
+             if n not in _UNPROTECTED_LABELS and n != exclude and n != bname]
+
+    def strata(name):
+        lab = dm.getLabel(name)
+        values = lab.getValueIS()
+        for v in (values.getIndices() if values.getSize() else []):
+            pts = lab.getStratumIS(int(v))
+            yield (np.asarray(pts.getIndices()) if pts is not None and pts.getSize()
+                   else np.zeros(0, dtype=np.int64))
+
+    # A label that holds cells on ANY rank is a region, not an interface; the
+    # verdict is agreed over the ranks so every rank protects the same set.
+    region = {n for n in names
+              if any(((pts >= cS) & (pts < cE)).any() for pts in strata(n))}
+    region = set().union(*uw.mpi.comm.allgather(region))
+    for name in names:
+        if name in region:
+            continue
+        for pts in strata(name):
+            for p in pts:
+                p = int(p)
+                if not fS <= p < fE or bnd.getValue(p) == 1:
+                    continue
+                for q in dm.getTransitiveClosure(p)[0]:
+                    if vS <= q < vE:
+                        mask[q - vS] = True
+    dm.removeLabel(bname)
+    pStart, pEnd = dm.getChart()
+    flag = np.zeros(pEnd - pStart, dtype=np.int32)
+    flag[np.flatnonzero(mask) + vS - pStart] = 1
+    _sf_logical_or(dm, flag)
+    return flag[np.arange(vE - vS) + vS - pStart] == 1
+
+
 def _resolve_snapping(dm, X, ends, lines, snap_frac, scale, snap_quality=0.5,
-                      snap_dist=0.0):
+                      snap_dist=0.0, protected=None):
     """Which vertices to move onto the line, and where the crossings then land.
 
     A crossing at parameter ``t`` on an edge sits ``t`` of the way along it, so
@@ -329,14 +416,23 @@ def _resolve_snapping(dm, X, ends, lines, snap_frac, scale, snap_quality=0.5,
     # repeatedly. Measured: a relative 0.5 over six refine-and-snap rounds
     # licenses 0.5**6 of the original, and the worst angle duly fell 15.4 -> 2.3
     # degrees while every individual round looked well behaved.
+    # The winding convention, voted over every rank once (#874).
+    flip = _global_flip(X[np.asarray(cell_verts, dtype=np.int64).reshape(-1, 3)],
+                        dm.getComm())
     floor = (None if snap_quality is None else
-             np.minimum(snap_quality, np.abs(_cell_quality(X, cell_verts))))
+             np.minimum(snap_quality, np.abs(_cell_quality(X, cell_verts, flip))))
     # Vertices ALREADY on the line — a tip or junction placed by
     # `pull_vertex_onto` — do not move, so they cannot ruin anything and must
     # never be vetoed. Vetoing one would unplace the very point that makes a
     # terminating chain legal.
     fixed = _distance_to_lines(X, lines) < 1e-12 * scale
     vetoed = np.zeros(len(X), dtype=bool)
+    # A vertex on a labelled internal boundary (a band's skin) never moves: its
+    # crossings are split instead (#595). `refused` records the ones snapping
+    # wanted, for the caller's warning.
+    if protected is not None:
+        vetoed |= protected & ~fixed
+    refused = np.zeros(len(X), dtype=bool)
     # Distance from each vertex to the line, in units of the local h. The
     # along-edge criterion cannot see this: a vertex can sit a fraction of an
     # element from the line while every edge meeting it is crossed near its
@@ -380,9 +476,13 @@ def _resolve_snapping(dm, X, ends, lines, snap_frac, scale, snap_quality=0.5,
         pick = ends[rows, np.where(t[rows] < 0.5, 0, 1)]
         proposed = on_line.copy()
         proposed[pick[~vetoed[pick]]] = True
+        if protected is not None:
+            refused[pick[protected[pick] & ~fixed[pick]]] = True
         if reach is not None:
-            close = (_distance_to_lines(X, lines) < reach) & ~vetoed
-            proposed |= close
+            close_any = _distance_to_lines(X, lines) < reach
+            if protected is not None:
+                refused |= close_any & protected & ~fixed
+            proposed |= close_any & ~vetoed
 
         # COLLECTIVE, so every rank must reach it — including one that proposes
         # nothing. An early `if not near.any(): return` here deadlocked at np=3:
@@ -398,7 +498,7 @@ def _resolve_snapping(dm, X, ends, lines, snap_frac, scale, snap_quality=0.5,
         if proposed.any():
             X_try[proposed] = _project_onto_lines(X[proposed], lines)
         fresh = np.zeros(len(X), dtype=bool)
-        quality = _cell_quality(X_try, cell_verts)
+        quality = _cell_quality(X_try, cell_verts, flip)
         ruined = (np.zeros(len(cell_verts), dtype=bool) if floor is None
                   else (quality <= 0.0) | (quality < floor))
         if ruined.any():
@@ -417,6 +517,9 @@ def _resolve_snapping(dm, X, ends, lines, snap_frac, scale, snap_quality=0.5,
         settled = uw.mpi.comm.allreduce(
             int(np.array_equal(proposed, on_line)), op=MPI.MIN)
         if settled:
+            if protected is not None:
+                _resolve_snapping.refused = int(uw.mpi.comm.allreduce(
+                    int((refused & _owned_vertices(dm)).sum())))
             return on_line, X_snapped, t, multiply_crossed
         on_line = proposed
 
@@ -516,7 +619,7 @@ def _face_is_on_the_domain_boundary(dm, face, on_wall, shared):
     return len(dm.getSupport(edge)) == 1 and not shared[edge - pStart]
 
 
-def _cell_quality(X, cell_verts):
+def _cell_quality(X, cell_verts, flip=None):
     """Scale-free triangle quality: 1 equilateral, 0 degenerate, <0 inverted.
 
     ``4 sqrt(3) A / sum(l^2)``, signed through the area. The sign matters: an
@@ -529,26 +632,63 @@ def _cell_quality(X, cell_verts):
     P = X[cell_verts]
     e = np.stack([P[:, 2] - P[:, 1], P[:, 0] - P[:, 2], P[:, 1] - P[:, 0]],
                  axis=1)
-    twice_area = _signed_twice_areas(P)
+    twice_area = _signed_twice_areas(P, flip)
     return 2.0 * np.sqrt(3.0) * twice_area / np.maximum(
         (e ** 2).sum(axis=(1, 2)), np.finfo(float).tiny)
 
 
-def _signed_twice_areas(P):
-    """Twice the signed area of each triangle ``P[:, 0:3]``: the planar cross
-    product in two dimensions; on a surface mesh in three, the cell normal
-    against the outward direction (the centroid's, the surface being a sphere
-    about the origin). A mesh is wound one way throughout, so the convention
-    is read off the majority and an inverted cell is one against it."""
-    if P.shape[2] == 2:
-        return ((P[:, 1, 0] - P[:, 0, 0]) * (P[:, 2, 1] - P[:, 0, 1])
-                - (P[:, 1, 1] - P[:, 0, 1]) * (P[:, 2, 0] - P[:, 0, 0]))
+def _outward_signed(P):
+    """On a surface mesh in three dimensions: each cell's normal against the
+    outward direction (the centroid's, the surface being a sphere about the
+    origin), before any orientation convention is applied."""
     n = np.cross(P[:, 1] - P[:, 0], P[:, 2] - P[:, 0])
     c = P.sum(axis=1)
-    signed = (n * c).sum(axis=1) / np.maximum(np.linalg.norm(c, axis=1), 1e-300)
-    if (signed < 0.0).sum() > 0.5 * len(signed):
-        signed = -signed
-    return signed
+    return (n * c).sum(axis=1) / np.maximum(np.linalg.norm(c, axis=1), 1e-300)
+
+
+def _global_flip(P, comm):
+    """The winding convention, voted over EVERY rank of ``comm`` (the mesh's
+    communicator; ``P`` is this rank's cells): True when most cells are wound
+    against the positive sense (inward on a surface mesh, clockwise in the
+    plane). A count, not a distance: each cell votes with the sign of its
+    own area. A tie or no cells at all gives no flip. Every rank gets the
+    same answer, so a rank whose own cells are mostly wound against the
+    majority still reads them as inverted, and a mesh wound clockwise
+    throughout reads none as inverted (#874). COLLECTIVE on ``comm``: only on
+    the collective paths (the snapping loop, the inversion count after a cut,
+    pull_vertex_onto)."""
+    if not len(P):
+        signed = np.zeros(0)
+    elif P.shape[2] == 2:
+        signed = _planar_signed(P)
+    else:
+        signed = _outward_signed(P)
+    neg, total = comm.tompi4py().allreduce(
+        np.array([int((signed < 0.0).sum()), len(signed)]), op=MPI.SUM)
+    return bool(neg > 0.5 * total)
+
+
+def _planar_signed(P):
+    """Twice each planar triangle's signed area (positive anticlockwise)."""
+    return ((P[:, 1, 0] - P[:, 0, 0]) * (P[:, 2, 1] - P[:, 0, 1])
+            - (P[:, 1, 1] - P[:, 0, 1]) * (P[:, 2, 0] - P[:, 0, 0]))
+
+
+def _signed_twice_areas(P, flip=None):
+    """Twice the signed area of each triangle ``P[:, 0:3]``: the planar cross
+    product in two dimensions; on a surface mesh in three, the cell normal
+    against the outward direction. A mesh is wound one way throughout, so the
+    convention is read off the majority and an inverted cell is one against
+    it: the global majority when ``flip`` is given (:func:`_global_flip`, on
+    a collective path), else this array's own (a rank-local caller). In the
+    plane a rank-local caller keeps the planar sign as it is."""
+    if P.shape[2] == 2:
+        signed = _planar_signed(P)
+        return -signed if flip else signed
+    signed = _outward_signed(P)
+    if flip is None:
+        flip = (signed < 0.0).sum() > 0.5 * len(signed)
+    return -signed if flip else signed
 
 
 def _cell_edge_counts(dm, crossed_edges, on_line_vertices):
@@ -641,7 +781,7 @@ def _label_cut_edges(dm, lines, tol, name, value):
     return marked
 
 
-def cell_areas(dm):
+def cell_areas(dm, global_vote=False):
     """Signed area of every triangle. Negative means the cell is inverted.
 
     A cell's cone holds its edges together with an orientation saying which way
@@ -660,7 +800,9 @@ def cell_areas(dm):
             ring.append(a if o >= 0 else b)
         rings.append(ring[:3])
     P = X[np.asarray(rings, dtype=np.int64)] if rings else np.empty((0, 3, X.shape[1]))
-    return 0.5 * _signed_twice_areas(P)
+    # global_vote is for a caller every rank reaches (it is collective): the
+    # inversion count after a cut. Rank-local callers keep their own vote.
+    return 0.5 * _signed_twice_areas(P, _global_flip(P, dm.getComm()) if global_vote else None)
 
 
 def min_angles(dm):
@@ -799,8 +941,18 @@ def cut_along_lines(dm, lines, snap_frac=0.10, label=CUT_LABEL, label_value=1,
     # number is valid for the child meshes the pass loop produces.
     scale = _global_extent(dm)
 
+    protected = _internal_label_vertices(dm, label)
+    _resolve_snapping.refused = 0
     on_line, X_snapped, t, multiply_crossed = _resolve_snapping(
-        dm, X, ends, lines, snap_frac, scale, snap_quality, snap_dist)
+        dm, X, ends, lines, snap_frac, scale, snap_quality, snap_dist,
+        protected=protected)
+    if _resolve_snapping.refused and uw.mpi.rank == 0:
+        import warnings
+
+        warnings.warn(
+            f"cut_along_lines: {_resolve_snapping.refused} vertex(es) on a labelled "
+            f"internal boundary were not snapped onto the cut; their crossings are "
+            f"split instead, so the boundary keeps its shape (#595).", stacklevel=2)
     eS, _eE = dm.getDepthStratum(1)
     crossed = np.flatnonzero(np.isfinite(t)) + eS
 
@@ -929,7 +1081,7 @@ def cut_along_lines(dm, lines, snap_frac=0.10, label=CUT_LABEL, label_value=1,
     # on the partition, so this raise was rank-local at np>1 while its peers went
     # on into `Mesh(cut_dm, ...)` and waited there. Measured: snap_frac=0.49 on a
     # 1/12 box inverts a cell.
-    areas = cell_areas(cut)
+    areas = cell_areas(cut, global_vote=True)
     n_inverted = uw.mpi.comm.allreduce(int((areas <= 0.0).sum()), op=MPI.SUM)
     if n_inverted:
         raise RuntimeError(
@@ -1131,8 +1283,13 @@ def pull_vertex_onto(dm, targets, min_quality=0.1):
             "the mesh could take a boundary vertex. Pass the mesh without "
             "overlap; `Mesh.dm` has none.")
     # the way each cell is wound, read from the mesh as given: a cell that an
-    # earlier target of this call turned over is inverted, not wound backwards
-    wound = np.where(_cell_quality(X, cell_verts) < 0.0, -1.0, 1.0)
+    # earlier target of this call turned over is inverted, not wound backwards.
+    # On a surface mesh the sign is read under ONE convention for the whole
+    # call, voted over every rank (_global_flip, #874): a rank-local majority
+    # could change between the readings below and flip every cell's sign.
+    flip = _global_flip(X[np.asarray(cell_verts, dtype=np.int64).reshape(-1, 3)],
+                        dm.getComm())
+    wound = np.where(_cell_quality(X, cell_verts, flip) < 0.0, -1.0, 1.0)
 
     cdim = X.shape[1]
     for t in np.atleast_2d(np.asarray(targets, dtype=float))[:, :cdim]:
@@ -1259,10 +1416,10 @@ def pull_vertex_onto(dm, targets, min_quality=0.1):
             # have left it. The cells around a vertex are spread across the
             # ranks sharing it, so the count is reduced, on every rank: the
             # note is the same on all.
-            before = _cell_quality(arr, cell_verts) * wound
+            before = _cell_quality(arr, cell_verts, flip) * wound
             moved = arr.copy()
             moved[hit] = t
-            after = _cell_quality(moved, cell_verts) * wound
+            after = _cell_quality(moved, cell_verts, flip) * wound
             ruined = (np.isin(cell_verts, hit).any(axis=1)
                       & ((after <= 0.0)
                          | (after < np.minimum(min_quality, before))))
