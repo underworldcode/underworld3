@@ -597,6 +597,19 @@ def _mesh_coords_update_callback(array, change_context):
         # would mask the original exception (round-2 review).
         raise
 
+    # This write reached the mesh without mesh.deform (which a mesh that carries no
+    # variables yet allows). It may have moved a boundary off the surface declared
+    # for it, so it releases the declarations as deform does.
+    if not (getattr(mesh, "_in_remesh_transfer", False)
+            or getattr(mesh, "_coord_mutation_depth", 0) > 0):
+        mesh._release_bounding_surfaces(
+            "the mesh coordinates were written directly since it was declared, so the "
+            "boundary may no longer lie on it")
+        # As in deform: points are returned to the boundary the mesh now has,
+        # not to the constructor's circles or faces.
+        mesh._geometry_deformed = True
+        mesh._bnd_restore_cache = None
+
     # Increment mesh version to notify registered swarms of coordinate changes
     with mesh._mesh_update_lock:
         mesh._mesh_version += 1
@@ -680,8 +693,9 @@ def _apply_refinement_callback(dm, refinement_callback):
     the cells between them inside out: on a concave wall, a snapped midpoint can overtake
     an interior vertex that is not snapped (#946). Of each cell the callback inverted,
     the vertex it moved furthest goes back where refinement placed it, until no cell is
-    inverted. Returns the number put back, over all ranks: those vertices are not where
-    the callback meant them to be.
+    inverted. Returns the number put back, over all ranks, and this rank's mask of them
+    (indexed like the DM's vertices): those vertices are not where the callback meant
+    them to be.
 
     In parallel the copies of one vertex can disagree after the callback. A callback
     finds the vertices it moves through the labels a rank holds, and a rank can hold a
@@ -713,8 +727,9 @@ def _apply_refinement_callback(dm, refinement_callback):
                            f"{broken} vertices.")
 
     total = 0
+    vs, ve = dm.getDepthStratum(0)
+    put_back = numpy.zeros(ve - vs, dtype=bool)
     if dim == cdim:
-        vs, ve = dm.getDepthStratum(0)
         cs, ce = dm.getHeightStratum(0)
         rows = section_offsets(dm.getCoordinateSection(), numpy.arange(vs, ve)) // cdim
         cells = closure_points(dm, numpy.arange(cs, ce), 0)
@@ -741,10 +756,27 @@ def _apply_refinement_callback(dm, refinement_callback):
             held |= culprits
         _, total = _flag_on_every_sharer(dm, held)
         moved_to = numpy.where(held[:, None], refined, moved_to)
+        put_back = held[rows]
 
     coordinates.array[...] = moved_to.ravel()
     dm.setCoordinatesLocal(coordinates)
-    return total
+    return total, put_back
+
+
+def _labels_holding_vertices(dm, vertices, names):
+    """Those of the boundary labels ``names`` that hold, on any rank, one of the
+    flagged ``vertices`` (a mask indexed like the DM's vertices). A label holds a
+    vertex if it tags the vertex or a facet the vertex belongs to. ``names`` is the
+    same sequence on every rank. Collective: every rank gets the same answer."""
+    from mpi4py import MPI
+    from underworld3.meshing.smoothing.graph import _pinned_mask
+
+    local = numpy.array(
+        [dm.hasLabel(name) and numpy.any(_pinned_mask(dm, (name,)) & vertices)
+         for name in names], dtype=numpy.int32)
+    anywhere = numpy.zeros_like(local)
+    uw.mpi.comm.Allreduce(local, anywhere, op=MPI.MAX)
+    return {name for name, held in zip(names, anywhere) if held}
 
 
 def _sum_over_sharers(dm, values):
@@ -969,6 +1001,9 @@ class Mesh(Stateful, uw_object):
         self._analytic_return_coords_to_bounds = return_coords_to_bounds
         self._geometry_deformed = False
         self._bnd_restore_cache = None
+        # Boundary labels whose vertices refinement had to leave off the surface
+        # its callback moves them to (set by _build_refined_hierarchy).
+        self._refinement_left_off_surface = frozenset()
 
         ## This is where we can refine the dm if required, and rebuild / redistribute
 
@@ -997,7 +1032,7 @@ class Mesh(Stateful, uw_object):
             pass  # hierarchy restored; otherwise reload the fine mesh flat below
 
         elif not refinement is None and refinement > 0:
-            self._build_refined_hierarchy(refinement, refinement_callback)
+            self._build_refined_hierarchy(refinement, refinement_callback, boundaries)
 
         elif not coarsening is None and coarsening > 0:
             self._build_coarsened_hierarchy(coarsening)
@@ -1644,7 +1679,7 @@ class Mesh(Stateful, uw_object):
         self._pending_hierarchy_stamp = (_vertex_coordinates(self.dm), saved, cdim)
         return True
 
-    def _build_refined_hierarchy(self, refinement, refinement_callback):
+    def _build_refined_hierarchy(self, refinement, refinement_callback, boundaries):
         """Distribute the DM and build a uniformly refined FMG hierarchy.
 
         Each level is a plain ``refine()`` of the previous one (never
@@ -1680,8 +1715,21 @@ class Mesh(Stateful, uw_object):
         # first left, so it holds back again every vertex that needs it: its sum is
         # the number left off the callback's surface, over the hierarchy.
         if callable(refinement_callback):
-            held = sum(_apply_refinement_callback(dm, refinement_callback)
-                       for dm in self.dm_hierarchy)
+            held = 0
+            # The boundaries those vertices belong to are not on the surface the
+            # callback moves them to: a constructor that registers such a
+            # boundary's surface afterwards has it released (bounding_surface).
+            left_off_surface = set()
+            # The pressure-pin point labels (Centre) are not walls.
+            boundary_names = sorted(
+                member.name for member in (boundaries or ())
+                if member.name not in ("All_Boundaries", "Null_Boundary", "Centre"))
+            for dm in self.dm_hierarchy:
+                count, put_back = _apply_refinement_callback(dm, refinement_callback)
+                held += count
+                if count:
+                    left_off_surface |= _labels_holding_vertices(dm, put_back, boundary_names)
+            self._refinement_left_off_surface = frozenset(left_off_surface)
             if held:
                 with uw.selective_ranks(0) as selected:
                     if selected:
@@ -4367,8 +4415,14 @@ class Mesh(Stateful, uw_object):
         geometry from its caller. The registration is the declaration: the
         constructors of the annulus, shell and box meshes register their walls,
         and :meth:`register_tangent_slip_provider` registers others. Nothing is
-        measured. A surface that an operation released (:meth:`deform`
-        releases every one) is refused, with the reason.
+        measured. An operation that writes coordinates either keeps a wall on
+        its declared surface by construction (a mover holds a pinned wall, and
+        restores a sliding one onto the surface) or releases the declaration:
+        :meth:`deform` and a direct write to the coordinates release every
+        surface; a mover releases each wall it neither pins nor restores;
+        :meth:`boundary_slip` releases a label passed as free; refinement
+        releases a wall where it had to leave a vertex off the surface. A
+        released surface is refused, with the reason.
 
         Parameters
         ----------
@@ -4405,6 +4459,17 @@ class Mesh(Stateful, uw_object):
         raise ValueError(
             f"boundary {name!r} is registered as {surface.kind!r}, which is not an "
             f"analytic surface (radial or plane)")
+
+    def _release_bounding_surfaces(self, reason, labels=None):
+        """Release the analytic (``radial`` / ``plane``) surfaces registered for
+        ``labels``, or all of them: an operation is about to write, or has
+        written, coordinates without keeping those boundaries on their declared
+        surfaces. Called with the same arguments on every rank."""
+        for label, surface in self.bounding_surfaces.items():
+            if labels is not None and label not in labels:
+                continue
+            if surface.kind in ("radial", "plane"):
+                surface.release(reason)
 
     def register_tangent_slip_provider(self, label, surface):
         """Install a :class:`BoundingSurface` object for a boundary ``label``
@@ -4519,6 +4584,34 @@ class Mesh(Stateful, uw_object):
             ``is_pinned`` is the per-vertex pinned mask (local-chart order);
             ``project(Y)`` slides+restores the slip vertices of ``Y`` in place
             and returns it.
+
+        Notes
+        -----
+        .. note::
+
+           Building the projector for a label passed as free (``{label:
+           False}``) releases that label's declared surface, whether or not
+           ``project`` is then applied: :meth:`analytic_surface` refuses it
+           from here on, and ``adapt`` no longer snaps new vertices onto it.
+           The label has no circle, sphere or plane any more, so its
+           tangent-slide normals come from the mesh (a collective projection
+           of the boundary normal: building the projector takes about 0.03 s
+           on a 2-D annulus of cell size 0.1, against 0.001 s with the
+           analytic normal), and a mover run differs from one made with the
+           analytic normal at the 1e-5 level in the vertex positions. A later call asking for the label
+           to be restored restores nothing, and warns.
+
+        .. note::
+
+           A boundary whose declared surface was released (by a free slip, by
+           :meth:`deform`, by a direct write to ``mesh.X.coords``, or by a
+           refinement that could not put its vertices on it) is not restored
+           onto that surface when a later call asks for it to be: its vertices
+           slide along the wall as it is. The call warns, once per surface for
+           the life of the mesh, so a later call on the same surface is silent.
+           Interior surfaces are not named: their vertices are pinned. A user
+           who knows the wall is still the circle, sphere or plane declares it
+           again with :meth:`register_tangent_slip_provider`.
         """
         from underworld3.meshing.smoothing import _pinned_mask, _owned_vertex_mask
         from underworld3.meshing.smoothing.graph import _pinned_labels_or_default
@@ -4551,6 +4644,35 @@ class Mesh(Stateful, uw_object):
         is_bnd = shared_mask(_pinned_mask(dm, all_labels))
 
         slip_labels, free_labels = self._resolve_slip_spec(slip_spec)
+        # A free label is slid and not restored, so it is no longer declared to
+        # lie on its analytic surface. Released here, where the projector is
+        # built: the request is the same on every rank, while which rank slides a
+        # vertex of the label, and whether a mover keeps a trial step, is not.
+        self._release_bounding_surfaces(
+            "it was slid as a free surface, without restoring its vertices onto it",
+            labels=free_labels)
+        # A label asked to be restored whose surface has been released has
+        # nothing to be restored onto. The surfaces' state is the same on every
+        # rank, so the ranks agree on what to say, and rank 0 says it once. An
+        # interior surface is left out: its vertices are pinned, never slid.
+        for label in slip_labels:
+            surface = self.bounding_surfaces.get(label)
+            if (label in free_labels or surface is None or surface.interior
+                    or surface._prev_kind is None or surface._restore_warning_given):
+                continue
+            surface._restore_warning_given = True
+            with uw.selective_ranks(0) as selected:
+                if selected:
+                    import warnings
+
+                    warnings.warn(
+                        f"slip with restore was asked for boundary {label!r}, whose "
+                        f"declared {surface._prev_kind} surface was released "
+                        f"({surface.release_reason}). Its vertices slide along the "
+                        f"wall as it is and are not restored onto that surface. If "
+                        f"the wall is still that surface, declare it again with "
+                        f"mesh.register_tangent_slip_provider.", UserWarning,
+                        stacklevel=2)
         # Per-label vertex masks (closure of each label's tagged facets). The
         # rank's own masks pick its reference facets below; the shared ones
         # classify the vertices.
@@ -4661,12 +4783,38 @@ class Mesh(Stateful, uw_object):
                                 reference_coords=None, boundary_labels=None):
         """In-place convenience over :meth:`boundary_slip`: slide+restore the
         slip vertices of ``coords`` (a full local-chart vertex array) and return
-        it. For callers that just want coordinates snapped back (a checkpoint
-        reload, a diagnostic, the free-surface module)."""
+        it. For callers that just want coordinates snapped back (a diagnostic,
+        the free-surface module).
+
+        It restores onto a declared surface only. A mesh reloaded from a file
+        declares none, and writing saved coordinates into ``mesh.X.coords``
+        releases the surfaces a constructor declared, so after a checkpoint
+        reload the slip vertices slide along the wall as it was saved and are
+        not put back on the constructor's circle or sphere. After the write the
+        call warns; on a reloaded mesh, which never declared a surface, it does
+        not.
+
+        The projector of :meth:`boundary_slip` moves the vertices a rank owns.
+        This method then copies each owner's value to the other ranks holding
+        the vertex, as the movers do after projecting, so the array returned
+        is the same for every copy of a vertex. Collective.
+
+        As in :meth:`boundary_slip`, a label passed as free (``{label: False}``)
+        has its declared surface released by this call."""
         _is_pinned, project = self.boundary_slip(
             slip_spec, reference_coords=reference_coords,
             boundary_labels=boundary_labels)
-        return project(numpy.asarray(coords, dtype=float))
+        projected = project(numpy.asarray(coords, dtype=float))
+        if uw.mpi.size > 1:
+            coord_dm = self.dm.getCoordinateDM()
+            local, owned = coord_dm.createLocalVec(), coord_dm.createGlobalVec()
+            local.array[:] = projected.ravel()
+            coord_dm.localToGlobal(local, owned, addv=False)
+            coord_dm.globalToLocal(owned, local)
+            projected[...] = local.array.reshape(projected.shape)
+            local.destroy()
+            owned.destroy()
+        return projected
 
     @timing.routine_timer_decorator
     def update_lvec(self, swarm_sync=True):
@@ -4959,10 +5107,9 @@ class Mesh(Stateful, uw_object):
         # reason — a rigid `radial`/`plane` surface would keep restoring to the old shape.
         self._geometry_deformed = True
         self._bnd_restore_cache = None
-        for _surf in getattr(self, "_bounding_surfaces", {}).values():
-            if getattr(_surf, "kind", None) in ("radial", "plane") and hasattr(_surf, "release"):
-                _surf.release("the mesh has been deformed since it was declared, so the "
-                              "boundary may no longer lie on it")
+        self._release_bounding_surfaces(
+            "the mesh has been deformed since it was declared, so the boundary may no "
+            "longer lie on it")
 
         def _do_move():
             self._deform_mesh(_nc)
@@ -8153,7 +8300,7 @@ class Mesh(Stateful, uw_object):
         if cached is not None and cached[0] == key:
             return cached[1]
 
-        if bool(self.dm.isSimplex()) or (self.dim != self.cdim):
+        if bool(self.isSimplex) or (self.dim != self.cdim):
             cap = "exact"
         else:
             sag_rel, viol_rel = self._audit_cell_face_geometry()
@@ -10001,7 +10148,7 @@ class Mesh(Stateful, uw_object):
         # (adaptivity capstone stage 1c).
         _nvbx = None
         if engine == "nvb":
-            if not bool(self.dm.isSimplex()) or self.dim not in (2, 3):
+            if not bool(self.isSimplex) or self.dim not in (2, 3):
                 raise NotImplementedError(
                     "adapt(engine='nvb') supports 2D triangle and 3D "
                     "tetrahedral meshes."
