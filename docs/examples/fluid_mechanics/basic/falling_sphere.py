@@ -50,8 +50,8 @@ stokes.constitutive_model.Parameters.shear_viscosity_0 = VISCOSITY
 # %%
 # Boundary conditions
 # Outer boundaries: free slip
-stokes.add_essential_bc([0.0], "Top", [1])     # No vertical velocity
-stokes.add_essential_bc([0.0], "Bottom", [1])  # No vertical velocity
+stokes.add_essential_bc((None, 0.0), "Top")     # No vertical velocity
+stokes.add_essential_bc((None, 0.0), "Bottom")  # No vertical velocity
 stokes.add_essential_bc([0.0], "Left", [0])    # No horizontal velocity
 stokes.add_essential_bc([0.0], "Right", [0])   # No horizontal velocity
 

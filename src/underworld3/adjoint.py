@@ -365,7 +365,8 @@ def _boundary_reads_of(solver, variables):
     for bc in (getattr(solver, "essential_bcs", None) or []):
         conditions.append(("essential", bc.fn))
     for bc in (getattr(solver, "natural_bcs", None) or []):
-        for fn in (getattr(bc, "fn_f", None), getattr(bc, "fn_F", None)):
+        for fn in (getattr(bc, "fn_f", None), getattr(bc, "fn_F", None),
+                   getattr(bc, "fn_p", None)):
             if fn is not None:
                 conditions.append(("natural", fn))
     if not conditions:
@@ -410,7 +411,8 @@ def _forms_of(solver):
         forms.append(solver.PF0.sym)
     forms += [bc.fn for bc in (getattr(solver, "essential_bcs", None) or [])]
     for bc in (getattr(solver, "natural_bcs", None) or []):
-        forms += [fn for fn in (getattr(bc, "fn_f", None), getattr(bc, "fn_F", None))
+        forms += [fn for fn in (getattr(bc, "fn_f", None), getattr(bc, "fn_F", None),
+                                getattr(bc, "fn_p", None))
                   if fn is not None]
     return forms
 

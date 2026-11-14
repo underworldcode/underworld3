@@ -23,6 +23,12 @@ def cells_along_a_side_leaving_one_rank_empty(size):
     return 4 if size <= 4 else 8
 
 
+def cells_per_rank(mesh):
+    """The local cells of ``mesh`` on each rank, ghost cells included. Collective."""
+    start, end = mesh.dm.getHeightStratum(0)
+    return mesh.dm.comm.tompi4py().allgather(end - start)
+
+
 def right_triangle_of_cells(n, ranks_with_cells, dm_class=PETSc.DMPlex):
     r"""The triangle with corners (0,0), (1,0), (0,1), split into :math:`n^2` equal
     cells of area :math:`1/(2 n^2)`, shared among the first ``ranks_with_cells``

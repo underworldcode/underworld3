@@ -915,18 +915,45 @@ class Surface:
 
     @property
     def face_centers(self) -> Optional[np.ndarray]:
-        """(M, 3) array of triangle centroids."""
+        """(M, 3) array of face centroids: triangles in 3-D, and in 2-D the
+        segments of the polyline (one per segment, matching
+        :attr:`face_normals`)."""
         self._ensure_discretized()
         if self._pv_mesh is None:
             return None
+        if self.is_2d:
+            a, b = self._polyline_segments()
+            return 0.5 * (a + b)
         return np.array(self._pv_mesh.cell_centers().points)
+
+    def _polyline_segments(self):
+        """The 2-D trace's segments as ``(a, b)``, each ``(M, 3)``: every line
+        cell of the polydata split into its consecutive point pairs."""
+        P = np.asarray(self._pv_mesh.points, dtype=float)
+        lines = np.asarray(self._pv_mesh.lines, dtype=np.int64)
+        a, b, k = [], [], 0
+        while k < len(lines):
+            n = int(lines[k])
+            ids = lines[k + 1:k + 1 + n]
+            a.extend(ids[:-1])
+            b.extend(ids[1:])
+            k += n + 1
+        return P[np.asarray(a, dtype=np.int64)], P[np.asarray(b, dtype=np.int64)]
 
     @property
     def face_normals(self) -> Optional[np.ndarray]:
-        """(M, 3) array of face normals (cell normals from pyvista)."""
+        """(M, 3) array of unit face normals: pyvista's cell normals in 3-D, and
+        in 2-D each polyline segment's normal (its tangent turned a quarter
+        turn anticlockwise, z = 0), which pyvista does not define for lines
+        (#540)."""
         self._ensure_discretized()
         if self._pv_mesh is None:
             return None
+        if self.is_2d:
+            a, b = self._polyline_segments()
+            t = b - a
+            n = np.column_stack([-t[:, 1], t[:, 0], np.zeros(len(t))])
+            return n / np.linalg.norm(n, axis=1, keepdims=True)
         return np.array(self._pv_mesh.cell_normals)
 
     @property
@@ -2326,8 +2353,6 @@ class SurfaceCollection:
         # to match surface point coordinates
         coords = np.asarray(mesh._coords)
 
-        pv_mesh = pv.PolyData(coords)
-
         # Initialize with large distance
         with uw.synchronised_array_update():
             distance_var.data[:, 0] = 1e10
@@ -2335,9 +2360,11 @@ class SurfaceCollection:
             # Compute unsigned distance to each surface, take minimum.
             # Unlike single Surface (which stores signed distance), collections
             # store unsigned because signed distance is ambiguous with multiple surfaces.
+            # Each surface's own exact distance: the polyline routine in 2-D
+            # (pyvista wants 3-D points and has no implicit distance to lines,
+            # #540), pyvista's implicit distance in 3-D.
             for surface in self.surfaces.values():
-                dist_result = pv_mesh.compute_implicit_distance(surface._pv_mesh)
-                surface_dist = np.abs(dist_result.point_data["implicit_distance"])
+                surface_dist = np.abs(surface._signed_distance_at(coords))
                 distance_var.data[:, 0] = np.minimum(
                     distance_var.data[:, 0], surface_dist
                 )
@@ -2354,8 +2381,8 @@ class SurfaceCollection:
     ) -> "MeshVariable":
         """Transfer surface normals to mesh points via nearest-neighbor.
 
-        For each mesh point, finds the closest surface face and copies
-        that face's normal vector.
+        For each mesh point, finds the nearest surface (by its exact distance)
+        and copies the normal of that surface's nearest face.
 
         Args:
             mesh: The mesh to transfer normals to
@@ -2365,7 +2392,7 @@ class SurfaceCollection:
             variable_name: Name for new variable
 
         Returns:
-            MeshVariable with normal vectors (3 components)
+            MeshVariable with normal vectors (``mesh.cdim`` components)
         """
         if len(self.surfaces) == 0:
             raise ValueError("Cannot transfer normals: no surfaces in collection")
@@ -2383,29 +2410,35 @@ class SurfaceCollection:
         elif hasattr(coords, '__array__'):
             coords = np.asarray(coords)
 
-        # Create or validate output variable
+        # Create or validate output variable: as many components as the mesh
+        # has dimensions (a 2-D mesh refuses a 3-component variable, #540)
+        cdim = mesh.cdim
         if normal_var is None:
             normal_var = uw.discretisation.MeshVariable(
-                variable_name, mesh, 3, degree=mesh.degree
+                variable_name, mesh, cdim, degree=mesh.degree
             )
 
-        # Build combined arrays of all face centers and normals
-        all_centers = []
-        all_normals = []
-        for surface in self.surfaces.values():
-            all_centers.append(surface.face_centers)
-            all_normals.append(surface.face_normals)
-
-        combined_centers = np.vstack(all_centers)
-        combined_normals = np.vstack(all_normals)
-
-        # Build KDTree and query
-        kdtree = uw.kdtree.KDTree(combined_centers)
-        _, closest_idx = kdtree.query(coords)
+        # The nearest SURFACE by its exact distance, then that surface's
+        # nearest face. Taking the nearest face centre over all surfaces at
+        # once gave a point near one trace's end the other trace's normal
+        # when the other's centre was closer (#540).
+        query = np.ascontiguousarray(np.asarray(coords, dtype=float)[:, :cdim])
+        surfaces = list(self.surfaces.values())
+        dist = np.vstack([np.abs(surface._signed_distance_at(query)) for surface in surfaces])
+        nearest = np.argmin(dist, axis=0)
+        normals_out = np.zeros((len(query), cdim))
+        for k, surface in enumerate(surfaces):
+            sel = np.flatnonzero(nearest == k)
+            if not sel.size:
+                continue
+            centers = np.ascontiguousarray(np.asarray(surface.face_centers)[:, :cdim])
+            normals = np.asarray(surface.face_normals)[:, :cdim]
+            _, idx = uw.kdtree.KDTree(centers).query(np.ascontiguousarray(query[sel]))
+            normals_out[sel] = normals[np.asarray(idx).ravel()]
 
         # Transfer normals
         with uw.synchronised_array_update():
-            normal_var.data[:] = combined_normals[closest_idx.flatten()]
+            normal_var.data[:] = normals_out
 
         return normal_var
 

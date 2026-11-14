@@ -249,11 +249,13 @@ def labelled_facets_to_pv_mesh(mesh, name):
         -1, dm.getCoordinateDim())
 
     value = mesh.boundaries[name].value
-    label = dm.getLabel(name)
-    # An empty stratum yields a null IS that segfaults in getIndices(), and a
-    # rank owning no part of the surface is the normal case in parallel.
-    if label is None or label.getStratumSize(value) == 0:
+    # A boundary the DM holds no label for has no facets; getLabel does not
+    # return None for it (#1163). An empty stratum yields a null IS that
+    # segfaults in getIndices(), and a rank owning no part of the surface is
+    # the normal case in parallel.
+    if not dm.hasLabel(name) or dm.getLabel(name).getStratumSize(value) == 0:
         return pv.PolyData()
+    label = dm.getLabel(name)
 
     facets = [
         [int(p) - vS for p in dm.getTransitiveClosure(int(f))[0] if vS <= p < vE]

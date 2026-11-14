@@ -112,10 +112,10 @@ def _boundary_stratum_is(dm, mesh, boundary):
     if not match:
         raise ValueError(
             f"Unknown boundary {boundary!r}; known: {[b.name for b in mesh.boundaries]}")
-    label = dm.getLabel("UW_Boundaries")
-    if label is None:
+    # getLabel does not return None for a label the DM does not hold (#1163).
+    if not dm.hasLabel("UW_Boundaries"):
         return None
-    return label.getStratumIS(match[0])
+    return dm.getLabel("UW_Boundaries").getStratumIS(match[0])
 
 
 def _point_coord(dm, dim, cvec, csec, v0, v1, q):

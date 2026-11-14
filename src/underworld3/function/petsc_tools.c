@@ -398,3 +398,72 @@ PetscErrorCode DMInterpolationGetUnlocated_UW(DMInterpolationInfo ctx, PetscInt 
   for (PetscInt p = 0; p < ctx->n; ++p) mask[p] = (ctx->cells[p] < 0) ? 1 : 0;
   PetscFunctionReturn(PETSC_SUCCESS);
 }
+
+/*
+  DMInterpolationGetCells_UW - copy out the cell each owned point is evaluated
+  in (ctx->cells[p], -1 for a point with no owning cell). These are the cells
+  DMInterpolationEvaluate_UW takes the closure of, so a caller bounding the
+  interpolant by its cell's nodal values uses the evaluator's own answer and
+  does not locate the point again.
+
+  cells must have length n == ctx->n (input order on the evaluator's
+  COMM_SELF context, as for DMInterpolationGetUnlocated_UW).
+*/
+PetscErrorCode DMInterpolationGetCells_UW(DMInterpolationInfo ctx, PetscInt n, PetscInt64 *cells)
+{
+  PetscFunctionBegin;
+  PetscCheck(n == ctx->n, PETSC_COMM_SELF, PETSC_ERR_ARG_SIZ,
+             "Cell array length %" PetscInt_FMT " != %" PetscInt_FMT " owned points", n, ctx->n);
+  for (PetscInt p = 0; p < ctx->n; ++p) cells[p] = (PetscInt64)ctx->cells[p];
+  PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+/*
+  DMPlexCellClosureFieldRange_UW - per-component min and max of one field's
+  values over the closure of each given cell, read from the local vector x of
+  dm (the vector the evaluator interpolates from). Every point of the closure
+  that carries the field's DOFs contributes: vertices, and for P2 and higher
+  the edge, face and cell DOFs too. Component k of node j sits at
+  offset + j*nc + k.
+
+  lo and hi have length n*nc. A cell index < 0 gives (-inf, +inf): no bound.
+  Rank-local, no communication.
+*/
+PetscErrorCode DMPlexCellClosureFieldRange_UW(DM dm, Vec x, PetscInt field, PetscInt nc, PetscInt n, const PetscInt64 *cells, PetscReal *lo, PetscReal *hi)
+{
+  PetscSection       section;
+  const PetscScalar *a;
+
+  PetscFunctionBegin;
+  PetscCall(DMGetLocalSection(dm, &section));
+  PetscCall(VecGetArrayRead(x, &a));
+  for (PetscInt i = 0; i < n; ++i) {
+    PetscReal *l = &lo[i * nc], *h = &hi[i * nc];
+    for (PetscInt k = 0; k < nc; ++k) { l[k] = PETSC_INFINITY; h[k] = PETSC_NINFINITY; }
+    if (cells[i] >= 0) {
+      PetscInt *closure = NULL, nclosure;
+
+      PetscCall(DMPlexGetTransitiveClosure(dm, (PetscInt)cells[i], PETSC_TRUE, &nclosure, &closure));
+      for (PetscInt q = 0; q < nclosure; ++q) {
+        const PetscInt pt = closure[2 * q];
+        PetscInt       dof, off;
+
+        PetscCall(PetscSectionGetFieldDof(section, pt, field, &dof));
+        if (dof <= 0) continue;
+        PetscCall(PetscSectionGetFieldOffset(section, pt, field, &off));
+        for (PetscInt d = 0; d < dof; ++d) {
+          const PetscReal v = PetscRealPart(a[off + d]);
+          const PetscInt  k = d % nc;
+          if (v < l[k]) l[k] = v;
+          if (v > h[k]) h[k] = v;
+        }
+      }
+      PetscCall(DMPlexRestoreTransitiveClosure(dm, (PetscInt)cells[i], PETSC_TRUE, &nclosure, &closure));
+    }
+    /* No cell, or a closure without this field's DOFs: leave the value alone. */
+    for (PetscInt k = 0; k < nc; ++k)
+      if (l[k] > h[k]) { l[k] = PETSC_NINFINITY; h[k] = PETSC_INFINITY; }
+  }
+  PetscCall(VecRestoreArrayRead(x, &a));
+  PetscFunctionReturn(PETSC_SUCCESS);
+}

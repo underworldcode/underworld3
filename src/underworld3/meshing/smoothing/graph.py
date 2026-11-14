@@ -45,21 +45,57 @@ def _global_mean(value):
 
 
 def _auto_pinned_labels(mesh) -> tuple:
-    """All non-sentinel geometric boundary labels on the mesh.
+    """All non-sentinel geometric boundary labels the mesh holds.
 
-    Skips ``All_Boundaries`` / ``Null_Boundary`` (sentinels) and
-    known non-geometric pressure-pin markers such as ``Centre`` on
-    the Annulus (a single-point marker whose underlying ``DMLabel``
-    has an invalid communicator and hard-crashes any
-    ``getNumValues`` / ``getValueIS`` / ``view`` call).
+    Skips ``All_Boundaries`` / ``Null_Boundary`` (sentinels) and the
+    non-geometric pressure-pin marker ``Centre`` of the Annulus. A name in
+    ``mesh.boundaries`` that the DM holds no label for is not a boundary of
+    this mesh and is left out: a solid disc, ``Annulus(radiusInner=0)``,
+    names ``Lower`` and has no inner wall (#1163). Whether a label exists is
+    a property of the distributed DM, so every rank returns the same names.
     """
     skip = {"All_Boundaries", "Null_Boundary", "Centre"}
     names = []
     for member in mesh.boundaries:
         name = getattr(member, "name", None)
-        if name and name not in skip:
+        if name and name not in skip and mesh.dm.hasLabel(name):
             names.append(name)
     return tuple(names)
+
+
+def _pinned_labels_or_default(mesh, pinned_labels) -> tuple:
+    """The labels a mover pins: the caller's ``pinned_labels``, or every
+    geometric boundary the mesh holds when none are given.
+
+    A label that is not there pins nothing, so two cases warn (on the first
+    rank; the test is the same on every rank). A name the caller gave that the
+    DM holds no label for is most likely misspelt. And when no default wall is
+    left although ``mesh.boundaries`` names some, the DM has lost its boundary
+    labels and every boundary vertex is free to leave the domain. A mesh that
+    names a wall it never had (the inner wall of a solid disc) and holds the
+    others is the ordinary case and is silent.
+    """
+    import warnings
+    import underworld3 as uw
+
+    dm = mesh.dm
+    if pinned_labels is None:
+        labels = _auto_pinned_labels(mesh)
+        named = [b.name for b in mesh.boundaries
+                 if b.name not in ("All_Boundaries", "Null_Boundary", "Centre")]
+        if not labels and named and uw.mpi.rank == 0:
+            warnings.warn(
+                f"the mesh holds no label for any of its boundaries {named}, so no "
+                f"boundary vertex is pinned", UserWarning, stacklevel=3)
+        return labels
+    labels = tuple(pinned_labels)
+    missing = [name for name in labels if not dm.hasLabel(name)]
+    if missing and uw.mpi.rank == 0:
+        warnings.warn(
+            f"the mesh holds no label named {missing}, so these pin nothing; the "
+            f"labels it holds are {sorted(dm.getLabelName(i) for i in range(dm.getNumLabels()))}",
+            UserWarning, stacklevel=3)
+    return labels
 
 
 def _owned_vertex_mask(dm):
@@ -128,16 +164,19 @@ def _pinned_mask(dm, pinned_labels):
     "seam" vertices free, and the smoother would pull them
     inward. Taking the closure of the tagged edges recovers them.
 
-    Tolerates labels that are present but empty (e.g. the
-    ``Centre`` pressure-pin marker on an Annulus, whose underlying
-    ``DMLabel`` has no strata and hard-crashes any query)."""
+    A name the DM holds no label for pins nothing (e.g. ``Centre`` on an
+    Annulus, or ``Lower`` on a solid disc), and so does a label that is
+    present but empty."""
     pStart, pEnd = dm.getDepthStratum(0)
     n_verts = pEnd - pStart
     is_pinned = np.zeros(n_verts, dtype=bool)
     for lname in pinned_labels:
-        label = dm.getLabel(lname)
-        if label is None:
+        # dm.getLabel never returns None: for a missing name it hands back a
+        # label with a null handle, and any query on that is a segmentation
+        # fault (#1163). hasLabel is the test.
+        if not dm.hasLabel(lname):
             continue
+        label = dm.getLabel(lname)
         try:
             if label.getNumValues() == 0:
                 continue

@@ -1669,10 +1669,13 @@ def add_fault(mesh, faults, verbose=False, cut=True, exclude=None,
         by the cut or the split afterwards). ``False`` for a level that is
         already partitioned — the replay of the faults on the add-on levels.
     **place_kwargs
-        3-D only: options of :func:`place_surface.place_sheet` (``clearance``,
+        3-D: options of :func:`place_surface.place_sheet` (``clearance``,
         ``size``, ``setback``). A bisection-refined mesh needs ``clearance``
         of about 0.9 (the default 0.6 leaves a cavity the fill cannot close
-        on it; the placement's volume guard refuses).
+        on it; the placement's volume guard refuses). 2-D: the cut's snapping
+        options of :func:`line_cut.cut_along_lines` (``snap_frac``,
+        ``snap_quality``, ``snap_dist``), passed on only when given, so a call
+        without them makes the same cut as before (#595).
 
     Returns
     -------
@@ -1695,8 +1698,12 @@ def add_fault(mesh, faults, verbose=False, cut=True, exclude=None,
     if mesh.dim == 3:
         return _add_fault_sheets(mesh, faults, verbose=verbose,
                                  partition=partition, **place_kwargs)
-    if place_kwargs:
-        raise TypeError(f"add_fault: {sorted(place_kwargs)} apply to 3-D sheets only")
+    snap_keys = {"snap_frac", "snap_quality", "snap_dist"}
+    other = sorted(set(place_kwargs) - snap_keys)
+    if other:
+        raise TypeError(f"add_fault: {other} apply to 3-D sheets only; in 2-D "
+                        f"only {sorted(snap_keys)} are accepted")
+    snap = {k: place_kwargs[k] for k in snap_keys if k in place_kwargs}
 
     segments = []
     for entry in faults:
@@ -1755,7 +1762,7 @@ def add_fault(mesh, faults, verbose=False, cut=True, exclude=None,
             # or the cut leaves the chain fragmented at the turn.
             dm = pull_vertex_onto(dm, np.asarray(poly, dtype=float))
             dm, info = cut_along_lines(dm, [poly], label=name,
-                                       label_value=values[name])
+                                       label_value=values[name], **snap)
             if verbose:
                 uw.pprint(f"[add_fault {name!r}] {info['n_cut_edges']} "
                           f"facets, min angle {info['min_angle']:.2f} deg")

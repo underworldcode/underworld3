@@ -261,18 +261,18 @@ def _on_every_rank(dm, ok):
     return bool(dm.getComm().tompi4py().allreduce(bool(ok), op=MPI.LAND))
 
 
-def nested_prolongation_from_dms(coarse_dm, fine_dm):
+def nested_prolongation_from_dms(coarse_dm, fine_dm, fine_vertices=None):
     """The exact P1 prolongation of one bisection pass, or ``None`` when some rank
     cannot recover it. COLLECTIVE: every rank gets the same verdict, so the callers'
     fallbacks, which are collective, are taken on all ranks or none (#961). See
     :func:`_nested_prolongation_local`."""
-    transfer = _nested_prolongation_local(coarse_dm, fine_dm)
+    transfer = _nested_prolongation_local(coarse_dm, fine_dm, fine_vertices)
     if not _on_every_rank(fine_dm, transfer is not None):
         return None
     return transfer
 
 
-def _nested_prolongation_local(coarse_dm, fine_dm):
+def _nested_prolongation_local(coarse_dm, fine_dm, fine_vertices=None):
     """Recover a refinement pass's exact P1 prolongation from the two DMs.
 
     Every fine vertex of a bisection pass is an **inherited** coarse vertex or
@@ -289,7 +289,9 @@ def _nested_prolongation_local(coarse_dm, fine_dm):
     1. a fine vertex equal to a coarse vertex is inherited (weight 1); one equal
        to a coarse edge midpoint gets 1/2, 1/2;
     2. any still-unresolved vertex equal to the average of two ALREADY-RESOLVED
-       fine neighbours takes the average of their weights;
+       fine neighbours whose rows lie in ONE coarse cell takes the average of
+       their weights (#449: a pair whose rows lie in two cells is not its
+       parents, and is skipped);
     3. repeat until nothing new resolves.
 
     Weights compose exactly, so the result is the true FE embedding at any
@@ -299,7 +301,9 @@ def _nested_prolongation_local(coarse_dm, fine_dm):
     NB this reads coordinates only to *identify* points, so it must be called
     while they are still pristine (before any snap or relaxation). The
     dependency-free endpoint is to take the relation straight from the
-    refinement transform instead; see #425.
+    refinement transform instead; see #425. A fine level that has moved since
+    is identified by ``fine_vertices``, the vertex coordinates it was made
+    with, one row per vertex in point order (``Mesh._transfer_vertices``).
     """
     cvS, cvE = coarse_dm.getDepthStratum(0)
     ceS, ceE = coarse_dm.getDepthStratum(1)
@@ -312,6 +316,8 @@ def _nested_prolongation_local(coarse_dm, fine_dm):
         coarse_dm.getCoordinatesLocal().array.reshape(-1, cdim))
     fxyz = np.ascontiguousarray(
         fine_dm.getCoordinatesLocal().array.reshape(-1, cdim))
+    if fine_vertices is not None:
+        fxyz = np.ascontiguousarray(fine_vertices)
 
     edges = [(c[0] - cvS, c[1] - cvS)
              for e in range(ceS, ceE)
@@ -364,6 +370,24 @@ def _nested_prolongation_local(coarse_dm, fine_dm):
     # convinced me this code was broken when it was not.
     unresolved = [r for r in range(n_f) if weights[r] is None]
     if unresolved:
+        # A matching pair is the vertex's parents only if its two rows lie in
+        # ONE coarse cell: there the coarse P1 field is linear, so the averaged
+        # row is the embedding whichever such pair is taken, and a true parent
+        # edge always lies in one coarse cell. In 3-D a cascade vertex often has
+        # two or three matching pairs, some of them with rows in two different
+        # cells, which are skipped (#449). Read from the coarse mesh's
+        # connectivity; no tolerance.
+        ccS, ccE = coarse_dm.getHeightStratum(0)
+        cells_of = [set() for _ in range(cvE - cvS)]
+        for c in range(ccS, ccE):
+            for q in coarse_dm.getTransitiveClosure(c)[0]:
+                if cvS <= q < cvE:
+                    cells_of[q - cvS].add(c)
+
+        def in_one_cell(p_, q_):
+            support = set(weights[p_]) | set(weights[q_])
+            return bool(set.intersection(*(cells_of[v] for v in support)))
+
         nbr = [[] for _ in range(n_f)]
         for e in range(feS, feE):
             c = fine_dm.getCone(e)
@@ -381,7 +405,7 @@ def _nested_prolongation_local(coarse_dm, fine_dm):
                     for j in range(i + 1, len(cand)):
                         p_, q_ = cand[i], cand[j]
                         avg = np.ascontiguousarray(0.5 * (fxyz[p_] + fxyz[q_]))
-                        if avg.tobytes() == target:
+                        if avg.tobytes() == target and in_one_cell(p_, q_):
                             found = (p_, q_)
                             break
                     if found:
@@ -411,15 +435,9 @@ def _nested_prolongation_local(coarse_dm, fine_dm):
 
 def nested_prolongation(engine, coarse_map, fine_map, n_coarse, vS_fine,
                         n_fine):
-    # TODO(BUG): in 3-D this is NOT the coarse P1 embedding for vertices a
-    # closure cascade places strictly INSIDE a coarse tet. Measured 2026-08-02:
-    # transfer against a barycentric reference, worst |P.u - P1(x)| = 1.19 on a
-    # cellSize=0.4 unit cube, per GENERATION (no composition involved). 2-D is
-    # exact (1.9e-15). It went unnoticed because the test's reference was
-    # edge-based — a single bisection puts vertices on coarse EDGES, and the
-    # interior ones were skipped by its coverage rule rather than checked. The
-    # 3-D case of test_0753::test_reproduces_an_arbitrary_coarse_field is
-    # xfailed against this.
+    # This route reads the engine's own edge-to-midpoint record, so each fine
+    # vertex's parents are known, not inferred (compare
+    # _nested_prolongation_local, which infers them in round 2; #449).
     """Exact P1 prolongation for ONE bisection generation, in DM numbering.
 
     A bisection generation adds exactly one kind of vertex: the midpoint of a

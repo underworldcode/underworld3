@@ -24,11 +24,12 @@ P_A = np.array([[0.30, 0.50, 0.30], [0.70, 0.50, 0.30],
 P_B = np.array([[0.30, 0.62, 0.32], [0.62, 0.30, 0.32],
                 [0.62, 0.30, 0.68], [0.30, 0.62, 0.68]])
 # the serial run of this exact case (test_0863's end-to-end fixture):
-# peak tangential pair slip per prepared piece
-SERIAL = {"Main": 0.17567, "Cross_1": 0.00335, "Cross_2": 0.00295}
+# peak tangential pair slip per prepared piece (Cross_1 and Cross_2 were
+# entered swapped; corrected from a serial run, #956)
+SERIAL = {"Main": 0.17567, "Cross_1": 0.00295, "Cross_2": 0.00335}
 # the weak plane's serial gauge (in-plane jump across the layer) and the
 # whole-domain integral of v.v on the same fixture, eta_1 = 0.01
-SERIAL_TI = {"Main": 0.29145, "Cross_1": 0.15717, "Cross_2": 0.13863}
+SERIAL_TI = {"Main": 0.29145, "Cross_1": 0.13863, "Cross_2": 0.15717}
 SERIAL_TI_VV = 8.35092135e-02
 
 
@@ -115,6 +116,11 @@ def test_network_3d_width_weak_plane_solve_np2():
             f"{name}: parallel peak {peak:.4f} vs serial {expected}")
 
 
+# Slow, not stuck: alone at np 4 this test takes about 330 s on a loaded
+# 96-thread workstation (development 01dec8d2), most of it in the rotated
+# solve. Run after the two solves above under a 600 s silence window, it
+# was stopped by the supervisor while its native frames were still moving
+# (#956). Give a supervisor at least 900 s of silence for this file.
 def test_two_faults_apart_are_placed_by_their_own_ranks():
     """Two faults a domain apart in one network are two regions of the
     placement gather and two groups of the split's redistribution

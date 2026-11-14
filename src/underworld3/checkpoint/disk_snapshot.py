@@ -550,6 +550,13 @@ def read_snapshot(model, path: str) -> None:
                     f"solver's DuDt) has been collected, or was never "
                     f"built here. Build the same solvers, and keep them, "
                     f"before loading. Nothing was loaded")
+        # The swarm sidecars are per rank, so a bad one is seen by one rank
+        # only: they are read and checked here, with everything else, before
+        # anything is restored, and the verdict is agreed (#974).
+        swarm_payloads = {}
+        if problem is None and _GROUP_SWARMS in f:
+            problem, swarm_payloads = _checked_swarm_sidecars(
+                f[_GROUP_SWARMS], model, path, bulk_dir)
         problem = _agreed_problem(problem)
         if problem is not None:
             raise ValueError(problem)
@@ -598,39 +605,10 @@ def read_snapshot(model, path: str) -> None:
             if trace is not None:
                 trace._restore_step_state(None)
 
-        # Phase 3b + 6: restore swarms from per-rank sidecars.
-        if _GROUP_SWARMS in f:
-            sw_group = f[_GROUP_SWARMS]
-            if "mpi_size_at_write" in sw_group.attrs:
-                write_size = int(sw_group.attrs["mpi_size_at_write"])
-                if write_size != int(uw.mpi.size):
-                    raise ValueError(
-                        f"snapshot at {path} was written on {write_size} "
-                        f"MPI rank(s); this run is on {uw.mpi.size}. "
-                        f"Cross-rank-count restore is not supported by the "
-                        f"snapshot mechanism — use mesh.write_timestep for "
-                        f"that case."
-                    )
-
-            swarms_by_safe = {
-                _swarm_safe_name(s): s for s in list(model._swarms.values())
-            }
-            rank = int(uw.mpi.rank)
-            size = int(uw.mpi.size)
-            for swarm_safe in sw_group.keys():
-                g = sw_group[swarm_safe]
-                swarm = swarms_by_safe.get(swarm_safe)
-                if swarm is None:
-                    raise ValueError(
-                        f"snapshot at {path} contains swarm {swarm_safe!r} "
-                        f"that is not registered on this model"
-                    )
-                # Resolve the per-rank sidecar name from the pattern.
-                pattern = str(g.attrs["sidecar_pattern"])
-                sidecar_name = pattern.format(rank=rank, size=size)
-                _read_swarm_from_sidecar(
-                    swarm, os.path.join(bulk_dir, sidecar_name)
-                )
+        # Phase 3b + 6: restore swarms from the per-rank sidecars read and
+        # agreed above.
+        for swarm, payload in swarm_payloads.values():
+            _apply_swarm_sidecar(swarm, payload)
 
 
 # ----- Phase 3b: swarm sidecars --------------------------------------------
@@ -723,10 +701,56 @@ def _write_swarm_to_sidecar(swarm, sidecar_path: str) -> dict:
     }
 
 
-def _read_swarm_from_sidecar(swarm, sidecar_path: str) -> None:
-    """Restore swarm state from a sidecar file. Mirrors
-    :meth:`Swarm.apply_snapshot_payload` exactly — clear local
-    particles, re-add at saved coords, write var data back."""
+def _checked_swarm_sidecars(sw_group, model, path, bulk_dir):
+    """Read and check every swarm's sidecar for this rank: ``(problem,
+    payloads)``, ``problem`` an error message or None and ``payloads``
+    ``{safe name: (swarm, payload)}``. Rank-local; the caller agrees the
+    verdict before anything is restored (#974)."""
+    if "mpi_size_at_write" in sw_group.attrs:
+        write_size = int(sw_group.attrs["mpi_size_at_write"])
+        if write_size != int(uw.mpi.size):
+            return (f"snapshot at {path} was written on {write_size} "
+                    f"MPI rank(s); this run is on {uw.mpi.size}. "
+                    f"Cross-rank-count restore is not supported by the "
+                    f"snapshot mechanism — use mesh.write_timestep for "
+                    f"that case."), {}
+    swarms_by_safe = {_swarm_safe_name(s): s for s in list(model._swarms.values())}
+    payloads = {}
+    for swarm_safe in sw_group.keys():
+        swarm = swarms_by_safe.get(swarm_safe)
+        if swarm is None:
+            return (f"snapshot at {path} contains swarm {swarm_safe!r} "
+                    f"that is not registered on this model"), {}
+        try:
+            pattern = str(sw_group[swarm_safe].attrs["sidecar_pattern"])
+            sidecar = os.path.join(bulk_dir, pattern.format(rank=int(uw.mpi.rank),
+                                                             size=int(uw.mpi.size)))
+        except Exception as err:   # sanctioned: reported into the collective verdict
+            return (f"rank {uw.mpi.rank}: swarm {swarm_safe!r} has no readable "
+                    f"sidecar pattern ({type(err).__name__}: {err}). Nothing was "
+                    f"loaded"), {}
+        problem, payload = _read_swarm_sidecar_checked(swarm, sidecar)
+        if problem is not None:
+            return f"rank {uw.mpi.rank}: {problem}. Nothing was loaded", {}
+        payloads[swarm_safe] = (swarm, payload)
+    return None, payloads
+
+
+def _read_swarm_sidecar_checked(swarm, sidecar_path: str):
+    """One swarm's sidecar for this rank, read and checked against the target
+    swarm before anything is changed: ``(problem, payload)``, ``payload``
+    ``(saved_coords, {variable: data})``. Rank-local, and it cannot raise:
+    whatever goes wrong reading or checking this rank's sidecar is reported
+    as this rank's problem, into the agreement that follows (#974). A raise
+    here would leave the other ranks waiting in it."""
+    try:
+        return _read_and_check_swarm_sidecar(swarm, sidecar_path)
+    except Exception as err:   # sanctioned: reported into the collective verdict
+        return (f"sidecar at {sidecar_path} could not be read: "
+                f"{type(err).__name__}: {err}"), None
+
+
+def _read_and_check_swarm_sidecar(swarm, sidecar_path: str):
     import h5py
 
     with h5py.File(sidecar_path, "r") as f:
@@ -737,26 +761,62 @@ def _read_swarm_from_sidecar(swarm, sidecar_path: str) -> None:
         var_data: dict[str, np.ndarray] = {}
         if "variables" in f:
             for name in f["variables"].keys():
-                var_data[name] = np.asarray(f["variables"][name][...])
+                node = f["variables"][name]
+                if not isinstance(node, h5py.Dataset):
+                    return (f"sidecar at {sidecar_path}: variable {name!r} is not "
+                            f"a dataset"), None
+                var_data[name] = np.asarray(node[...])
 
     if captured_size != uw.mpi.size:
-        raise ValueError(
-            f"sidecar at {sidecar_path}: was written on "
-            f"{captured_size} MPI rank(s); this run is on {uw.mpi.size}. "
-            f"Cross-rank-count snapshot restore is out of scope — restart "
-            f"on the same rank count or use mesh.write_timestep for the "
-            f"flexible-restart path."
-        )
+        return (f"sidecar at {sidecar_path}: was written on "
+                f"{captured_size} MPI rank(s); this run is on {uw.mpi.size}. "
+                f"Cross-rank-count snapshot restore is out of scope — restart "
+                f"on the same rank count or use mesh.write_timestep for the "
+                f"flexible-restart path."), None
     if captured_rank != uw.mpi.rank:
-        raise ValueError(
-            f"sidecar at {sidecar_path}: written by rank {captured_rank}; "
-            f"this is rank {uw.mpi.rank}. Wrong per-rank sidecar opened."
-        )
+        return (f"sidecar at {sidecar_path}: written by rank {captured_rank}; "
+                f"this is rank {uw.mpi.rank}. Wrong per-rank sidecar opened."), None
     if captured_mesh_name and captured_mesh_name != swarm.mesh.name:
-        raise ValueError(
-            f"sidecar at {sidecar_path}: parent mesh was "
-            f"{captured_mesh_name!r}, target swarm is on {swarm.mesh.name!r}"
-        )
+        return (f"sidecar at {sidecar_path}: parent mesh was "
+                f"{captured_mesh_name!r}, target swarm is on {swarm.mesh.name!r}"), None
+    if saved_coords.ndim != 2 or saved_coords.shape[1] != swarm.dim:
+        return (f"sidecar at {sidecar_path}: coordinates have shape "
+                f"{saved_coords.shape}; this swarm's particles have {swarm.dim} "
+                f"coordinates"), None
+
+    # The same variable set both ways: the writer saves every variable but
+    # PETSc's own (DMSwarm*), so each of those must be in the sidecar.
+    current_vars = {v.clean_name: v for v in swarm._vars.values()
+                    if not v.name.startswith("DMSwarm")}
+    missing = sorted(set(current_vars) - set(var_data))
+    if missing:
+        return (f"sidecar at {sidecar_path} lacks swarm variable "
+                f"{missing[0]!r}; restore requires the same variable set"), None
+
+    # The shape each variable will have once the saved particles are re-added:
+    # the saved count, by the variable's own component shape.
+    n_saved = int(saved_coords.shape[0])
+    for var_name, saved in var_data.items():
+        var = current_vars.get(var_name)
+        if var is None:
+            return (f"sidecar variable {var_name!r} is not present on the "
+                    f"target swarm; restore requires the same variable set"), None
+        current = np.asarray(var.data)
+        if not np.can_cast(saved.dtype, current.dtype, casting="same_kind"):
+            return (f"swarm variable {var_name!r}: sidecar dtype {saved.dtype} "
+                    f"cannot be written into {current.dtype}"), None
+        expected = (n_saved,) + tuple(current.shape[1:])
+        if tuple(saved.shape) != expected:
+            return (f"swarm variable {var_name!r} shape mismatch on restore: "
+                    f"sidecar {saved.shape} vs current {expected}"), None
+    return None, (saved_coords, var_data)
+
+
+def _apply_swarm_sidecar(swarm, payload) -> None:
+    """Restore swarm state from a checked sidecar payload. Mirrors
+    :meth:`Swarm.apply_snapshot_payload` exactly — clear local
+    particles, re-add at saved coords, write var data back."""
+    saved_coords, var_data = payload
 
     # Clear local population. removePoint is O(1) per call (last point),
     # so this is O(N) total — same approach as Swarm.apply_snapshot_payload.
@@ -785,27 +845,15 @@ def _read_swarm_from_sidecar(swarm, sidecar_path: str) -> None:
     # Restore counted as a population change (matches in-memory path).
     swarm._population_generation += 1
 
-    # Write per-variable captured data back into the freshly-rebuilt
-    # swarm.
+    # Write per-variable captured data back into the freshly-rebuilt swarm
+    # (checked against it before anything was changed).
     current_vars = {v.clean_name: v for v in swarm._vars.values()}
     for var_name, saved in var_data.items():
-        var = current_vars.get(var_name)
-        if var is None:
-            raise ValueError(
-                f"sidecar variable {var_name!r} is not present on the "
-                f"target swarm; restore requires the same variable set"
-            )
-        current = np.asarray(var.data)
-        if current.shape != saved.shape:
-            raise ValueError(
-                f"swarm variable {var_name!r} shape mismatch on restore: "
-                f"sidecar {saved.shape} vs current {current.shape}"
-            )
         # Write THROUGH the canonical array so the PETSc pack callback fires
         # (as Swarm.apply_snapshot_payload does, #313): writing into the
         # detached view above left the DMSwarm field at its post-realloc
         # values, which the cells proxy and the next cache invalidation read.
-        var.data[...] = saved
+        current_vars[var_name].data[...] = saved
 
 
 # ----- Phase 3a: state-bearer (Snapshottable) serialisation ----------------

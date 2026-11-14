@@ -9,6 +9,7 @@
 - [ ] Every exception swallow states its sanctioned failure mode in a comment (S4)
 - [ ] New data access uses `.array` / `mesh.X.coords` — no `with ....access(...)`, no `mesh.data` (S7)
 - [ ] Parallel safety considered — np2/np4 checked where swarm/mesh/solver dispatch is touched (S11)
+- [ ] No mesh entity or rank identified by coordinates; any remaining tolerance is named, relative and says what it bounds (S12)
 - [ ] No `pixi.toml` / `pixi.lock` or other dependency changes riding in an unrelated PR
 - [ ] AI-assisted work carries the attribution line below
 

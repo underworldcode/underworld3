@@ -260,7 +260,10 @@ Requirements and traps, all measured:
 - **Keep the GRADED tail.** `_adapt_nested` stores one MG level per doubling of
   resolution (`_subsample_mg_levels`; per-bisection-pass levels were measured
   2.3–7.3× slower). Handing the solver a base-only tail instead — coarse base
-  straight to the fully adapted mesh — **triples the V-cycle count**.
+  straight to the fully adapted mesh — **triples the V-cycle count**. The
+  resolution of a generation is the 5th percentile of its cell diameters over
+  the whole mesh, so the choice of levels does not depend on the partition
+  (#865).
 - **V-cycle counts are insensitive to element quality here, and that is a PASS not
   a failed measurement.** On a fault child the velocity block takes 2 iterations
   (iso) or 2–3 (TI) across meshes ranging from 156° to 105° max angle. The
