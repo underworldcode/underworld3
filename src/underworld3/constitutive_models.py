@@ -3766,9 +3766,9 @@ def _director_as_column(value):
 
     - A row Matrix, which is what a mesh variable's ``.sym`` is, is transposed.
     - A list, a tuple or a numpy array (1-D, row or column) becomes a column.
-    - A named expression (``uw.expression``) holding a row is refused: storing
-      it keeps it live, so it cannot be transposed here, and a row reads wrong
-      in the yield law without an error.
+    - A named expression (``uw.expression``) holding a matrix is refused: a row
+      reads wrong in the yield law without an error, and a column is not
+      followed when its value changes. A Matrix of scalar expressions works.
     - A mesh variable passed itself is refused, naming ``.sym``.
     """
     import numpy
@@ -3776,11 +3776,14 @@ def _director_as_column(value):
 
     if isinstance(value, UWexpression):
         inner = getattr(value, "_sym", None)
-        if isinstance(inner, sympy.MatrixBase) and inner.shape[0] == 1 and inner.shape[1] > 1:
+        if isinstance(inner, sympy.MatrixBase):
             raise ValueError(
-                f"director: the expression '{value.name}' holds a row {inner.shape}; "
-                "the director must be a column. Build the expression with a column, "
-                "e.g. sympy.Matrix([[a], [b]]), or assign its value's transpose (#1185).")
+                f"director: the expression '{value.name}' holds a {inner.shape} matrix. "
+                "A matrix-valued expression does not work as a director: a row reads "
+                "wrong in the yield law, and a column is not followed when its value "
+                "changes. Pass a sympy Matrix of scalar expressions instead, e.g. "
+                "sympy.Matrix([[nx], [ny]]) with nx and ny uw.expression scalars; it "
+                "stays live (#1185).")
         return value
     if hasattr(value, "sym") and not isinstance(value, (sympy.Basic, sympy.MatrixBase)):
         raise TypeError(
