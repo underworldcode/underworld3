@@ -142,4 +142,4 @@ def test_points_beyond_an_edge_and_a_corner_of_a_box_are_returned_inside():
     left_outside = np.any(out > 1.0, axis=1)
     assert not left_outside.any(), (
         f"{int(left_outside.sum())} of {len(probe)} points beyond an edge or corner left "
-        f"outside or on a wall: {probe[left_outside]}")
+        f"outside: {probe[left_outside]}")

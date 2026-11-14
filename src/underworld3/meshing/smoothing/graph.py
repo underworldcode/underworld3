@@ -795,33 +795,39 @@ def _resolve_slip(mesh, slip_spec):
 
 def _nearest_on_facets_2d(pts, seg, with_facet=False):
     """Closest point on a set of 2D line segments. ``pts`` (m,2),
-    ``seg`` (nf,2,2). Returns (m,2) closest points (over all segments), and
-    with ``with_facet`` also the index of the segment each lies on (the first
-    on a tie)."""
+    ``seg`` (nf,2,2). Returns (m,2) closest points (over all segments). With
+    ``with_facet``, also the index of the segment each lies on (the first on a
+    tie) and an (m,2) mask of that segment's ends whose span holds it: both
+    inside the segment, one at an end."""
     a = seg[:, 0]; b = seg[:, 1]            # (nf,2)
     ab = b - a
     ab2 = np.einsum('fi,fi->f', ab, ab)
     ab2 = np.where(ab2 > 1.0e-30, ab2, 1.0)
     out = np.empty_like(pts)
     facet = np.empty(len(pts), dtype=int)
+    span = np.empty((len(pts), 2), dtype=bool)
     for i, p in enumerate(pts):
         t = np.clip(((p - a) * ab).sum(axis=1) / ab2, 0.0, 1.0)
         proj = a + t[:, None] * ab           # (nf,2)
         d2 = ((proj - p) ** 2).sum(axis=1)
         facet[i] = d2.argmin()
         out[i] = proj[facet[i]]
-    return (out, facet) if with_facet else out
+        span[i] = (t[facet[i]] < 1.0, t[facet[i]] > 0.0)
+    return (out, facet, span) if with_facet else out
 
 
 def _nearest_on_facets_3d(pts, tri, with_facet=False):
     """Closest point on a set of 3D triangles. ``pts`` (m,3),
-    ``tri`` (nf,3,3). Returns (m,3), and with ``with_facet`` also the index of
-    the triangle each lies on (the first on a tie). Per-point loop, vectorised
-    over triangles via the standard region-based closest-point algorithm."""
+    ``tri`` (nf,3,3). Returns (m,3). With ``with_facet``, also the index of the
+    triangle each lies on (the first on a tie) and an (m,3) mask of that
+    triangle's vertices whose span holds it: all three inside it, two on an
+    edge, one at a vertex. Per-point loop, vectorised over triangles via the
+    standard region-based closest-point algorithm."""
     A = tri[:, 0]; B = tri[:, 1]; C = tri[:, 2]
     AB = B - A; AC = C - A
     out = np.empty_like(pts)
     facet = np.empty(len(pts), dtype=int)
+    span = np.empty((len(pts), 3), dtype=bool)
     for i, p in enumerate(pts):
         AP = p - A
         d1 = np.einsum('fi,fi->f', AB, AP)
@@ -848,6 +854,7 @@ def _nearest_on_facets_3d(pts, tri, with_facet=False):
         w = np.where(over, w / np.where(s > 0, s, 1.0), w)
         proj = A + v[:, None] * AB + w[:, None] * AC
         dd = ((proj - p) ** 2).sum(axis=1)
-        facet[i] = dd.argmin()
-        out[i] = proj[facet[i]]
-    return (out, facet) if with_facet else out
+        f = facet[i] = dd.argmin()
+        out[i] = proj[f]
+        span[i] = (not over[f] and v[f] + w[f] < 1.0, v[f] > 0.0, w[f] > 0.0)
+    return (out, facet, span) if with_facet else out
