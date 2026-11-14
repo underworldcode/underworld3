@@ -2844,7 +2844,8 @@ class SolverBaseClass(uw_object):
                     f"also carries a {kind} constraint whose tangent the reaction "
                     f"term does not include yet")
         for bc in (getattr(self, "natural_bcs", None) or []):
-            for fn in (getattr(bc, "fn_f", None), getattr(bc, "fn_F", None)):
+            for fn in (getattr(bc, "fn_f", None), getattr(bc, "fn_F", None),
+                       getattr(bc, "fn_p", None)):
                 if fn is None:
                     continue
                 import sympy
@@ -3036,26 +3037,91 @@ class SolverBaseClass(uw_object):
         (:meth:`_essential_datum_sensitivity`), which for a saddle point
         needs the pressure adjoint ``lam`` as well, and the misfit's own
         dual on every node, ``misfit_dual``, where the misfit reads the
-        prescribed values.
+        prescribed values. A parameter in a Stokes Nitsche datum needs
+        ``lam`` too: it enters the condition's continuity-row term, which is
+        tested against the pressure adjoint, and ``sensitivity`` refuses
+        without it.
         """
         from underworld3.adjoint import integral
         total = integral(self.mesh, self.adjoint_integrand(mu, wrt))
         total += self._essential_datum_sensitivity(mu, wrt, lam, misfit_dual)
-        # A parameter that enters through a natural condition — a prescribed
-        # traction or flux — has a facet part: (d bd_F0 / dm) . mu on that boundary.
+        # A parameter that enters through a natural or Nitsche condition has a
+        # facet part, from every boundary term the condition assembles: the
+        # value term fn_f tested against mu, and the flux term fn_F tested
+        # against grad(mu). Reading fn_f alone missed a Nitsche condition's
+        # symmetric term: a datum imposed by Nitsche then had the wrong sign
+        # (#1143). A Stokes Nitsche condition's continuity-row term fn_p
+        # (assembled on the pressure field, #1072) is tested against the
+        # pressure adjoint lam.
         import sympy
         mu_sym = mu.sym
+        comps = getattr(mu, "num_components", 1)
+        cdim = self.mesh.cdim
+        grad_mu = None
         for bc in (getattr(self, "natural_bcs", None) or []):
             fn = getattr(bc, "fn_f", None)
-            if fn is None:
-                continue
-            d = diff_wrt_field(self._peel_except(sympy.Matrix(fn), wrt), wrt)
-            if d.is_zero_matrix:
-                continue
-            values = list(d)
-            comps = getattr(mu, "num_components", 1)
-            integrand = sum(values[i] * mu_sym[i] for i in range(min(len(values), comps)))
-            total += integral(self.mesh, integrand, bc.boundary)
+            if fn is not None:
+                d = diff_wrt_field(self._peel_except(sympy.Matrix(fn), wrt), wrt)
+                if not d.is_zero_matrix:
+                    values = list(d)
+                    integrand = sum(values[i] * mu_sym[i] for i in range(min(len(values), comps)))
+                    total += integral(self.mesh, integrand, bc.boundary)
+            flux = getattr(bc, "fn_F", None)
+            if flux is not None:
+                dF = sympy.Matrix(diff_wrt_field(self._peel_except(sympy.Matrix(flux), wrt), wrt))
+                if not dF.is_zero_matrix:
+                    if grad_mu is None:
+                        grad_mu = (sympy.Matrix(self.mesh.vector.gradient(mu_sym[0])).reshape(1, cdim)
+                                   if comps == 1 else sympy.Matrix(self.mesh.vector.jacobian(mu_sym)))
+                    dF = dF.reshape(grad_mu.shape[0], grad_mu.shape[1])
+                    integrand = sum(dF[c, k] * grad_mu[c, k]
+                                    for c in range(grad_mu.shape[0]) for k in range(grad_mu.shape[1]))
+                    total += integral(self.mesh, integrand, bc.boundary)
+            cont = getattr(bc, "fn_p", None)
+            if cont is not None:
+                dp = diff_wrt_field(self._peel_except(sympy.Matrix(cont), wrt), wrt)
+                if not dp.is_zero_matrix:
+                    # Decided from the condition and the arguments alone, the
+                    # same on every rank.
+                    # A tangential datum with the default (field) normal reaches
+                    # this too: n.d is zero in value but not symbolically, so the
+                    # derivative cannot be shown zero here. Passing lam gives the
+                    # right answer in every case.
+                    if lam is None:
+                        name = getattr(wrt, "name", None) or str(wrt)
+                        raise ValueError(
+                            f"sensitivity: {name} enters the continuity-row term of the "
+                            f"Nitsche condition on {bc.boundary!r}, which is tested against "
+                            "the pressure adjoint: pass lam=, the pressure part of the "
+                            "adjoint_solve target. (A tangential datum with the default "
+                            "normal also needs it: its continuity-row derivative is zero in "
+                            "value but not symbolically.)")
+                    total += integral(self.mesh, list(dp)[0] * lam.sym[0], bc.boundary)
+        # The volume continuity term (a saddle point's PF0, e.g. Stokes
+        # ``constraints``) is tested against the pressure adjoint lam (#1161).
+        pf0 = getattr(self, "PF0", None)
+        if pf0 is not None:
+            dpf = diff_wrt_field(self._peel_except(sympy.Matrix(pf0.sym), wrt), wrt)
+            if not sympy.Matrix(dpf).is_zero_matrix:
+                if lam is None:
+                    name = getattr(wrt, "name", None) or str(wrt)
+                    raise ValueError(
+                        f"sensitivity: {name} enters the continuity term of this solver, "
+                        "which is tested against the pressure adjoint: pass lam=, the "
+                        "pressure part of the adjoint_solve target.")
+                total += integral(self.mesh, list(sympy.Matrix(dpf))[0] * lam.sym[0])
+        # The datum of an add_constraint_bc multiplier condition is tested
+        # against the multiplier's adjoint, which sensitivity is not given:
+        # refused by name rather than dropped (#1161).
+        for cbc in (getattr(self, "_block_constraint_bcs", None) or []):
+            datum = sympy.Matrix([cbc.g]) if not isinstance(cbc.g, sympy.MatrixBase) else cbc.g
+            if not sympy.Matrix(diff_wrt_field(self._peel_except(datum, wrt), wrt)).is_zero_matrix:
+                name = getattr(wrt, "name", None) or str(wrt)
+                raise NotImplementedError(
+                    f"sensitivity: {name} enters the datum {cbc.g} of the add_constraint_bc "
+                    f"condition on {cbc.boundary!r}. Its part of the gradient is tested "
+                    "against the constraint multiplier's adjoint, which is not computed "
+                    "yet, so it is refused rather than left out (#1161).")
         return total
 
     def _constraint_mechanisms(self):
@@ -6365,6 +6431,15 @@ class SolverBaseClass(uw_object):
             raise TypeError(
                 f"add_rotated_freeslip_bc() requires a boundary label string; "
                 f"got {type(boundary).__name__}")
+        # A wall the mesh holds no label for has no nodes to constrain: a solid
+        # disc names "Lower" and has no inner wall (#1163). Whether the label
+        # exists is a property of the distributed DM, so every rank refuses.
+        if not self.mesh.dm.hasLabel(boundary):
+            held = [b.name for b in self.mesh.boundaries
+                    if self.mesh.dm.hasLabel(b.name)]
+            raise ValueError(
+                f"add_rotated_freeslip_bc(): the mesh holds no boundary labelled "
+                f"{boundary!r}; the boundaries it holds are {held}")
         if conds is not None:
             if isinstance(conds, (sympy.MatrixBase, list, tuple, np.ndarray)):
                 raise TypeError(
@@ -10704,17 +10779,22 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
     def _build_velocity_nullspace_vector(self, mode):
         """Create a velocity nullspace basis vector from a user-supplied mode."""
 
-        mode_values = np.asarray(uw.function.evaluate(mode, self.u.coords_nd), dtype=np.float64)
-        if mode_values.ndim == 1:
-            mode_values = mode_values.reshape(-1, 1)
-        elif mode_values.ndim > 2:
-            mode_values = mode_values.reshape(mode_values.shape[0], -1)
-
-        if mode_values.shape != (self.u.coords_nd.shape[0], self.u.num_components):
+        n_nodes = self.u.coords_nd.shape[0]
+        n_components = self.u.num_components
+        # Checked on the mode's symbolic shape, before any evaluation, so every
+        # rank reaches the same verdict without communicating: a check on the
+        # evaluated array passed on a rank with no nodes and raised on the
+        # others, which then waited in a collective (#1179).
+        n_entries = int(np.prod(sympy.Matrix(mode).shape))
+        if n_entries != n_components:
             raise ValueError(
-                "Velocity nullspace mode evaluation must return an array with shape "
-                f"({self.u.coords_nd.shape[0]}, {self.u.num_components}); got {mode_values.shape}."
-            )
+                f"Velocity nullspace mode {mode} has {n_entries} entries; the velocity "
+                f"field has {n_components} components.")
+
+        mode_values = np.asarray(uw.function.evaluate(mode, self.u.coords_nd), dtype=np.float64)
+        # Laid out by the declared count: reshape(n, -1) cannot infer -1 from an
+        # empty array, which is what raised on a rank with no velocity nodes.
+        mode_values = mode_values.reshape(n_nodes, n_components)
 
         template_vec = self.dm.getGlobalVec()
         try:
@@ -12342,9 +12422,11 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         # Get the inactive region label
         label_name = self._inactive_region_label
-        bc_label = self.dm.getLabel(label_name)
-        if bc_label is None:
+        # dm.getLabel never returns None for a missing name (#1163): hasLabel
+        # is the test, and it answers the same on every rank.
+        if not self.dm.hasLabel(label_name):
             raise ValueError(f"DM label '{label_name}' not found")
+        bc_label = self.dm.getLabel(label_name)
         c_label = bc_label
 
         # Create a new DS with the same fields but no weak forms
@@ -12602,6 +12684,10 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             why = (why + ". The forward solve used the Picard tangent, so the "
                    "consistent tangent is assembled for the adjoint (a rebuild "
                    "of the Jacobian kernel)")
+        if getattr(self, "_block_constraint_bcs", None):
+            why = (why + ". A parameter in an add_constraint_bc datum is refused by "
+                   "sensitivity: its part needs the constraint multiplier's adjoint, "
+                   "which is not computed yet (#1161)")
         rotated = list(getattr(self, "_rotated_freeslip_bcs", None) or [])
         if rotated:
             why = (why + f". {len(rotated)} rotated free-slip constraint(s): the "

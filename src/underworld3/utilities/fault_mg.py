@@ -335,6 +335,7 @@ def cell_located_transfer_parallel(coarse, fine, degree, continuous,
     nodes on the geometry it was made in, as in
     :func:`cell_located_prolongation`.
     """
+    from underworld3.utilities.custom_mg import CollectiveBuildError
     from underworld3.utilities.fault_contact import _collective_raise
 
     m4 = comm.tompi4py()
@@ -385,7 +386,7 @@ def cell_located_transfer_parallel(coarse, fine, degree, continuous,
         except Exception as err:   # sanctioned: raised on every rank just below
             problem = (f"fault_mg: the cell-located transfer failed: "
                        f"{type(err).__name__}: {err}")
-    _collective_raise(problem)
+    _collective_raise(problem, error=CollectiveBuildError)
     hit_nodes, hit_W, hit_cols = [hit], [W], [gcols]
 
     # --- misses: ask the other ranks -------------------------------------- #
@@ -434,7 +435,7 @@ def cell_located_transfer_parallel(coarse, fine, degree, continuous,
                 answer_problem = (f"fault_mg: the cell-located transfer failed: "
                                   f"{type(err).__name__}: {err}")
                 found = found[:0]
-        _collective_raise(answer_problem)
+        _collective_raise(answer_problem, error=CollectiveBuildError)
         # answers travel back to every rank; each keeps those for its own queries
         ans_idx = m4.allgather(found)
         ans_W = m4.allgather(Wq)
@@ -473,7 +474,7 @@ def cell_located_transfer_parallel(coarse, fine, degree, continuous,
         if rest_problem is None and not answered.all():
             rest_problem = ("fault_mg: a fine node could not be located in any "
                             "coarse cell on any rank")
-        _collective_raise(rest_problem)
+        _collective_raise(rest_problem, error=CollectiveBuildError)
         hit_nodes.append(miss)
         hit_W.append(best_W)
         hit_cols.append(best_cols)
@@ -574,9 +575,14 @@ def provenance_transfer_parallel(coarse, fine, pre, degree, continuous,
     nv = cv_c.shape[1]
     dim = Xc.shape[1]
 
-    # both checks below are on allreduced counts, so every rank raises
-    # together: build_transfers may retry or degrade on them (#886)
+    # Every failure below is raised on every rank together, as a
+    # CollectiveBuildError, so the hierarchy build degrades on all of them
+    # (#886, #874): the checks on allreduced counts directly, the rank-local
+    # location and weighting through fault_contact._collective_raise. None
+    # passes builder_failure: another builder cannot change a location or a
+    # weight that failed, so a retry would fail the same way.
     from underworld3.utilities.custom_mg import CollectiveBuildError
+    from underworld3.utilities.fault_contact import _collective_raise
     owner = _fine_cell_of_node(fn, n_f)
     if m4.allreduce(int((owner < 0).sum())):
         raise CollectiveBuildError("fault_mg: a fine node belongs to no cell")
@@ -586,11 +592,22 @@ def provenance_transfer_parallel(coarse, fine, pre, degree, continuous,
         # the record is on this very mesh: a node's cell IS the recorded cell
         pcell = owner[mine]
         plam = np.zeros((mine.size, nv))
-    elif mine.size:
-        pcell, plam = locate_in_cells_exhaustive(fcent[owner[mine]], vxy_p, cv_p)
     else:
-        pcell = np.zeros(0, dtype=np.int64)
-        plam = np.zeros((0, nv))
+        # A rank-local failure is raised on every rank (#874): a rank that
+        # raised alone left the others waiting in the allreduce below.
+        pcell = np.zeros(mine.size, dtype=np.int64)
+        plam = np.zeros((mine.size, nv))
+        problem = None
+        if mine.size:
+            try:
+                pcell, plam = locate_in_cells_exhaustive(fcent[owner[mine]],
+                                                         vxy_p, cv_p)
+            except Exception as err:   # sanctioned: raised on every rank just below
+                problem = (f"fault_mg: the provenance transfer failed to locate "
+                           f"the fine cells: {type(err).__name__}: {err}")
+        # the same class as the checks beside it, so the build retries or
+        # degrades on every rank together (#886)
+        _collective_raise(problem, error=CollectiveBuildError)
     n_out = int(m4.allreduce(int((plam.min(axis=1) < -_INSIDE_TOL).sum())
                              if mine.size else 0))
     if n_out:
@@ -631,12 +648,20 @@ def provenance_transfer_parallel(coarse, fine, pre, degree, continuous,
     cv_u = np.arange(nu * nv).reshape(nu, nv)
     Xw = Xf[mine]
     reference = reference_vertices(pre, coarse)
-    if reference is not None and mine.size:
-        at = _barycentric(Xw, vxy_p[cv_p[pcell]])
-        Xw = np.einsum("nv,nvd->nd", at, reference[cv_p[pcell]])
-    lam = _barycentric(Xw, V_u[cv_u[inv]]) if mine.size else np.zeros((0, nv))
-    W = (_node_weights(Xw, inv, lam, Xn_u, cn_u, V_u, cv_u, degree)
-         if mine.size else np.zeros((0, nb)))
+    W = np.zeros((mine.size, nb))
+    problem = None
+    if mine.size:
+        # rank-local: a failure is raised on every rank just below (#874)
+        try:
+            if reference is not None:
+                at = _barycentric(Xw, vxy_p[cv_p[pcell]])
+                Xw = np.einsum("nv,nvd->nd", at, reference[cv_p[pcell]])
+            lam = _barycentric(Xw, V_u[cv_u[inv]])
+            W = _node_weights(Xw, inv, lam, Xn_u, cn_u, V_u, cv_u, degree)
+        except Exception as err:   # sanctioned: raised on every rank just below
+            problem = (f"fault_mg: the provenance transfer failed to weight "
+                       f"the fine nodes: {type(err).__name__}: {err}")
+    _collective_raise(problem, error=CollectiveBuildError)
     gcols = cols_u[inv]                                        # (nm, nb, ncomp)
 
     global last_transfer_stats

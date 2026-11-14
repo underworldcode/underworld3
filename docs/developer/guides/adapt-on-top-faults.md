@@ -1,6 +1,6 @@
 ---
 name: adapt-on-top-faults
-description: Recipe for Underworld3 FAULT models on an NVB adapt-on-top mesh — resolve a fault Surface by LOCAL refinement (mesh.adapt(metric, max_levels=...) returns a child; NVB is the 2D default engine), drive it from the fault's EXACT signed distance, use rotated strong free-slip (composes with transverse-isotropy where Nitsche does not), recover dynamic topography from the constraint reaction, and run advection-diffusion on the adapted mesh with field transfer across re-adaptation. Reach for THIS for instantaneous/coupled fault-flow problems. For MMPDE node-movement convection use the `adaptive-meshing` skill instead; for rendering use `uw-visualisation`.
+description: Recipe for Underworld3 FAULT models on an NVB adapt-on-top mesh — resolve a fault Surface by LOCAL refinement (mesh.adapt(metric, max_levels=...) returns a child; NVB is the 2D default engine), drive it from the fault's EXACT signed distance, use rotated strong free-slip (no leakage, and its reaction is the boundary traction), recover dynamic topography from the constraint reaction, and run advection-diffusion on the adapted mesh with field transfer across re-adaptation. Reach for THIS for instantaneous/coupled fault-flow problems. For MMPDE node-movement convection use the `adaptive-meshing` skill instead; for rendering use `uw-visualisation`.
 families: [Stokes]
 kind: recipe
 ---
@@ -191,18 +191,24 @@ point-smoother doesn't damp — bounded and contrast-independent, not a bug. TI 
 
 ## Rotated strong free-slip (the reason to use this, not Nitsche)
 
-Nitsche free-slip is INCOMPATIBLE with the TI model (its penalty scales by an
-isotropic viscosity). Rotated strong free-slip imposes `u·n̂=0` as an ESSENTIAL
-constraint in a per-node (n,t) frame → machine-zero leakage AND composes with TI.
+Rotated strong free-slip imposes `u·n̂=0` as an ESSENTIAL constraint in a per-node
+(n,t) frame → machine-zero leakage where Nitsche leaks ~1e-3, a reaction that is the
+boundary normal traction, and it composes with TI.
+
+Nitsche free-slip is not ruled out with the TI model. Its penalty scales by the
+constitutive model's `K`, which is the bulk `η₀` for the TI models, and its boundary
+tangent is checked against a finite difference for a TI stress
+(`tests/test_1066_stokes_jacobian_layout.py`). That is from reading the code and that
+test: we have not measured a Nitsche + TI solve on a fault model, so its leakage and
+its convergence there are not known.
 
 ```python
-# normal=None (the default) is measure-weighted and consistent with the assembly —
-# prefer it. An analytic nhat is exact for the TRUE circle but keeps a consistency
-# error against the faceted integral (#560); use it only when the constraint must
-# follow the geometry rather than the mesh.
-nhat = mesh.CoordinateSystem.unit_e_0                    # exact radial normal (annulus/sphere)
-stokes.add_rotated_freeslip_bc(0, "Upper", normal=nhat)
-stokes.add_rotated_freeslip_bc(0, "Lower", normal=nhat)
+# normal=None (the default) is measure-weighted and consistent with the assembly.
+# Keep it on an adapted mesh: the wall facets are of unequal length there, and a
+# given normal (even the exact radial one) costs most of the wall slip (#1168;
+# consistency error against the faceted integral, #560).
+stokes.add_rotated_freeslip_bc(0, "Upper")
+stokes.add_rotated_freeslip_bc(0, "Lower")
 stokes.petsc_use_pressure_nullspace = True               # enclosed -> pressure gauge
 stokes.solve()                                            # rigid-rotation gauge auto-removed
 # Convergence status: read stokes._rotated_freeslip_info = {ksp_reason,

@@ -597,6 +597,19 @@ def _mesh_coords_update_callback(array, change_context):
         # would mask the original exception (round-2 review).
         raise
 
+    # This write reached the mesh without mesh.deform (which a mesh that carries no
+    # variables yet allows). It may have moved a boundary off the surface declared
+    # for it, so it releases the declarations as deform does.
+    if not (getattr(mesh, "_in_remesh_transfer", False)
+            or getattr(mesh, "_coord_mutation_depth", 0) > 0):
+        mesh._release_bounding_surfaces(
+            "the mesh coordinates were written directly since it was declared, so the "
+            "boundary may no longer lie on it")
+        # As in deform: points are returned to the boundary the mesh now has,
+        # not to the constructor's circles or faces.
+        mesh._geometry_deformed = True
+        mesh._bnd_restore_cache = None
+
     # Increment mesh version to notify registered swarms of coordinate changes
     with mesh._mesh_update_lock:
         mesh._mesh_version += 1
@@ -680,8 +693,9 @@ def _apply_refinement_callback(dm, refinement_callback):
     the cells between them inside out: on a concave wall, a snapped midpoint can overtake
     an interior vertex that is not snapped (#946). Of each cell the callback inverted,
     the vertex it moved furthest goes back where refinement placed it, until no cell is
-    inverted. Returns the number put back, over all ranks: those vertices are not where
-    the callback meant them to be.
+    inverted. Returns the number put back, over all ranks, and this rank's mask of them
+    (indexed like the DM's vertices): those vertices are not where the callback meant
+    them to be.
 
     In parallel the copies of one vertex can disagree after the callback. A callback
     finds the vertices it moves through the labels a rank holds, and a rank can hold a
@@ -713,8 +727,9 @@ def _apply_refinement_callback(dm, refinement_callback):
                            f"{broken} vertices.")
 
     total = 0
+    vs, ve = dm.getDepthStratum(0)
+    put_back = numpy.zeros(ve - vs, dtype=bool)
     if dim == cdim:
-        vs, ve = dm.getDepthStratum(0)
         cs, ce = dm.getHeightStratum(0)
         rows = section_offsets(dm.getCoordinateSection(), numpy.arange(vs, ve)) // cdim
         cells = closure_points(dm, numpy.arange(cs, ce), 0)
@@ -741,10 +756,27 @@ def _apply_refinement_callback(dm, refinement_callback):
             held |= culprits
         _, total = _flag_on_every_sharer(dm, held)
         moved_to = numpy.where(held[:, None], refined, moved_to)
+        put_back = held[rows]
 
     coordinates.array[...] = moved_to.ravel()
     dm.setCoordinatesLocal(coordinates)
-    return total
+    return total, put_back
+
+
+def _labels_holding_vertices(dm, vertices, names):
+    """Those of the boundary labels ``names`` that hold, on any rank, one of the
+    flagged ``vertices`` (a mask indexed like the DM's vertices). A label holds a
+    vertex if it tags the vertex or a facet the vertex belongs to. ``names`` is the
+    same sequence on every rank. Collective: every rank gets the same answer."""
+    from mpi4py import MPI
+    from underworld3.meshing.smoothing.graph import _pinned_mask
+
+    local = numpy.array(
+        [dm.hasLabel(name) and numpy.any(_pinned_mask(dm, (name,)) & vertices)
+         for name in names], dtype=numpy.int32)
+    anywhere = numpy.zeros_like(local)
+    uw.mpi.comm.Allreduce(local, anywhere, op=MPI.MAX)
+    return {name for name, held in zip(names, anywhere) if held}
 
 
 def _sum_over_sharers(dm, values):
@@ -969,6 +1001,9 @@ class Mesh(Stateful, uw_object):
         self._analytic_return_coords_to_bounds = return_coords_to_bounds
         self._geometry_deformed = False
         self._bnd_restore_cache = None
+        # Boundary labels whose vertices refinement had to leave off the surface
+        # its callback moves them to (set by _build_refined_hierarchy).
+        self._refinement_left_off_surface = frozenset()
 
         ## This is where we can refine the dm if required, and rebuild / redistribute
 
@@ -997,7 +1032,7 @@ class Mesh(Stateful, uw_object):
             pass  # hierarchy restored; otherwise reload the fine mesh flat below
 
         elif not refinement is None and refinement > 0:
-            self._build_refined_hierarchy(refinement, refinement_callback)
+            self._build_refined_hierarchy(refinement, refinement_callback, boundaries)
 
         elif not coarsening is None and coarsening > 0:
             self._build_coarsened_hierarchy(coarsening)
@@ -1644,7 +1679,7 @@ class Mesh(Stateful, uw_object):
         self._pending_hierarchy_stamp = (_vertex_coordinates(self.dm), saved, cdim)
         return True
 
-    def _build_refined_hierarchy(self, refinement, refinement_callback):
+    def _build_refined_hierarchy(self, refinement, refinement_callback, boundaries):
         """Distribute the DM and build a uniformly refined FMG hierarchy.
 
         Each level is a plain ``refine()`` of the previous one (never
@@ -1680,8 +1715,21 @@ class Mesh(Stateful, uw_object):
         # first left, so it holds back again every vertex that needs it: its sum is
         # the number left off the callback's surface, over the hierarchy.
         if callable(refinement_callback):
-            held = sum(_apply_refinement_callback(dm, refinement_callback)
-                       for dm in self.dm_hierarchy)
+            held = 0
+            # The boundaries those vertices belong to are not on the surface the
+            # callback moves them to: a constructor that registers such a
+            # boundary's surface afterwards has it released (bounding_surface).
+            left_off_surface = set()
+            # The pressure-pin point labels (Centre) are not walls.
+            boundary_names = sorted(
+                member.name for member in (boundaries or ())
+                if member.name not in ("All_Boundaries", "Null_Boundary", "Centre"))
+            for dm in self.dm_hierarchy:
+                count, put_back = _apply_refinement_callback(dm, refinement_callback)
+                held += count
+                if count:
+                    left_off_surface |= _labels_holding_vertices(dm, put_back, boundary_names)
+            self._refinement_left_off_surface = frozenset(left_off_surface)
             if held:
                 with uw.selective_ranks(0) as selected:
                     if selected:
@@ -4359,6 +4407,70 @@ class Mesh(Stateful, uw_object):
             self._bounding_surfaces = {}
         return self._bounding_surfaces
 
+    def analytic_surface(self, label):
+        """The exact circle, sphere or plane this mesh declares for boundary ``label``.
+
+        A method that uses an analytic shortcut on a wall (its exact radius and
+        centre, or the plane it lies in) reads it here, and must not take the
+        geometry from its caller. The registration is the declaration: the
+        constructors of the annulus, shell and box meshes register their walls,
+        and :meth:`register_tangent_slip_provider` registers others. Nothing is
+        measured. An operation that writes coordinates either keeps a wall on
+        its declared surface by construction (a mover holds a pinned wall, and
+        restores a sliding one onto the surface) or releases the declaration:
+        :meth:`deform` and a direct write to the coordinates release every
+        surface; a mover releases each wall it neither pins nor restores;
+        :meth:`boundary_slip` releases a label passed as free; refinement
+        releases a wall where it had to leave a vertex off the surface. A
+        released surface is refused, with the reason.
+
+        Parameters
+        ----------
+        label : str or Enum
+            A boundary name in :attr:`boundaries`, or the member itself.
+
+        Returns
+        -------
+        BoundingSurface
+            The registered surface, of kind ``"radial"`` (``centre``,
+            ``radius``) or ``"plane"`` (``point``, ``normal``), in the mesh's
+            coordinate units.
+
+        Raises
+        ------
+        ValueError
+            If no surface is registered for ``label``, if the registered
+            surface is not analytic, or if it was released (the message
+            gives the reason). The verdict is the same on every rank.
+        """
+        name = label.name if isinstance(label, Enum) else label
+        surface = self.bounding_surfaces.get(name)
+        if surface is None:
+            raise ValueError(
+                f"no analytic surface is registered for boundary {name!r} of this "
+                f"mesh; registered: {sorted(self.bounding_surfaces)}")
+        if surface.kind in ("radial", "plane") and not surface.is_free:
+            return surface
+        if surface._prev_kind in ("radial", "plane"):
+            reason = surface.release_reason or "the boundary may no longer lie on it"
+            raise ValueError(
+                f"the {surface._prev_kind} surface of boundary {name!r} was released: "
+                f"{reason}")
+        raise ValueError(
+            f"boundary {name!r} is registered as {surface.kind!r}, which is not an "
+            f"analytic surface (radial or plane)")
+
+    def _release_bounding_surfaces(self, reason, labels=None):
+        """Release the analytic (``radial`` / ``plane``) surfaces registered for
+        ``labels``, or all of them: an operation is about to write, or has
+        written, coordinates without keeping those boundaries on their declared
+        surfaces. Called with the same arguments on every rank."""
+        for label, surface in self.bounding_surfaces.items():
+            if labels is not None and label not in labels:
+                continue
+            if surface.kind in ("radial", "plane"):
+                surface.release(reason)
+
     def register_tangent_slip_provider(self, label, surface):
         """Install a :class:`BoundingSurface` object for a boundary ``label``
         (separate from the persisted ``mesh.boundaries`` labelling).
@@ -4472,9 +4584,37 @@ class Mesh(Stateful, uw_object):
             ``is_pinned`` is the per-vertex pinned mask (local-chart order);
             ``project(Y)`` slides+restores the slip vertices of ``Y`` in place
             and returns it.
+
+        Notes
+        -----
+        .. note::
+
+           Building the projector for a label passed as free (``{label:
+           False}``) releases that label's declared surface, whether or not
+           ``project`` is then applied: :meth:`analytic_surface` refuses it
+           from here on, and ``adapt`` no longer snaps new vertices onto it.
+           The label has no circle, sphere or plane any more, so its
+           tangent-slide normals come from the mesh (a collective projection
+           of the boundary normal: building the projector takes about 0.03 s
+           on a 2-D annulus of cell size 0.1, against 0.001 s with the
+           analytic normal), and a mover run differs from one made with the
+           analytic normal at the 1e-5 level in the vertex positions. A later call asking for the label
+           to be restored restores nothing, and warns.
+
+        .. note::
+
+           A boundary whose declared surface was released (by a free slip, by
+           :meth:`deform`, by a direct write to ``mesh.X.coords``, or by a
+           refinement that could not put its vertices on it) is not restored
+           onto that surface when a later call asks for it to be: its vertices
+           slide along the wall as it is. The call warns, once per surface for
+           the life of the mesh, so a later call on the same surface is silent.
+           Interior surfaces are not named: their vertices are pinned. A user
+           who knows the wall is still the circle, sphere or plane declares it
+           again with :meth:`register_tangent_slip_provider`.
         """
-        from underworld3.meshing.smoothing import (
-            _pinned_mask, _auto_pinned_labels, _owned_vertex_mask)
+        from underworld3.meshing.smoothing import _pinned_mask, _owned_vertex_mask
+        from underworld3.meshing.smoothing.graph import _pinned_labels_or_default
         from underworld3.meshing.smoothing import _boundary_facets
         from underworld3.meshing.bounding_surface import BoundingSurface
 
@@ -4486,8 +4626,7 @@ class Mesh(Stateful, uw_object):
             reference_coords = numpy.asarray(self.X.coords, dtype=float)
         ref = numpy.asarray(reference_coords, dtype=float)
 
-        all_labels = (tuple(boundary_labels) if boundary_labels is not None
-                      else _auto_pinned_labels(self))
+        all_labels = _pinned_labels_or_default(self, boundary_labels)
         # _pinned_mask closes every tagged point (edge in 2D, face in 3D)
         # down to its vertices, so face-only 3D labels classify correctly.
         # Which boundaries a vertex lies on is read from the labelled facets in
@@ -4505,6 +4644,35 @@ class Mesh(Stateful, uw_object):
         is_bnd = shared_mask(_pinned_mask(dm, all_labels))
 
         slip_labels, free_labels = self._resolve_slip_spec(slip_spec)
+        # A free label is slid and not restored, so it is no longer declared to
+        # lie on its analytic surface. Released here, where the projector is
+        # built: the request is the same on every rank, while which rank slides a
+        # vertex of the label, and whether a mover keeps a trial step, is not.
+        self._release_bounding_surfaces(
+            "it was slid as a free surface, without restoring its vertices onto it",
+            labels=free_labels)
+        # A label asked to be restored whose surface has been released has
+        # nothing to be restored onto. The surfaces' state is the same on every
+        # rank, so the ranks agree on what to say, and rank 0 says it once. An
+        # interior surface is left out: its vertices are pinned, never slid.
+        for label in slip_labels:
+            surface = self.bounding_surfaces.get(label)
+            if (label in free_labels or surface is None or surface.interior
+                    or surface._prev_kind is None or surface._restore_warning_given):
+                continue
+            surface._restore_warning_given = True
+            with uw.selective_ranks(0) as selected:
+                if selected:
+                    import warnings
+
+                    warnings.warn(
+                        f"slip with restore was asked for boundary {label!r}, whose "
+                        f"declared {surface._prev_kind} surface was released "
+                        f"({surface.release_reason}). Its vertices slide along the "
+                        f"wall as it is and are not restored onto that surface. If "
+                        f"the wall is still that surface, declare it again with "
+                        f"mesh.register_tangent_slip_provider.", UserWarning,
+                        stacklevel=2)
         # Per-label vertex masks (closure of each label's tagged facets). The
         # rank's own masks pick its reference facets below; the shared ones
         # classify the vertices.
@@ -4615,12 +4783,38 @@ class Mesh(Stateful, uw_object):
                                 reference_coords=None, boundary_labels=None):
         """In-place convenience over :meth:`boundary_slip`: slide+restore the
         slip vertices of ``coords`` (a full local-chart vertex array) and return
-        it. For callers that just want coordinates snapped back (a checkpoint
-        reload, a diagnostic, the free-surface module)."""
+        it. For callers that just want coordinates snapped back (a diagnostic,
+        the free-surface module).
+
+        It restores onto a declared surface only. A mesh reloaded from a file
+        declares none, and writing saved coordinates into ``mesh.X.coords``
+        releases the surfaces a constructor declared, so after a checkpoint
+        reload the slip vertices slide along the wall as it was saved and are
+        not put back on the constructor's circle or sphere. After the write the
+        call warns; on a reloaded mesh, which never declared a surface, it does
+        not.
+
+        The projector of :meth:`boundary_slip` moves the vertices a rank owns.
+        This method then copies each owner's value to the other ranks holding
+        the vertex, as the movers do after projecting, so the array returned
+        is the same for every copy of a vertex. Collective.
+
+        As in :meth:`boundary_slip`, a label passed as free (``{label: False}``)
+        has its declared surface released by this call."""
         _is_pinned, project = self.boundary_slip(
             slip_spec, reference_coords=reference_coords,
             boundary_labels=boundary_labels)
-        return project(numpy.asarray(coords, dtype=float))
+        projected = project(numpy.asarray(coords, dtype=float))
+        if uw.mpi.size > 1:
+            coord_dm = self.dm.getCoordinateDM()
+            local, owned = coord_dm.createLocalVec(), coord_dm.createGlobalVec()
+            local.array[:] = projected.ravel()
+            coord_dm.localToGlobal(local, owned, addv=False)
+            coord_dm.globalToLocal(owned, local)
+            projected[...] = local.array.reshape(projected.shape)
+            local.destroy()
+            owned.destroy()
+        return projected
 
     @timing.routine_timer_decorator
     def update_lvec(self, swarm_sync=True):
@@ -4913,9 +5107,9 @@ class Mesh(Stateful, uw_object):
         # reason — a rigid `radial`/`plane` surface would keep restoring to the old shape.
         self._geometry_deformed = True
         self._bnd_restore_cache = None
-        for _surf in getattr(self, "_bounding_surfaces", {}).values():
-            if getattr(_surf, "kind", None) in ("radial", "plane") and hasattr(_surf, "release"):
-                _surf.release()
+        self._release_bounding_surfaces(
+            "the mesh has been deformed since it was declared, so the boundary may no "
+            "longer lie on it")
 
         def _do_move():
             self._deform_mesh(_nc)
@@ -7330,7 +7524,7 @@ class Mesh(Stateful, uw_object):
         """
         return self._classify_points_in_domain(points, strict_validation)[0]
 
-    def _classify_points_in_domain(self, points, strict_validation=True):
+    def _classify_points_in_domain(self, points, strict_validation=True, exact_location=False):
         """In/out classification, keeping the owning cells it had to locate.
 
         ``points_in_domain`` located the near-boundary points and threw the
@@ -7395,6 +7589,18 @@ class Mesh(Stateful, uw_object):
         # surface-mesh contract, query points are assumed to lie on
         # the manifold; the closest-local-cell test is the right
         # filter, not an inside/outside split.
+        if exact_location and self._simplex_locator() is not None:
+            # For evaluation (``exact_location``, passed by evaluate_nd only):
+            # a point is interior when a local cell contains it, or the face
+            # tolerance of _robust_owning_cells claims it. The boundary-sign
+            # test below can call a contained point exterior on a strongly
+            # sheared mesh (#1123). points_in_domain, which the swarm's
+            # migration reads, keeps the boundary-sign test, so no swarm claim
+            # changes here; making the two agree is the follow-up that passes a
+            # particle's previous cell to the walk.
+            cells = numpy.asarray(self._robust_owning_cells(model_points, for_evaluation=True),
+                                  dtype=numpy.int64)
+            return cells >= 0, cells
         if self.boundary_face_control_points_kdtree is None:
             in_or_not = self._get_closest_local_cells_internal(model_points) != -1
             return in_or_not, cells
@@ -7820,18 +8026,21 @@ class Mesh(Stateful, uw_object):
         )
 
     # Face tolerance for the parallel evaluation locator (relative to the
-    # control-point separation). Tight: it admits points genuinely on a
-    # cell face/edge (containment value ~0) but rejects points sitting inside
-    # a *different* cell (value strongly negative), so a rank never claims a
-    # point another rank owns. A point in the (closed) domain is then found by
-    # exactly one rank (verified: 360/360, owners==1), and the migration routes
-    # it to that owner.
+    # control-point separation): a point within a thin slab outside a local
+    # cell's face (about 1e-2 of the separation, an absolute 1e-5 in model
+    # units) counts as in that cell. It admits points genuinely on a face or
+    # edge, and rejects points well inside a different cell. It does NOT make
+    # ownership unique: a point within the slab of a partition seam is claimed
+    # by the ranks on both sides (measured by H1 on #1175: 30 to 2,690 points
+    # per run claimed twice), and the rank that does not contain it evaluates
+    # it in a cell that does not (up to 2.8e-4 off, 1e-5 typical). Claiming by
+    # exact containment first is the follow-up named on #1175.
     _EVAL_FACE_TOL = 1.0e-2
     # Containment to rounding, relative like _EVAL_FACE_TOL. A point some local
     # cell contains to this tolerance is evaluated in that cell (#1115).
     _EVAL_CONTAIN_TOL = 1.0e-10
 
-    def _robust_owning_cells(self, coords: numpy.ndarray) -> numpy.ndarray:
+    def _robust_owning_cells(self, coords: numpy.ndarray, for_evaluation=False) -> numpy.ndarray:
         """Per-point owning cell for parallel evaluation (coords in model units).
 
         This is the strict barycentric/cell-wall locator
@@ -7867,17 +8076,128 @@ class Mesh(Stateful, uw_object):
         coords = numpy.asarray(coords)
         if coords.shape[0] == 0:
             return numpy.array([], dtype=numpy.int64)
-        cells = numpy.asarray(
-            self._get_closest_local_cells_internal(coords, tol=self._EVAL_CONTAIN_TOL),
-            dtype=numpy.int64,
-        )
-        lost = numpy.flatnonzero(cells < 0)
+        locator = self._simplex_locator()
+        beyond_reach = None
+        if locator is not None:
+            cells, beyond_reach, exit_cell = self._walk_to_owning_cells(locator, coords)
+            if for_evaluation and uw.mpi.size == 1:
+                # Evaluation in serial only: a point the walk could not place in
+                # a local cell is given the face tolerance against the cell it
+                # left the mesh through, not the 50-centroid search, which costs
+                # a point outside the domain 51 containment tests. In serial the
+                # local boundary is the domain boundary, and the two agree on
+                # every point measured (1.02e6, including points 1e-6 and 1e-8
+                # off boundary vertices). In parallel a point within the
+                # tolerance of a partition seam can be met by another cell than
+                # the exit cell, so there the full pass below decides, as for
+                # claims. The rank count is the same on every rank: no
+                # collective depends on this branch.
+                lost = numpy.flatnonzero((cells < 0) & (exit_cell >= 0))
+                if lost.shape[0] > 0:
+                    near = self._test_if_points_in_cells_internal(
+                        coords[lost], exit_cell[lost], tol=self._EVAL_FACE_TOL)
+                    cells[lost[near]] = exit_cell[lost[near]]
+                return cells
+        else:
+            cells = numpy.asarray(
+                self._get_closest_local_cells_internal(coords, tol=self._EVAL_CONTAIN_TOL),
+                dtype=numpy.int64,
+            )
+        # A point no local cell contains keeps today's claim: the face
+        # tolerance below decides whether this rank answers for it. The set of
+        # points a rank claims is unchanged; only which cell holds a contained
+        # point is decided exactly (the locator rework, register row 14).
+        # A point beyond every local cell's reach is not handed to the face
+        # tolerance either: that pass rejects it by the same reach test, after
+        # a kd-tree query and a containment test it does not need.
+        if beyond_reach is None:
+            lost = numpy.flatnonzero(cells < 0)
+        else:
+            # The face tolerance can only claim a point within its slab of a
+            # local face, which is within that face's size of its control
+            # point. A lost point farther than twice the local cell reach from
+            # every local boundary face control point is not handed to it.
+            # Rank-local on purpose: this runs only where points are lost, so
+            # nothing here may be collective (get_max_radius is).
+            candidate = (cells < 0) & ~beyond_reach
+            tree = getattr(self, "boundary_face_control_points_kdtree", None)
+            reach = getattr(self, "_local_cell_reach", None)
+            if tree is not None and reach and candidate.any():
+                which = numpy.flatnonzero(candidate)
+                dist2, _ = tree.query(coords[which], k=1, sqr_dists=True)
+                far = numpy.asarray(dist2).ravel() >= (2.0 * reach) ** 2
+                candidate[which[far]] = False
+            lost = numpy.flatnonzero(candidate)
         if lost.shape[0] > 0:
             cells[lost] = numpy.asarray(
                 self._get_closest_local_cells_internal(coords[lost], tol=self._EVAL_FACE_TOL),
                 dtype=numpy.int64,
             )
         return cells
+
+    def _simplex_locator(self):
+        """The exact barycentric locator for this mesh's local cells, or None
+        where it does not apply (quadrilaterals, hexahedra, curved cells,
+        2-manifolds: they keep the cell-wall test). Rebuilt with the kd-tree,
+        i.e. whenever the coordinates change."""
+        self._build_kd_tree_index()
+        cached = getattr(self, "_simplex_locator_cache", None)
+        if cached is not None and cached[0] is self._index:
+            return cached[1]
+        locator = None
+        # Decided from mesh-wide facts only (isSimplex is agreed over ranks at
+        # construction), so every rank, an empty one included, takes the same
+        # path: a rank with no cells gets a locator that locates nothing.
+        if (self._nav_dm is None and self.dm.getDimension() == self.cdim
+                and self.degree == 1 and self.isSimplex):
+            from underworld3.discretisation._simplex_locator import SimplexLocator
+            try:
+                locator = SimplexLocator(
+                    self.dm,
+                    lambda v: self._nav_coords[self._coord_rows_for_points(self.dm, v)])
+            except ValueError:
+                # not simplices, or not straight-sided: the cell-wall test
+                locator = None
+        self._simplex_locator_cache = (self._index, locator)
+        return locator
+
+    def _walk_to_owning_cells(self, locator, coords):
+        """Containing cell per point by the face-crossing walk, from the cell of
+        the nearest control point; a point still lost is walked again from its
+        few nearest centroids (a non-convex local mesh can wall it off). -1 where
+        no local cell contains the point. A point several cells contain gets the
+        lowest-numbered cell in the star of the entity it lies on. Also returns
+        which points are beyond every local cell's reach (not walked)."""
+        if locator.n_cells == 0:
+            return (numpy.full(coords.shape[0], -1, dtype=numpy.int64),
+                    numpy.ones(coords.shape[0], dtype=bool),
+                    numpy.full(coords.shape[0], -1, dtype=numpy.int64))
+        distance, nearest = self._index.query(coords, k=1, sqr_dists=False)
+        distance = numpy.asarray(distance).reshape(-1)
+        start = numpy.asarray(self._indexMap[numpy.asarray(nearest).reshape(-1)],
+                              dtype=numpy.int64) - locator.cStart
+        cells = numpy.full(coords.shape[0], -1, dtype=numpy.int64)
+        # A point farther from every control point than any local cell reaches
+        # is in no local cell: it is not walked (the same rejection as the
+        # cell-wall path's, _LOCATOR_REACH_MARGIN).
+        reach = getattr(self, "_local_cell_reach", None)
+        near = (numpy.ones(coords.shape[0], dtype=bool) if not reach
+                else distance <= self._LOCATOR_REACH_MARGIN * reach)
+        exit_cell = numpy.full(coords.shape[0], -1, dtype=numpy.int64)
+        cells[near], exit_cell[near] = locator.locate(coords[near], start[near], return_exit=True)
+        lost = numpy.flatnonzero((cells < 0) & near)
+        if lost.shape[0] > 0:
+            k = min(4, locator.n_cells)
+            _, cc = self._centroid_index.query(coords[lost], k=k, sqr_dists=False)
+            cc = numpy.asarray(cc, dtype=numpy.int64).reshape(lost.shape[0], -1)
+            cells[lost] = locator.locate(coords[lost], cc[:, 0],
+                                         restarts=[cc[:, j] for j in range(1, cc.shape[1])])
+        found = cells >= 0
+        cells[found] += locator.cStart
+        exit_cell[cells >= 0] = -1
+        has_exit = exit_cell >= 0
+        exit_cell[has_exit] += locator.cStart
+        return cells, ~near, exit_cell
 
     def _audit_cell_face_geometry(self):
         """Measure the two quantities that bound the cell-wall estimator's
@@ -8917,11 +9237,13 @@ class Mesh(Stateful, uw_object):
         zone = numpy.zeros(cE - cS, dtype=bool)
 
         value = self.boundaries[name].value
-        label = dm.getLabel(name)
-        # An empty stratum hands back a null IS that segfaults in getIndices().
-        # A rank owning no part of the surface is the normal case at np>2.
-        if label is None or label.getStratumSize(value) == 0:
+        # A boundary the DM holds no label for supports no cell; getLabel does
+        # not return None for it (#1163). An empty stratum hands back a null IS
+        # that segfaults in getIndices(), and a rank owning no part of the
+        # surface is the normal case at np>2.
+        if not dm.hasLabel(name) or dm.getLabel(name).getStratumSize(value) == 0:
             return zone
+        label = dm.getLabel(name)
 
         fS, fE = dm.getHeightStratum(1)
         for f in label.getStratumIS(value).getIndices():
