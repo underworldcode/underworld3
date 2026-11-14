@@ -89,6 +89,7 @@ These settle the June-2026 drift (see `docs/reviews/2026-07/API-CONSISTENCY-REVI
 | Namespaces | Every user-facing module is exported from its subpackage `__init__`/`__all__` in the PR that creates it. No deep-import-only features. |
 | Docstrings | NumPy/Sphinx style with RST `:math:`. This SUPERSEDES the Markdown-for-pdoc prescription still printed in `UW3_Style_and_Patterns_Guide.md` — that section is wrong; do not follow it. |
 | Constants in symbolic forms | A number that enters a residual, a scheme or a constitutive law is EXACT where it is exact: `sympy.Rational(1, 2)` for a theta of one half, `sympy.Integer(4)` for a weight of four, never `0.5` or `4.0`. A float cannot cancel, and prints as `0.5` or `64.0` in the form the run records. A regulariser that keeps a denominator finite is `uw.maths.functions.vanishing`, which prints as :math:`\varepsilon`, never a literal `1e-30`. User-supplied floats are made exact at the boundary with `sympy.nsimplify(x, rational=True)`. |
+| Field numbers | A solver's field numbers are on its own DM: velocity 0, pressure 1, multipliers from 2 (a scalar solver's unknown is 0). A variable's `field_id` is its index on the mesh DM, which the solver sees only as the auxiliary vector. Nothing relates the two: nothing makes the mesh's 0 and 1 the solver's velocity and pressure. Never pass a `field_id` to a solver method that takes a field number, and never compare one with a solver's number. Values cross between the DMs only through the solver's field decomposition, looked up by field name, and that decomposition is rebuilt whenever the solver's DM is. (maintainer decision 2026-11-14) |
 
 ## 7. Data Access
 
@@ -182,7 +183,7 @@ This Charter wins on any conflict. One governing document per topic:
 this Charter disagree (notably docstring format and coordinate access), the Charter wins.
 
 **Machine enforcement**: the cheapest-to-check rules here (§3 hedging names, §4 silent
-swallows, §7 deprecated data access) are enforced in CI by
+swallows, §6 field numbers, §7 deprecated data access) are enforced in CI by
 `scripts/check_deprecated_patterns.py` via `.github/workflows/style-gates.yml`; its
 allowlist records pre-existing legacy hits and may only shrink. See `guides/style-gates.md`.
 
