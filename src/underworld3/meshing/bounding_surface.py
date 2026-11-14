@@ -74,6 +74,7 @@ class BoundingSurface:
         # boundary's vertices may have left it by.
         self._prev_kind = None
         self.release_reason = None
+        self._restore_warning_given = False
         # An INTERIOR surface (an embedded interface such as the Internal
         # circle/sphere of the *InternalBoundary meshes) is snapped-to by
         # adapt() so refinement follows its true geometry, but is NOT
@@ -243,6 +244,18 @@ class BoundingSurface:
 
 
 # -- constructor-side registration helpers ---------------------------------
+def _release_if_refinement_left_it(mesh, surface):
+    """A constructor registers its walls after the mesh, and its refinement
+    hierarchy, are built. Where the refinement callback had to leave vertices of
+    a boundary where refinement placed them (moving them onto the surface would
+    have turned cells inside out), the boundary is not on the surface being
+    registered, so its declaration is released at once."""
+    if surface.label in mesh._refinement_left_off_surface:
+        surface.release(
+            "refinement left some of its vertices where the refinement callback could "
+            "not move them onto the surface without turning a cell inside out")
+
+
 def register_radial_surfaces(mesh, centre, label_radius, interior=()):
     """Register ``radial`` surfaces: ``label_radius = {label_name: radius}``.
 
@@ -258,9 +271,10 @@ def register_radial_surfaces(mesh, centre, label_radius, interior=()):
         # such boundary, and a point is not a wall to slide on.
         if r == 0.0:
             continue
-        mesh.register_tangent_slip_provider(
+        surface = mesh.register_tangent_slip_provider(
             lab, BoundingSurface(mesh, lab, "radial", centre=centre, radius=r,
                                  interior=lab in interior))
+        _release_if_refinement_left_it(mesh, surface)
 
 
 def register_plane_surfaces(mesh, label_plane):
@@ -268,8 +282,9 @@ def register_plane_surfaces(mesh, label_plane):
 
     Called by box constructors for axis-aligned (or general) faces."""
     for lab, (p, n) in label_plane.items():
-        mesh.register_tangent_slip_provider(
+        surface = mesh.register_tangent_slip_provider(
             lab, BoundingSurface(mesh, lab, "plane", point=p, normal=n))
+        _release_if_refinement_left_it(mesh, surface)
 
 
 def register_box_face_surfaces(mesh, minCoords, maxCoords):

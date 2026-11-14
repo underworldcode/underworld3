@@ -91,7 +91,7 @@ class BoundingSurface:
     def normals(self, coords): ...          # outward unit normals on THIS surface (Gamma_P1 restricted)
     def tangent_project(self, coords): ...  # remove this surface's normal component
     def restore(self, coords): ...          # snap back onto THIS surface (kind-specific)
-    def release(self): ...                  # flip rigid → free (free-surface activation)
+    def release(self, reason=None): ...     # flip rigid → free; `reason` is given in the accessor's refusal
 ```
 
 The surface object *is* the restoration capability (the earlier
@@ -124,7 +124,9 @@ is_pinned, project = mesh.boundary_slip(slip_spec, reference_coords=X0)
 Y = project(Y_moved)
 
 # In-place convenience (built on the above) for callers that just want coords
-# snapped back — e.g. a checkpoint reload, a diagnostic, the free-surface module.
+# snapped back — e.g. a diagnostic, the free-surface module. It restores onto a
+# declared surface only: after a checkpoint reload (nothing declared) or a direct
+# write of saved coordinates (declarations released) it slides along the wall as it is.
 mesh.project_to_slip_surface(coords, slip_spec, reference_coords=X0)
 
 # Public registration so users can install a custom analytic surface object
@@ -202,10 +204,11 @@ Constructors that know their geometry build `radial`/`plane` surfaces for their
 labels. A label with no analytic object (mesh loaded from file, an internal
 boundary, third-party mesh) defaults to a `facet` surface built from the current
 boundary facets — exactly today's geometry-general path, so nothing regresses.
-The surfaces are reconstructed on a checkpoint reload from the stored
-construction parameters (a loaded mesh otherwise gets only the `facet` default);
-because the labels themselves persist in `mesh.boundaries`/DMPlex, the
-surface-to-label binding is always recoverable.
+The surfaces are not stored: a mesh loaded from a file comes back through no
+constructor, registers nothing, and gets only the `facet` default (see
+"Persistence" below for what storing them would take). Because the labels
+themselves persist in `mesh.boundaries`/DMPlex, the surface-to-label binding is
+recoverable once they are.
 `register_tangent_slip_provider(label, surface)` lets a user install a custom
 surface object (e.g. an ellipsoid) the constructors don't know about.
 
@@ -478,14 +481,28 @@ authoritative while it is registered and not released.
   not measure the wall. Where the accessor refuses (nothing registered, a surface
   that is not analytic, a released surface) the method refuses too: there is no
   fallback to the faceted wall.
-- Every operation that writes mesh coordinates must either keep the wall on the
-  declared surface by construction (the movers slide boundary nodes and restore
-  them onto the registered surface) or release the declaration. `deform` releases
-  every surface. This is the rule, and not yet the state of the code: a smoother or
-  mover run with a wall neither pinned nor slipped, a write to the coordinates of a
-  mesh that carries no variables, a label slid as a free surface, and a refinement
-  that holds a wall vertex back all move a wall and leave its declaration standing.
-  Each of those must release before a method relies on the accessor.
+- Every operation that writes mesh coordinates either keeps the wall on the
+  declared surface by construction or releases the declaration
+  (`BoundingSurface.release(reason)`; the accessor's refusal quotes the reason).
+  The operations, and which they do:
+
+  | operation | walls kept | walls released |
+  |---|---|---|
+  | a mover or smoother (`smooth_mesh_interior`, `follow_metric`) | those in `pinned_labels`: held, or slid and restored onto the surface | every other declared wall (it moves with the interior); a label passed as free (`{label: False}`) |
+  | `boundary_slip` / `project_to_slip_surface` | labels slid with restore | a label passed as free, when the projector is built |
+  | constructor refinement | walls the refinement callback moved onto the surface | a wall with a vertex the callback had to leave where refinement placed it (#946, #949) |
+  | `adapt` | the child's wall vertices are snapped onto the parent's unreleased surfaces | the child declares nothing itself |
+  | `deform` | none | all |
+  | a direct write to `mesh.X.coords` (a mesh with no variables) | none | all; points are then returned to the mesh's current boundary facets, as after `deform` |
+  | a mesh loaded from a file | none: nothing is registered | |
+
+  A released surface stays released: a later slip asked with restore on it
+  slides the wall's vertices along the wall as it is, restores nothing, and warns
+  once per surface (interior surfaces, whose vertices are pinned, are not named).
+  Before this contract a direct write followed by a restoring slip put the wall
+  back on the constructor's circle; it now does not, because the write may have
+  moved the wall and nothing records that it did not. `register_tangent_slip_provider` can declare a
+  label again and does not check the wall; that is the caller's declaration.
 - A constructor does not declare what the mesh does not hold: a solid disc or ball
   has no inner wall. A refined `SphericalShellInternalBoundary` declares its
   `Internal` sphere because the refinement callback moves that surface's new
