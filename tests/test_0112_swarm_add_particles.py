@@ -653,7 +653,7 @@ def test_swarm_access_write_after_add_particles():
     stokes.add_dirichlet_bc([0.0, None], "Left")
     stokes.add_dirichlet_bc([0.0, None], "Right")
     stokes.add_condition(
-        p_soln.field_id, "dirichlet", sp.Matrix([0]), "Top", components=(0)
+        1, "dirichlet", sp.Matrix([0]), "Top", components=(0)
     )
 
     # Projection system (like model's updateSR)
