@@ -222,6 +222,7 @@ The following is the migrated code with minimal modifications.
 
 import underworld3 as uw
 import sympy
+from IPython.display import display
 
 n = sympy.Matrix(sympy.symarray("n",(3)))
 
@@ -265,7 +266,7 @@ display(R)
 # +
 # construct a symbolic, isotropic matrix (Mandel form)
 
-eta0 = sympy.symbols("\eta_0")
+eta0 = sympy.symbols(r"\eta_0")
 C_IJm = 2 * sympy.Matrix.diag([eta0]*6)
 display(C_IJm)
 
@@ -308,8 +309,8 @@ C_IJm_R_s2.subs(n[0]**2+n[1]**2, 1-n[2]**2).simplify()
 # +
 # Muhlhaus definition of C_IJ (mandel form)
 
-eta1 = sympy.symbols("\eta_1")
-delta_eta = sympy.symbols("\Delta\eta")
+eta1 = sympy.symbols(r"\eta_1")
+delta_eta = sympy.symbols(r"\Delta\eta")
 
 C_ijkl_MM = uw.maths.tensor.rank4_identity(3) * 0
 C_IJm_MM = uw.maths.tensor.rank4_to_mandel(C_ijkl_MM, 3)
