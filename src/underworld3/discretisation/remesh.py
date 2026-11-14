@@ -58,8 +58,8 @@ __all__ = [
 # ``REMESH_MONOTONE`` environment variable, for diagnostics. Off by default. A target
 # outside the old mesh, such as a wall node that slid along a convex boundary, takes
 # the location fallback in ``global_evaluate`` instead of the FE basis. "clamp" bounds
-# each value to its nearest source DOFs on this rank, so on a smooth field it adds
-# error and makes the result depend on the partition. Any mode
+# each value to the range of the source DOFs in the closure of the cell it was
+# interpolated in, on the rank that holds the cell (#682). Any mode
 # ``global_evaluate(..., monotone=...)`` accepts.
 REMESH_MONOTONE = os.environ.get("REMESH_MONOTONE", "off")
 if REMESH_MONOTONE.lower() in ("", "0", "off", "none", "false"):

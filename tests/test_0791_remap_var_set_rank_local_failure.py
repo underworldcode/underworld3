@@ -169,20 +169,22 @@ def _worker(case):
         uw.function.global_evaluate = global_evaluate
 
     elif case == "limiter":
-        # REMESH_MONOTONE=clamp (set for this child): the limiter raises on rank 1
-        # once, after the evaluation's collectives. Before, the ValueError sent
-        # rank 1 alone into a second global_evaluate.
-        from underworld3.function import functions_unit_system as fus
-        original = fus._apply_monotone_limit
+        # REMESH_MONOTONE=clamp (set for this child): the limited evaluation fails
+        # on rank 1 once, after its collectives. The clamp is applied inside the
+        # evaluator (#682), so the failure is forced where a limited evaluation
+        # returns. Before #960's fix, a ValueError sent rank 1 alone into a
+        # second, unlimited global_evaluate.
+        original = uw.function.global_evaluate
         fired = []
 
-        def limiter(*args, **kwargs):
-            if not fired and uw.mpi.rank == 1:
+        def global_evaluate(*args, **kwargs):
+            value = original(*args, **kwargs)
+            if not fired and uw.mpi.rank == 1 and kwargs.get("monotone"):
                 fired.append(1)
                 raise ValueError("forced limiter failure on rank 1")
-            return original(*args, **kwargs)
+            return value
 
-        fus._apply_monotone_limit = limiter
+        uw.function.global_evaluate = global_evaluate
 
     try:
         mesh.deform(c)
