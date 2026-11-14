@@ -1,6 +1,6 @@
 # Trial: a radially graded annulus base under the moving mesh and the fault
 
-Interim, 2026-11-14 01:25 UTC. The radially graded run is still going (step 46 of 60); a production-length run on the banded base with a slab region (section 4) is queued behind it. **Section 4 is the current design**; sections 2 and 3 are the steps that led to it. Same model, driver and code as `mmpde_fault_sample_runs.md`, plus new driver options for the base: `uw_cell_inner`, `uw_cell_window`, `uw_cell_band`, `uw_cell_grow`.
+Status at 2026-11-14 06:30 UTC. The radially graded run has finished (60 steps); the production-length run on the banded base with a slab region is at step 97 of 200. **Section 4 is the current design**; sections 2 and 3 are the steps that led to it. Same model, driver and code as `mmpde_fault_sample_runs.md`, plus new driver options for the base: `uw_cell_inner`, `uw_cell_window`, `uw_cell_band`, `uw_cell_grow`.
 
 ## 1. Does a graded base survive the refinement hierarchy?
 
@@ -91,22 +91,41 @@ Cell edge (km), 10th percentile / median, in cold material (T < 0.5), after the 
 
 ![band](graded_base_band_step0.png)
 
-## 5. Cost
+## 5. Histories on the graded bases
 
-First steps only (0 to 10 for the graded run, 0 to 20 for the others), on a shared 96-thread Linux workstation, so indicative.
+Entries are fault slip rate / trench angle / vrms. All three left-hand columns use the moving mesh.
 
-| Run | Ranks | Median s/step | Core-seconds per step | Median dt | Core-seconds per unit model time |
+| t | Band + slab region, 37,920 | Radial ramp, 30,592 | Uniform ref 5, 126,976 | Uniform ref 5 production run (fixed mesh) |
+|---|---|---|---|---|
+| 1.0e-4 | 816 / −1.64° / 243 | 773 / −1.45° / 240 | 766 / −1.30° / 232 | 767 / −1.25° / 230 |
+| 1.5e-4 | 1278 / −2.44° / 320 | 1068 / −2.10° / 292 | 1110 / −1.97° / 292 | 1079 / −1.90° / 284 |
+| 2.0e-4 | 2423 / −3.72° / 546 | 2044 / −3.04° / 481 | 1964 / −2.87° / 463 | 1904 / −2.76° / 445 |
+| 2.5e-4 | 3454 / −5.51° / 826 | 2708 / −4.42° / 666 | 3018 / −4.39° / 715 | 3024 / −4.15° / 701 |
+| 3.0e-4 | (step 97: 3470 / −7.2° / 970) | 3559 / −6.20° / 897 | 3477 / −5.80° / 902 | 3361 / −5.57° / 877 |
+| 3.4e-4 | | 3247 / −7.62° / 884 | 3349 / −6.90° / 898 | 3037 / −6.70° / 847 (at 3.5e-4) |
+
+![histories](graded_base_histories.png)
+
+- **Radial ramp.** In family with the other moving-mesh runs: slip 10% low at 2.5e-4 and 6% high at 3.0e-4, trench about 1° ahead of the production run at the end. No failed steps, no placement refusals in 60 steps.
+- **Band plus slab region.** It runs ahead of every other run, by roughly 0.4e-4 in time: its state at 2.5e-4 is close to the refinement-5 moving-mesh run's at 3.0e-4. Cause not identified. This base has 12 to 16 km cells in the lid where the others have 24 to 40 km, and the weak crust is 11 km thick, so the lid may not be converged in the refinement-5 runs; that is a guess. No failed steps or placement refusals in 97 steps.
+- **The mesh holds.** At step 90 of the banded run the lid is 12 / 17 km all round and the slab 26 to 33 km down to 660 km.
+- **The slab region is nearly outrun.** By t = 3e-4 the trench has moved 7° to 8° (800 to 900 km of arc) against the region's 1000 km half-width.
+
+## 6. Cost
+
+Core-hours of solver steps to a matched model time, on a shared 96-thread Linux workstation, so indicative.
+
+| Run | Ranks | Median s/step | Steps to t = 3.0e-4 | Core-hours to t = 3.0e-4 | Smallest time step |
 |---|---|---|---|---|---|
-| Radially graded base + moving mesh | 4 | 88 | 420 | 8.0e-6 | 5.7e7 |
-| Uniform ref 4 + moving mesh | 4 | 151 | 680 | 1.0e-5 | 6.8e7 |
-| Uniform ref 5 + moving mesh | 10 | 315 | 3,230 | 6.3e-6 | 4.8e8 |
+| Radial ramp base + moving mesh | 4 | 132 | 48 | 7 | 3.2e-6 |
+| Band + slab region base + moving mesh | 4 | 159 | 97 | 17 | 1.6e-6 |
+| Uniform ref 4 + moving mesh | 4 | 202 | 39 | 9 | 4.1e-6 |
+| Uniform ref 5 + moving mesh | 10 | 373 | 71 | 72 | 2.3e-6 |
 
 - The uniform refinement-5 production run on a Linux cluster took a median 100 s/step on 26 ranks (2,600 core-seconds per step).
-- The radially graded run costs about an eighth of the refinement-5 moving-mesh run per unit of model time, for the same resolution in the lid and the slab's top 200 km. Its step time rises as the slab speeds up (140 to 170 s near t = 2e-4).
-- Windowed bases, one step on 2 ranks: 194 s (A) and 126 s (B). With the smaller time step, B should cost roughly the same per unit of model time as the radially graded base. The 4-rank run of B will measure it.
+- The banded base costs about a quarter of the refinement-5 moving-mesh run to the same model time, with a finer lid and a similar slab. It costs 2.5 times the radial ramp: half the time step, and more cells.
 
 ## Limits of this trial
 
 - The window (section 3) and the slab region (section 4) are fixed in the base. The trench moves about 14° (870 km) by t = 8e-4 in the production run, so a long run needs a wider or offset window.
-- The banded base has only been run for one step; its history and cost per step await the queued run.
 - The band and the window are put in through a size callback wrapped round the library's annulus mesher from the driver. A proper option on the mesher is library work, not done here.
