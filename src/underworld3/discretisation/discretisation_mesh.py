@@ -805,6 +805,90 @@ def _facets_that_can_hold_the_nearest_point(pts, fpts, centroids, tree):
     return candidates
 
 
+def _corner_normals(fpts, normals, vertex_ids):
+    """The outward normals of the boundary at its vertices and (in 3-D) its edges,
+    from the facets ``fpts`` with outward unit ``normals`` and the global numbers
+    ``vertex_ids`` of their vertices. Where several facets meet no one facet's
+    normal decides the side of a point: beyond a corner, the vector from the corner
+    to the point can lie along one wall, square to the other's normal. The normal
+    at a vertex is the angle-weighted sum of the normals of the facets meeting
+    there, and at an edge the sum of the two facets sharing it; the sign of a
+    point's offset from its nearest boundary point along it is the side of the
+    boundary the point is on, at a convex corner and at a reentrant one alike
+    (Baerentzen and Aanaes, IEEE TVCG 11, 2005). Facets meet where they share a
+    vertex's global number.
+
+    Returns ``(vid, verts, vertex_normal, edge_key, edge_normal)``: each facet's
+    vertices as indices into ``verts``, the vertices, their unit normals, the
+    sorted keys of the edges and the edges' unit normals (empty in 2-D). Built
+    with the gathered facets and cached with them."""
+    nf, nv, cdim = fpts.shape
+    numbers, vid = numpy.unique(vertex_ids.ravel(), return_inverse=True)
+    vid = vid.reshape(nf, nv)
+    verts = numpy.empty((len(numbers), cdim))
+    verts[vid.ravel()] = fpts.reshape(-1, cdim)
+
+    # the facets meeting at a vertex, each weighted by its angle there (in 2-D
+    # every angle is the same)
+    vertex_normal = numpy.zeros((len(verts), cdim))
+    for k in range(nv):
+        if cdim == 2:
+            weight = numpy.ones(nf)
+        else:
+            e1 = fpts[:, (k + 1) % 3] - fpts[:, k]
+            e2 = fpts[:, (k + 2) % 3] - fpts[:, k]
+            cos = (numpy.einsum("ij,ij->i", e1, e2)
+                   / (numpy.linalg.norm(e1, axis=1) * numpy.linalg.norm(e2, axis=1)))
+            weight = numpy.arccos(numpy.clip(cos, -1.0, 1.0))
+        numpy.add.at(vertex_normal, vid[:, k], weight[:, None] * normals)
+    vertex_normal /= numpy.linalg.norm(vertex_normal, axis=1)[:, None]
+
+    if cdim == 3:
+        # the two facets that share each edge
+        pairs = numpy.sort(numpy.concatenate(
+            [vid[:, [0, 1]], vid[:, [1, 2]], vid[:, [0, 2]]]), axis=1)
+        edges, eid = numpy.unique(pairs, axis=0, return_inverse=True)
+        edge_normal = numpy.zeros((len(edges), 3))
+        numpy.add.at(edge_normal, eid.ravel(), numpy.tile(normals, (3, 1)))
+        edge_normal /= numpy.linalg.norm(edge_normal, axis=1)[:, None]
+        edge_key = edges[:, 0] * len(verts) + edges[:, 1]
+    else:
+        edge_key = numpy.empty(0, dtype=numpy.int64)
+        edge_normal = numpy.empty((0, cdim))
+    return vid, verts, vertex_normal, edge_key, edge_normal
+
+
+def _outward_normals_at_nearest_points(closest, normals, corners, found, span):
+    """The outward normals for the side test of points against their nearest
+    boundary points ``closest``. Each lies on facet ``found``, in the span of the
+    facet's vertices marked in ``span``, as the nearest-point search decides it
+    from the region of the facet that holds the point: all of them inside the
+    facet, two on an edge, one at a vertex. ``normals`` are the facets' outward
+    unit normals and ``corners`` what :func:`_corner_normals` built from them.
+    Returns the nearest points and the normals.
+
+    Inside a facet the normal is that facet's; on an edge or at a vertex it is the
+    edge's or the vertex's (:func:`_corner_normals`). The vertex itself is
+    returned as the nearest point there, so the restore moves the point off every
+    wall meeting at it."""
+    vid, verts, vertex_normal, edge_key, edge_normal = corners
+    closest = closest.copy()
+    nvec = normals[found].copy()
+    held_by = span.sum(axis=1)
+
+    rows = numpy.flatnonzero(held_by == 1)
+    which = vid[found[rows], numpy.argmax(span[rows], axis=1)]
+    closest[rows] = verts[which]
+    nvec[rows] = vertex_normal[which]
+
+    rows = numpy.flatnonzero(held_by == 2) if len(edge_key) else numpy.empty(0, dtype=int)
+    if len(rows):
+        ends = numpy.sort(vid[found[rows]][span[rows]].reshape(-1, 2), axis=1)
+        nvec[rows] = edge_normal[numpy.searchsorted(
+            edge_key, ends[:, 0] * len(verts) + ends[:, 1])]
+    return closest, nvec
+
+
 def _sum_over_sharers(dm, values):
     """The sum, over every rank's copy of each vertex, of ``values``, an array indexed
     like the local coordinate array; each copy gets the sum. Also returns how many
@@ -4336,10 +4420,12 @@ class Mesh(Stateful, uw_object):
     def return_coords_to_bounds(self, fn):
         self._analytic_return_coords_to_bounds = fn
 
-    def _boundary_facet_geometry(self):
+    def _boundary_facet_geometry(self, with_corner_normals=False):
         """Boundary facets of the CURRENT geometry of the whole mesh, gathered from
         every rank, as ``(facet_pts, outward_normals)``: the same arrays, in the same
-        order, on every rank (#1176). Cached against the coordinates, so it refreshes
+        order, on every rank (#1176), each facet once. With ``with_corner_normals``,
+        also the normals at the boundary's vertices and edges
+        (:func:`_corner_normals`). Cached against the coordinates, so it refreshes
         after a deform. Collective."""
         from mpi4py import MPI
         from underworld3.meshing.smoothing.graph import _boundary_facets
@@ -4351,7 +4437,7 @@ class Mesh(Stateful, uw_object):
         # the gather below is collective.
         stale = cache is None or cache[0] != stamp
         if not uw.mpi.comm.allreduce(stale, op=MPI.LOR):
-            return cache[1], cache[2]
+            return cache[1:] if with_corner_normals else cache[1:3]
 
         cdim = self.cdim
         # The DM's boundary label separates domain faces from partition faces;
@@ -4367,9 +4453,11 @@ class Mesh(Stateful, uw_object):
         # Non-simplicial: no general restore. Agreed over ranks, so that every rank
         # takes the same path (a rank with no cells finds no facets, not None).
         if uw.mpi.comm.allreduce(facets is None, op=MPI.LOR):
-            self._bnd_restore_cache = (stamp, None, None)
-            return None, None
+            self._bnd_restore_cache = (stamp, None, None, None)
+            return self._bnd_restore_cache[1:] if with_corner_normals else (None, None)
         fpts = coords[facets]                   # (nf, k, cdim)
+        numbering = numpy.asarray(self.dm.getVertexNumbering().getIndices(), dtype=numpy.int64)
+        gid = numpy.where(numbering < 0, -numbering - 1, numbering)[facets]
         if cdim == 2:
             e = fpts[:, 1] - fpts[:, 0]
             n = numpy.column_stack([e[:, 1], -e[:, 0]])
@@ -4386,10 +4474,20 @@ class Mesh(Stateful, uw_object):
         # another rank is tested against some other facet's plane, and an interior
         # point can be moved onto a wall (#1176). In rank order, so that every rank
         # holds the same arrays and takes the same nearest facet on a tie.
-        fpts = numpy.concatenate(uw.mpi.comm.allgather(fpts.reshape(-1, fpts.shape[1], cdim)))
+        k = fpts.shape[1]
+        fpts = numpy.concatenate(uw.mpi.comm.allgather(fpts.reshape(-1, k, cdim)))
         n = numpy.concatenate(uw.mpi.comm.allgather(n.reshape(-1, cdim)))
-        self._bnd_restore_cache = (stamp, fpts, n)
-        return fpts, n
+        gid = numpy.concatenate(uw.mpi.comm.allgather(gid.reshape(-1, k)))
+        # A facet two ranks both hold is gathered twice: keep its first copy, so
+        # that the facets meeting at a corner each count once in its normal.
+        _, first = numpy.unique(numpy.sort(gid, axis=1), axis=0, return_index=True)
+        keep = numpy.sort(first)
+        fpts, n, gid = fpts[keep], n[keep], gid[keep]
+        # The normals at the boundary's vertices and edges are built here, once per
+        # geometry, not on every call.
+        corners = _corner_normals(fpts, n, gid)
+        self._bnd_restore_cache = (stamp, fpts, n, corners)
+        return (fpts, n, corners) if with_corner_normals else (fpts, n)
 
     def _labelled_boundary_facets(self):
         """Boundary facets and the opposite cell vertex from the DM's own
@@ -4427,7 +4525,7 @@ class Mesh(Stateful, uw_object):
         from underworld3.meshing.smoothing.graph import (
             _nearest_on_facets_2d, _nearest_on_facets_3d)
 
-        fpts, nrm = self._boundary_facet_geometry()
+        fpts, nrm, corners = self._boundary_facet_geometry(with_corner_normals=True)
         if fpts is None:                        # fall back to the analytic closure
             fn = self._analytic_return_coords_to_bounds
             return fn(coords) if fn is not None else coords
@@ -4438,12 +4536,16 @@ class Mesh(Stateful, uw_object):
         centroids = numpy.ascontiguousarray(fpts.mean(axis=1))
         tree = uw.kdtree.KDTree(centroids)
         closest = numpy.empty_like(pts)
+        found = numpy.empty(len(pts), dtype=int)
+        span = numpy.empty((len(pts), fpts.shape[1]), dtype=bool)
         for i, candidates in enumerate(_facets_that_can_hold_the_nearest_point(
                 pts, fpts, centroids, tree)):
-            closest[i] = nearest_on(pts[i:i + 1], fpts[candidates])[0]
-        # side test against the normal of the facet owning `closest` (nearest centroid)
-        owner = numpy.asarray(tree.query(numpy.ascontiguousarray(closest), 1)[1]).flatten()
-        nvec = nrm[owner]
+            near, which, held = nearest_on(pts[i:i + 1], fpts[candidates], with_facet=True)
+            closest[i], found[i], span[i] = near[0], candidates[which[0]], held[0]
+        # side test against the outward normal where the nearest point lies: the
+        # facet's, or the corner's where facets meet
+        closest, nvec = _outward_normals_at_nearest_points(
+            closest, nrm, corners, found, span)
         outside = numpy.einsum("ij,ij->i", pts - closest, nvec) > 0.0
         # get_min_radius is collective: read it on every rank, not only on the
         # ranks that have a point to restore

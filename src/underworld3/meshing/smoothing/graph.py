@@ -793,54 +793,108 @@ def _resolve_slip(mesh, slip_spec):
     return labels
 
 
-def _nearest_on_facets_2d(pts, seg):
+def _nearest_on_facets_2d(pts, seg, with_facet=False):
     """Closest point on a set of 2D line segments. ``pts`` (m,2),
-    ``seg`` (nf,2,2). Returns (m,2) closest points (over all segments)."""
+    ``seg`` (nf,2,2). Returns (m,2) closest points (over all segments). With
+    ``with_facet``, also the index of the segment each lies on (the first on a
+    tie) and an (m,2) mask of that segment's ends whose span holds it: both
+    inside the segment, one at an end.
+
+    Which part of a segment holds the closest point is decided by the sign of
+    the point's offset from each end along the segment, measured from that end,
+    so a point beyond an end, or on the line through it, is at that end exactly
+    and the end itself is returned."""
     a = seg[:, 0]; b = seg[:, 1]            # (nf,2)
     ab = b - a
     ab2 = np.einsum('fi,fi->f', ab, ab)
     ab2 = np.where(ab2 > 1.0e-30, ab2, 1.0)
     out = np.empty_like(pts)
+    facet = np.empty(len(pts), dtype=int)
+    span = np.empty((len(pts), 2), dtype=bool)
     for i, p in enumerate(pts):
-        t = np.clip(((p - a) * ab).sum(axis=1) / ab2, 0.0, 1.0)
+        da = ((p - a) * ab).sum(axis=1)
+        db = ((p - b) * ab).sum(axis=1)
+        at_a = da <= 0.0
+        at_b = ~at_a & (db >= 0.0)
+        t = np.where(at_a | at_b, 0.0, da / ab2)
         proj = a + t[:, None] * ab           # (nf,2)
+        proj[at_b] = b[at_b]
         d2 = ((proj - p) ** 2).sum(axis=1)
-        out[i] = proj[d2.argmin()]
-    return out
+        f = facet[i] = d2.argmin()
+        out[i] = proj[f]
+        span[i] = (not at_b[f], not at_a[f])
+    return (out, facet, span) if with_facet else out
 
 
-def _nearest_on_facets_3d(pts, tri):
+def _nearest_on_facets_3d(pts, tri, with_facet=False):
     """Closest point on a set of 3D triangles. ``pts`` (m,3),
-    ``tri`` (nf,3,3). Returns (m,3). Per-point loop, vectorised over
-    triangles via the standard region-based closest-point algorithm."""
+    ``tri`` (nf,3,3). Returns (m,3). With ``with_facet``, also the index of the
+    triangle each lies on (the first on a tie) and an (m,3) mask of that
+    triangle's vertices whose span holds it: all three inside it, two on an
+    edge, one at a vertex.
+
+    The region of the triangle that holds the closest point (a vertex, an edge,
+    or the inside) is decided first, from the signs of the point's offsets from
+    the vertices along the edges (Ericson, Real-Time Collision Detection, 2005,
+    section 5.1.5), and the closest point is then that vertex, the projection
+    onto that edge, or the projection onto the plane. A point beyond a vertex,
+    including one on the line of an edge through it, is in that vertex's region
+    and gets the vertex itself; which region holds a point is the topological
+    answer the side test needs, not one read back from the coordinates. Per-point
+    loop, vectorised over triangles."""
     A = tri[:, 0]; B = tri[:, 1]; C = tri[:, 2]
-    AB = B - A; AC = C - A
+    AB = B - A; AC = C - A; BC = C - B
     out = np.empty_like(pts)
+    facet = np.empty(len(pts), dtype=int)
+    span = np.empty((len(pts), 3), dtype=bool)
+
+    def ratio(num, den):
+        return num / np.where(den != 0.0, den, 1.0)
+
     for i, p in enumerate(pts):
-        AP = p - A
+        AP = p - A; BP = p - B; CP = p - C
         d1 = np.einsum('fi,fi->f', AB, AP)
         d2 = np.einsum('fi,fi->f', AC, AP)
-        BP = p - B
         d3 = np.einsum('fi,fi->f', AB, BP)
         d4 = np.einsum('fi,fi->f', AC, BP)
-        CP = p - C
         d5 = np.einsum('fi,fi->f', AB, CP)
         d6 = np.einsum('fi,fi->f', AC, CP)
-        va = d3 * d6 - d5 * d4
-        vb = d5 * d2 - d1 * d6
         vc = d1 * d4 - d3 * d2
+        vb = d5 * d2 - d1 * d6
+        va = d3 * d6 - d5 * d4
+        # the regions, in the order the algorithm tests them; each point of a
+        # triangle's plane is in exactly the first region whose test it passes
+        at_A = (d1 <= 0.0) & (d2 <= 0.0)
+        at_B = ~at_A & (d3 >= 0.0) & (d4 <= d3)
+        rest = ~(at_A | at_B)
+        on_AB = rest & (vc <= 0.0) & (d1 >= 0.0) & (d3 <= 0.0)
+        rest &= ~on_AB
+        at_C = rest & (d6 >= 0.0) & (d5 <= d6)
+        rest &= ~at_C
+        on_AC = rest & (vb <= 0.0) & (d2 >= 0.0) & (d6 <= 0.0)
+        rest &= ~on_AC
+        on_BC = rest & (va <= 0.0) & (d4 - d3 >= 0.0) & (d5 - d6 >= 0.0)
+        inside = rest & ~on_BC
+
+        proj = np.empty_like(A)
+        proj[at_A] = A[at_A]
+        proj[at_B] = B[at_B]
+        proj[at_C] = C[at_C]
+        t = ratio(d1, d1 - d3)
+        proj[on_AB] = A[on_AB] + t[on_AB, None] * AB[on_AB]
+        t = ratio(d2, d2 - d6)
+        proj[on_AC] = A[on_AC] + t[on_AC, None] * AC[on_AC]
+        t = ratio(d4 - d3, (d4 - d3) + (d5 - d6))
+        proj[on_BC] = B[on_BC] + t[on_BC, None] * BC[on_BC]
         denom = va + vb + vc
-        denom = np.where(np.abs(denom) > 1.0e-30, denom, 1.0)
-        v = vb / denom
-        w = vc / denom
-        # interior barycentric point; clamp handles edge/vertex regions well
-        # enough for a small return-to-bounds correction on convex surfaces.
-        v = np.clip(v, 0.0, 1.0); w = np.clip(w, 0.0, 1.0)
-        s = v + w
-        over = s > 1.0
-        v = np.where(over, v / np.where(s > 0, s, 1.0), v)
-        w = np.where(over, w / np.where(s > 0, s, 1.0), w)
-        proj = A + v[:, None] * AB + w[:, None] * AC
+        v = ratio(vb, denom); w = ratio(vc, denom)
+        proj[inside] = (A[inside] + v[inside, None] * AB[inside]
+                        + w[inside, None] * AC[inside])
+
         dd = ((proj - p) ** 2).sum(axis=1)
-        out[i] = proj[dd.argmin()]
-    return out
+        f = facet[i] = dd.argmin()
+        out[i] = proj[f]
+        span[i] = (at_A[f] | on_AB[f] | on_AC[f] | inside[f],
+                   at_B[f] | on_AB[f] | on_BC[f] | inside[f],
+                   at_C[f] | on_AC[f] | on_BC[f] | inside[f])
+    return (out, facet, span) if with_facet else out
