@@ -8,14 +8,16 @@ No key matched, and the first solve raised "surface trace-mass weights lost
 throughout.
 
 The two arms set the same non-dimensional problem: the temperature is written
-from model coordinates into ``.data``, every parameter is a plain number. So the
-DM coordinates after two steps must agree.
+from model coordinates into ``.data``, and every parameter is one model unit
+(``model_units``: a bare number is refused in a units model). So the DM
+coordinates after two steps must agree.
 """
 import numpy as np
 import pytest
 import sympy
 
 import underworld3 as uw
+from _units_helpers import model_units
 
 pytestmark = [pytest.mark.level_2, pytest.mark.tier_b]
 
@@ -35,14 +37,14 @@ def _two_steps(advective_dt_only=False):
                            0.0, 1.0)
     stokes = uw.systems.Stokes(mesh)
     stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
-    stokes.constitutive_model.Parameters.shear_viscosity_0 = 1.0
+    stokes.constitutive_model.Parameters.shear_viscosity_0 = model_units(1.0, "Pa*s")
     stokes.bodyforce = (3.0e4 / (R_OUT - R_IN) ** 3) * T.sym[0] * rhat
     stokes.add_essential_bc((0.0, 0.0), "Lower")
     stokes.tolerance = 1.0e-5
     fs = uw.systems.FreeSurface(stokes, "Upper", buoyancy_scale=5.0e5, normal=rhat,
                                 composition=T, tangent_advect="shape", surface_filter=20,
                                 smooth_length=0.2, consistent_constraint="strong")
-    fs._comp_adv.constitutive_model.Parameters.diffusivity = 1.0
+    fs._comp_adv.constitutive_model.Parameters.diffusivity = model_units(1.0, "m**2/s")
     fs._comp_adv.add_dirichlet_bc(1.0, "Lower")
     fs._comp_adv.add_dirichlet_bc(0.0, "Upper")
     if advective_dt_only:
