@@ -23,27 +23,49 @@ where x runs from 0 to 1), so it holds to round-off whatever the mesh:
 The cube and the shell are refined once, which puts wall faces at orientations 1
 and 2; swapping the internal faces' cells puts them at -1, -2 and -3. P1 holds 1
 and x, and qdegree 3 integrates every moment exactly.
+
+The file runs serially and under mpirun (scripts/test.sh, np 4): counts and
+maxima are taken over all ranks, and a rank may hold none of a boundary's faces.
 """
 import numpy as np
 import pytest
 import sympy
+from mpi4py import MPI
 
 import underworld3 as uw
 
 pytestmark = [pytest.mark.level_1, pytest.mark.tier_b]
 
 
-def _orientations(mesh, boundary):
-    """The orientation of each face of ``boundary`` in its first support cell."""
+def _faces(mesh, boundary):
+    """This rank's faces of ``boundary``; none on a rank that holds none of them."""
     dm = mesh.dm
+    label = dm.getLabel("UW_Boundaries")
+    value = mesh.boundaries[boundary].value
+    if label.getStratumSize(value) == 0:
+        return []
     f_start, f_end = dm.getHeightStratum(1)
-    faces = dm.getLabel("UW_Boundaries").getStratumIS(mesh.boundaries[boundary].value).getIndices()
+    return [face for face in label.getStratumIS(value).getIndices() if f_start <= face < f_end]
+
+
+def _orientations(mesh, boundary):
+    """The orientation of each of this rank's faces of ``boundary`` in its first support cell."""
+    dm = mesh.dm
     out = []
-    for face in faces:
-        if f_start <= face < f_end:
-            cell = dm.getSupport(face)[0]
-            out.append(int(dm.getConeOrientation(cell)[list(dm.getCone(cell)).index(face)]))
-    return np.array(out)
+    for face in _faces(mesh, boundary):
+        cell = dm.getSupport(face)[0]
+        out.append(int(dm.getConeOrientation(cell)[list(dm.getCone(cell)).index(face)]))
+    return np.array(out, dtype=int)
+
+
+def _rotated_faces(mesh, boundary):
+    """The number of faces of ``boundary`` not at orientation 0, over all ranks."""
+    return uw.mpi.comm.allreduce(int(np.count_nonzero(_orientations(mesh, boundary))), op=MPI.SUM)
+
+
+def _largest(values):
+    """The largest magnitude in ``values`` over all ranks."""
+    return uw.mpi.comm.allreduce(float(np.max(np.abs(values), initial=0.0)), op=MPI.MAX)
 
 
 def _refined_cube():
@@ -74,7 +96,7 @@ def _poisson_on_the_top_wall(mesh, tag, natural):
 
 def test_the_natural_load_has_its_exact_first_moment():
     mesh = _refined_cube()
-    assert np.count_nonzero(_orientations(mesh, "Top")) > 0     # the fixture has rotated faces
+    assert _rotated_faces(mesh, "Top") > 0     # the fixture has rotated faces
     snes, g_x, g_1 = _poisson_on_the_top_wall(mesh, "r", lambda x, T: x)
     zero, b = g_x.duplicate(), g_x.duplicate()
     zero.set(0.0)
@@ -95,7 +117,7 @@ def test_the_natural_jacobian_has_its_exact_moments():
         snes.computeJacobian(g_x, J, J)
         return J, g_x, g_1
 
-    assert np.count_nonzero(_orientations(_refined_cube(), "Top")) > 0
+    assert _rotated_faces(_refined_cube(), "Top") > 0
     J1, g_x, g_1 = jacobian("j1", lambda x, T: x * T)
     J0, _g, _h = jacobian("j0", None)
     J1.axpy(-1.0, J0)                        # the boundary term alone
@@ -111,7 +133,7 @@ def test_the_natural_jacobian_has_its_exact_moments():
 
 def test_the_boundary_integral_has_its_exact_moment():
     mesh = _refined_cube()
-    assert np.count_nonzero(_orientations(mesh, "Top")) > 0
+    assert _rotated_faces(mesh, "Top") > 0
     T = uw.discretisation.MeshVariable("T1188i", mesh, 1, degree=1)
     T.array[:, 0, 0] = np.asarray(T.coords)[:, 0]
     x = mesh.CoordinateSystem.X[0]
@@ -125,7 +147,7 @@ def test_the_boundary_integral_has_its_exact_moment():
 def test_nitsche_with_a_radial_normal_leaves_a_rigid_rotation_alone():
     mesh = uw.meshing.SphericalShell(radiusInner=0.55, radiusOuter=1.0, cellSize=0.5,
                                      qdegree=2, refinement=1)
-    assert np.count_nonzero(_orientations(mesh, "Upper")) > 0
+    assert _rotated_faces(mesh, "Upper") > 0
     velocity = uw.discretisation.MeshVariable("U1188n", mesh, 3, degree=2, vtype=uw.VarType.VECTOR)
     pressure = uw.discretisation.MeshVariable("P1188n", mesh, 1, degree=1, continuous=True)
     stokes = uw.systems.Stokes(mesh, velocityField=velocity, pressureField=pressure)
@@ -142,7 +164,7 @@ def test_nitsche_with_a_radial_normal_leaves_a_rigid_rotation_alone():
             var.array[...] = 0.0
         velocity.array[:, 0, :] = field
         rows = stokes.compute_volume_residual_fields()["velocity"]
-        return float(np.abs(np.asarray(rows)).max())
+        return _largest(np.asarray(rows))
 
     # a radial velocity through the same term gives the scale
     scale = largest_residual(X)
@@ -179,15 +201,21 @@ def test_an_internal_load_does_not_depend_on_which_cell_assembles_it():
         radiusOuter=1.0, radiusInternal=0.775, radiusInner=0.55, cellSize=0.3, qdegree=2)
     X0, load0 = internal_load(mesh, "a")
     dm = mesh.dm
-    f_start, f_end = dm.getHeightStratum(1)
-    for face in dm.getLabel("UW_Boundaries").getStratumIS(mesh.boundaries.Internal.value).getIndices():
-        if f_start <= face < f_end:
-            support = dm.getSupport(face)
-            dm.setSupport(face, np.array(support[::-1], dtype=support.dtype))
-    assert np.all(_orientations(mesh, "Internal") < 0)          # every face from its other cell
+    # a face whose two cells are both on this rank is swapped; one at the edge of the
+    # rank's cells has a single local cell and keeps it
+    swapped = [face for face in _faces(mesh, "Internal") if dm.getSupportSize(face) == 2]
+    for face in swapped:
+        support = dm.getSupport(face)
+        dm.setSupport(face, np.array(support[::-1], dtype=support.dtype))
+    orientations = _orientations(mesh, "Internal")
+    two_cells = np.array([dm.getSupportSize(face) == 2 for face in _faces(mesh, "Internal")], dtype=bool)
+    # each swapped face is now seen from its other cell
+    assert uw.mpi.comm.allreduce(int(np.count_nonzero(orientations[two_cells] >= 0)), op=MPI.SUM) == 0
+    assert uw.mpi.comm.allreduce(len(swapped), op=MPI.SUM) > 0
     X1, load1 = internal_load(mesh, "b")
 
-    assert np.array_equal(X0, X1)                  # one layout, so rows compare by position
-    assert np.abs(load0).max() > 1.0e-3
+    # one layout, so rows compare by position
+    assert uw.mpi.comm.allreduce(int(not np.array_equal(X0, X1)), op=MPI.SUM) == 0
+    assert _largest(load0) > 1.0e-3
     # development: 534 of 534 loaded nodes change, by up to half the largest load
-    assert np.abs(load1 - load0).max() < 1.0e-14 * np.abs(load0).max()
+    assert _largest(load1 - load0) < 1.0e-14 * _largest(load0)

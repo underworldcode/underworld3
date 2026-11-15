@@ -230,8 +230,9 @@ static PetscErrorCode UW_PetscFEPairFaceQuadratureByOrientation(PetscFE fe)
    The pairing remaps affine faces only. A 3-D mesh whose coordinates are not of
    degree 1 is refused here; the coordinate space is a property of the plex that
    every rank holds alike, so every rank refuses together. (Mesh refuses such a
-   mesh first, #978.) A rank with no cells may not see a simplex; it installs
-   nothing and has no faces to integrate. */
+   mesh first, #978.) A rank with no cells does not see a simplex, so the ranks
+   agree on it: every rank installs, and refuses a face quadrature that is not on
+   a triangle, together. */
 PetscErrorCode UW_DMPairFaceQuadratureByOrientation(DM dm)
 {
   PetscInt  dim, Nds, Ncf;
@@ -259,6 +260,7 @@ PetscErrorCode UW_DMPairFaceQuadratureByOrientation(DM dm)
     }
   }
   PetscCall(DMPlexIsSimplex(dm, &simplex));
+  PetscCallMPI(MPIU_Allreduce(MPI_IN_PLACE, &simplex, 1, MPIU_BOOL, MPI_LOR, PetscObjectComm((PetscObject)dm)));
   if (!simplex) PetscFunctionReturn(PETSC_SUCCESS);
   PetscCall(DMGetNumDS(dm, &Nds));
   for (PetscInt s = 0; s < Nds; ++s) {
