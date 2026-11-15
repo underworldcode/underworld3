@@ -779,6 +779,32 @@ def _labels_holding_vertices(dm, vertices, names):
     return {name for name, held in zip(names, anywhere) if held}
 
 
+def _facets_that_can_hold_the_nearest_point(pts, fpts, centroids, tree):
+    """For each point, the facets (indices in ascending order) on which its nearest
+    point over all facets ``fpts`` can lie. ``tree`` holds the facet ``centroids``.
+
+    A facet's centroid lies on the facet, so the nearest point is no farther than
+    the nearest centroid, at distance ``d1``. A facet holding a point that near has
+    its centroid within ``d1 + reach``, where ``reach`` is the largest distance from
+    a centroid to its facet's vertices. Exact: the nearest point taken over these
+    facets, in ascending order, is the one taken over all of them, ties included."""
+    reach = float(numpy.sqrt(((fpts - centroids[:, None, :]) ** 2).sum(axis=2).max()))
+    candidates = [None] * len(pts)
+    todo = numpy.arange(len(pts))
+    k = min(16, len(fpts))
+    while len(todo):
+        d, idx = tree.query(pts[todo], k, sqr_dists=False)
+        d = numpy.asarray(d, dtype=float).reshape(len(todo), k)
+        idx = numpy.asarray(idx).reshape(len(todo), k)
+        bound = d[:, :1] + reach
+        complete = (d[:, -1] > bound[:, 0]) | (k == len(fpts))
+        for row in numpy.flatnonzero(complete):
+            candidates[todo[row]] = numpy.sort(idx[row][d[row] <= bound[row, 0]])
+        todo = todo[~complete]
+        k = min(2 * k, len(fpts))
+    return candidates
+
+
 def _sum_over_sharers(dm, values):
     """The sum, over every rank's copy of each vertex, of ``values``, an array indexed
     like the local coordinate array; each copy gets the sum. Also returns how many
@@ -4289,6 +4315,11 @@ class Mesh(Stateful, uw_object):
 
         Assigning to this attribute overrides both (the setter replaces the analytic
         closure and is honoured until the geometry deforms).
+
+        The general facet restore is collective: it tests every point against the
+        boundary facets gathered from all ranks, so a point gets the same answer
+        whichever rank asks (#1176), and every rank must call it, including a rank
+        with no points to restore. The analytic closures are local.
         """
         if (getattr(self, "_geometry_deformed", False)
                 or self._analytic_return_coords_to_bounds is None):
@@ -4306,14 +4337,20 @@ class Mesh(Stateful, uw_object):
         self._analytic_return_coords_to_bounds = fn
 
     def _boundary_facet_geometry(self):
-        """Boundary facets of the CURRENT geometry as ``(facet_pts, outward_normals)``,
-        cached against the coordinate-array version so it refreshes after a deform."""
+        """Boundary facets of the CURRENT geometry of the whole mesh, gathered from
+        every rank, as ``(facet_pts, outward_normals)``: the same arrays, in the same
+        order, on every rank (#1176). Cached against the coordinates, so it refreshes
+        after a deform. Collective."""
+        from mpi4py import MPI
         from underworld3.meshing.smoothing.graph import _boundary_facets
 
         coords = numpy.ascontiguousarray(self.data)
         stamp = (coords.shape, float(coords.sum()))
-        cache = getattr(self, "_bnd_restore_cache", None)
-        if cache is not None and cache[0] == stamp:
+        cache = self._bnd_restore_cache
+        # A rank whose own coordinates did not change rebuilds with the others:
+        # the gather below is collective.
+        stale = cache is None or cache[0] != stamp
+        if not uw.mpi.comm.allreduce(stale, op=MPI.LOR):
             return cache[1], cache[2]
 
         cdim = self.cdim
@@ -4323,8 +4360,13 @@ class Mesh(Stateful, uw_object):
         # that seam. Only a mesh without the label falls back to the search.
         facets, opp = self._labelled_boundary_facets()
         if facets is None:
+            # TODO(BUG): on a distributed mesh without the All_Boundaries label the
+            # topological search also returns partition faces, and gathering them
+            # restores interior points to a seam (#1176).
             facets, opp = _boundary_facets(self, cdim)
-        if facets is None:                      # non-simplicial: no general restore
+        # Non-simplicial: no general restore. Agreed over ranks, so that every rank
+        # takes the same path (a rank with no cells finds no facets, not None).
+        if uw.mpi.comm.allreduce(facets is None, op=MPI.LOR):
             self._bnd_restore_cache = (stamp, None, None)
             return None, None
         fpts = coords[facets]                   # (nf, k, cdim)
@@ -4338,6 +4380,14 @@ class Mesh(Stateful, uw_object):
         inward = coords[opp] - fpts[:, 0]
         flip = numpy.einsum("ij,ij->i", n, inward) > 0.0
         n[flip] *= -1.0
+        # Which side of the boundary a point is on, and the wall it goes back to, are
+        # properties of the point and the whole mesh. A rank's own facets are part of
+        # the boundary only: with them alone, a point whose nearest wall lies on
+        # another rank is tested against some other facet's plane, and an interior
+        # point can be moved onto a wall (#1176). In rank order, so that every rank
+        # holds the same arrays and takes the same nearest facet on a tie.
+        fpts = numpy.concatenate(uw.mpi.comm.allgather(fpts.reshape(-1, fpts.shape[1], cdim)))
+        n = numpy.concatenate(uw.mpi.comm.allgather(n.reshape(-1, cdim)))
         self._bnd_restore_cache = (stamp, fpts, n)
         return fpts, n
 
@@ -4369,7 +4419,11 @@ class Mesh(Stateful, uw_object):
     def _facet_return_coords_to_bounds(self, coords):
         """General restore: snap points lying OUTSIDE the current boundary to just inside
         the nearest boundary facet. Interior points are returned untouched (the
-        outward-normal side test), so this is safe to apply to every trace-back foot."""
+        outward-normal side test), so this is safe to apply to every trace-back foot.
+
+        The facets are those of the whole mesh, so a point gets the same answer on
+        every rank that asks about it. Collective: every rank calls it, with or
+        without points of its own."""
         from underworld3.meshing.smoothing.graph import (
             _nearest_on_facets_2d, _nearest_on_facets_3d)
 
@@ -4380,12 +4434,14 @@ class Mesh(Stateful, uw_object):
 
         pts = numpy.ascontiguousarray(numpy.asarray(coords, dtype=float))
         cdim = self.cdim
-        if cdim == 2:
-            closest = _nearest_on_facets_2d(pts, fpts)
-        else:
-            closest = _nearest_on_facets_3d(pts, fpts)
+        nearest_on = _nearest_on_facets_2d if cdim == 2 else _nearest_on_facets_3d
+        centroids = numpy.ascontiguousarray(fpts.mean(axis=1))
+        tree = uw.kdtree.KDTree(centroids)
+        closest = numpy.empty_like(pts)
+        for i, candidates in enumerate(_facets_that_can_hold_the_nearest_point(
+                pts, fpts, centroids, tree)):
+            closest[i] = nearest_on(pts[i:i + 1], fpts[candidates])[0]
         # side test against the normal of the facet owning `closest` (nearest centroid)
-        tree = uw.kdtree.KDTree(numpy.ascontiguousarray(fpts.mean(axis=1)))
         owner = numpy.asarray(tree.query(numpy.ascontiguousarray(closest), 1)[1]).flatten()
         nvec = nrm[owner]
         outside = numpy.einsum("ij,ij->i", pts - closest, nvec) > 0.0
@@ -8196,6 +8252,13 @@ class Mesh(Stateful, uw_object):
             cc = numpy.asarray(cc, dtype=numpy.int64).reshape(lost.shape[0], -1)
             cells[lost] = locator.locate(coords[lost], cc[:, 0],
                                          restarts=[cc[:, j] for j in range(1, cc.shape[1])])
+            # The walk and its restarts can still miss a contained point (on a
+            # strongly sheared mesh a partition seam or the wall can wall it off:
+            # #1183). The exact fallback tests every cell whose bounding box
+            # holds the point, so a point some local cell contains is found.
+            still = lost[cells[lost] < 0]
+            if still.shape[0] > 0:
+                cells[still] = locator.cells_containing(coords[still])
         found = cells >= 0
         cells[found] += locator.cStart
         exit_cell[cells >= 0] = -1
@@ -8297,7 +8360,7 @@ class Mesh(Stateful, uw_object):
         if cached is not None and cached[0] == key:
             return cached[1]
 
-        if bool(self.dm.isSimplex()) or (self.dim != self.cdim):
+        if bool(self.isSimplex) or (self.dim != self.cdim):
             cap = "exact"
         else:
             sag_rel, viol_rel = self._audit_cell_face_geometry()
@@ -10145,7 +10208,7 @@ class Mesh(Stateful, uw_object):
         # (adaptivity capstone stage 1c).
         _nvbx = None
         if engine == "nvb":
-            if not bool(self.dm.isSimplex()) or self.dim not in (2, 3):
+            if not bool(self.isSimplex) or self.dim not in (2, 3):
                 raise NotImplementedError(
                     "adapt(engine='nvb') supports 2D triangle and 3D "
                     "tetrahedral meshes."

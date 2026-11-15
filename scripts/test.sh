@@ -413,6 +413,8 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   batch 3 tests/parallel/test_1175_shell_region_labels.py
   # So is #1123's sheared mesh: every inside point owned at any rank count, exact serially.
   batch 3 tests/parallel/test_1123_exact_locator_parallel.py
+  # So are the contained points the walk misses on that mesh, found by the exact fallback (#1183).
+  batch 3 tests/parallel/test_1183_contained_points_owned_parallel.py
   # So is the line cut on a mesh wound clockwise throughout (#874).
   batch 3 tests/parallel/test_0874_mirrored_mesh_cut_parallel.py
   # So are the multigrid levels an adapt keeps, the same at any rank count (#865).
@@ -592,6 +594,10 @@ if [ $PARALLEL_RANKS -gt 0 ] && shard_owns 4; then
     # to solve for), so the solve on it with a rank without cells runs at np 3 always.
     OMPI_MCA_rmaps_base_oversubscribe=1 $SUPERVISE mpirun -n 3 python -m pytest --with-mpi \
       tests/parallel/test_0786_stokes_rank_without_cells_parallel.py || status=1
+    # adapt(engine='nvb') with a rank without cells: the box that leaves a rank
+    # empty does so from np 3 (at np 2 the test skips), so it runs at np 3 always.
+    OMPI_MCA_rmaps_base_oversubscribe=1 $SUPERVISE mpirun -n 3 python -m pytest --with-mpi \
+      tests/parallel/test_1189_adapt_nvb_rank_without_cells_parallel.py || status=1
 
     # Four ranks give a rank that shares an interface vertex and holds none of the
     # interface's facets, which the pressure split must still be told about: with
