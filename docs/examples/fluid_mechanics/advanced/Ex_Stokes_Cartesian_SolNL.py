@@ -103,8 +103,10 @@ sol_visc = sol.fn_viscosity
 # -
 
 # %%
-v = uw.discretisation.MeshVariable("U", mesh, mesh.dim, degree=1)
-p = uw.discretisation.MeshVariable("P", mesh, 1, degree=0)
+# P2/P1: on a simplex mesh a P1 velocity does not make a stable pair (P1/P0
+# locks), and Stokes refuses it.
+v = uw.discretisation.MeshVariable("U", mesh, mesh.dim, degree=2)
+p = uw.discretisation.MeshVariable("P", mesh, 1, degree=1)
 
 stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
 stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
