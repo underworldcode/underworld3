@@ -173,7 +173,9 @@ def test_deform_with_units_keeps_a_constant_field(reference_scales):
     highest = uw.mpi.comm.allreduce(float(data.max(initial=-np.inf)), op=MPI.MAX)
     assert np.isclose(lowest, 0.5, rtol=1e-12) and np.isclose(highest, 0.5, rtol=1e-12), (lowest, highest)
 
-    with pytest.raises(ValueError, match="size of the physical domain"):
+    # A plain array is ambiguous in a units model, metres or model units, and is
+    # refused whatever its values (#1081).
+    with pytest.raises(ValueError, match="ambiguous"):
         mesh.deform(0.99 * np.asarray(mesh.X.coords))
 
 

@@ -751,7 +751,12 @@ class FreeSurface:
                 if isinstance(attr, ExpressionDescriptor) and name not in copied:
                     value = getattr(free_model.Parameters, name)
                     if hasattr(value, "subs"):
-                        value = unwrap(value, keep_constants=True, return_self=True).subs(rebind)
+                        unwrapped = unwrap(value, keep_constants=True, return_self=True)
+                        # A constant (a quantity, in a units model) unwraps to a
+                        # plain number, which has nothing to rebind and would lose
+                        # its units: copy the parameter's expression as it is.
+                        if hasattr(unwrapped, "subs"):
+                            value = unwrapped.subs(rebind)
                     setattr(solver.constitutive_model.Parameters, name, value)
                     copied.add(name)
 
@@ -981,7 +986,11 @@ class FreeSurface:
         self._carry_bc.array[...] = 0.0
         self._diffuser = uw.systems.Poisson(self.mesh, self._carry)
         self._diffuser.constitutive_model = uw.constitutive_models.DiffusionModel
-        self._diffuser.constitutive_model.Parameters.diffusivity = 1.0
+        # A Laplacian smoother's own coefficient, in model units: library work, so
+        # the bare-number refusal of a units model does not apply.
+        from underworld3.function.functions_unit_system import _internal_resampling
+        with _internal_resampling():
+            self._diffuser.constitutive_model.Parameters.diffusivity = 1.0
         self._diffuser.tolerance = 1.0e-3
         # Row map for the deform read: the carrier is P1 and (on our P1-geometry
         # meshes) its nodes coincide with the mesh coordinate nodes, so the
@@ -1266,7 +1275,10 @@ class FreeSurface:
                 order=1, DuDt=self._comp_ddt,
             )
             self._comp_adv.constitutive_model = uw.constitutive_models.DiffusionModel
-        self._comp_adv.constitutive_model.Parameters.diffusivity = 1.0e-7
+        # A small default the caller may override, in model units (library work).
+        from underworld3.function.functions_unit_system import _internal_resampling
+        with _internal_resampling():
+            self._comp_adv.constitutive_model.Parameters.diffusivity = 1.0e-7
         self._comp_adv.tolerance = 1.0e-4
         if self._conserve_integrand is not None:
             self._conserve_area = uw.maths.Integral(self.mesh, self._conserve_integrand)
@@ -1866,4 +1878,7 @@ class FreeSurface:
             target_shape = self._mesh_disp_p1.array.shape
             self._mesh_disp_p1.array[...] = (disp_vec / dt).reshape(target_shape)
             self._mesh_vel_proj.solve()
-        self.mesh.deform(new_coords, dt=dt)
+        # Model coordinates, marked as such: a plain array is refused in a units
+        # model (#1081).
+        from underworld3.utilities.unit_aware_array import UnitAwareArray
+        self.mesh.deform(UnitAwareArray(np.asarray(new_coords), units="dimensionless"), dt=dt)

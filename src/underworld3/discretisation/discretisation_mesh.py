@@ -5067,9 +5067,8 @@ class Mesh(Stateful, uw_object):
         length unit; a unit that is not a length is refused. A plain array is model
         coordinates, as evaluate reads one, and so are dimensionless coordinates. They
         are read in this model's frame: values scaled by another model cannot be told
-        apart. In a units model a plain array the size of
-        the physical domain is refused rather than read as model coordinates and
-        scaled up.
+        apart. In a units model a plain array is refused: it could be metres or model
+        units (#1081).
         """
         from underworld3.utilities.unit_aware_array import UnitAwareArray
 
@@ -5077,11 +5076,10 @@ class Mesh(Stateful, uw_object):
                  if getattr(self.CoordinateSystem, "_scaled", False) else 1.0)
         units = getattr(coords, "units", None)
         if units is not None and not (1.0 * uw.units(str(units))).dimensionality:
-            # Dimensionless coordinates are model coordinates, as a plain array is,
-            # and take the same physical-size check below.
+            # Coordinates marked dimensionless are model coordinates, by the
+            # caller's statement (#1081).
             coords = coords.to("dimensionless")
-            coords = numpy.asarray(getattr(coords, "magnitude", coords), dtype=float)
-            units = None
+            return numpy.asarray(getattr(coords, "magnitude", coords), dtype=float)
         if units is not None:
             if (1.0 * uw.units(str(units))).dimensionality != (1.0 * uw.units("m")).dimensionality:
                 raise ValueError(f"mesh coordinates must be a length, not {units}")
@@ -5090,18 +5088,16 @@ class Mesh(Stateful, uw_object):
             model = uw.non_dimensionalise(coords)
             return numpy.asarray(getattr(model, "magnitude", model), dtype=float)
         model = numpy.asarray(coords, dtype=float)
-        # Collective: a rank with no vertices still enters both reductions.
-        if scale != 1.0:
-            current = numpy.asarray(self._coords).reshape(-1, self.cdim)
-            extent = uw.mpi.comm.allreduce(float(numpy.abs(current).max()) if current.size else 0.0,
-                                           op=uw.MPI.MAX)
-            size = uw.mpi.comm.allreduce(float(numpy.abs(model).max()) if model.size else 0.0,
-                                         op=uw.MPI.MAX)
-            if (extent > 0.0 and size > 0.0
-                    and abs(numpy.log(size / (extent * scale))) < abs(numpy.log(size / extent))):
-                raise ValueError(
-                    "mesh.deform was given a plain array the size of the physical domain. "
-                    "Pass coordinates with units, such as mesh.X.coords, or model coordinates.")
+        # In a model with reference quantities a plain array is ambiguous (metres,
+        # or model units?) and is refused, as a bare number for a dimensional
+        # parameter is (#1081; units ruling, 2026-11-13). The rule depends only on
+        # the model, so every rank decides the same.
+        if uw.get_default_model().has_units():
+            raise ValueError(
+                "mesh.deform: a plain array is ambiguous in a model with reference "
+                "quantities. Pass coordinates with units, e.g. mesh.X.coords plus a "
+                "displacement with units, or model coordinates marked as such, e.g. "
+                "UnitAwareArray(model_coords, units=\"dimensionless\") (#1081).")
         return model
 
     def deform(self, new_coords, *, dt=None, zero=None, verbose=False):
@@ -5119,7 +5115,9 @@ class Mesh(Stateful, uw_object):
         new_coords : ndarray
             Target vertex coordinates, in the shape of ``mesh.X.coords``. Coordinates
             with units, such as ``mesh.X.coords`` itself in a model with reference
-            quantities, are converted; a plain array is read as model coordinates.
+            quantities, are converted. Without reference quantities a plain array is
+            model coordinates; with them it is refused, and model coordinates are
+            passed marked ``units="dimensionless"`` (#1081).
         dt : float, optional
             Timestep for the ALE ``v_mesh = Δx/dt`` correction. Required when
             SemiLagrangian history is present and the move is advective (a
