@@ -210,9 +210,11 @@ Examples:
   read; the founding rule applies to it in full.
 
 Mesh geometry is degree 1, for the time being: higher-order coordinates are refused at
-construction (Louis, 2026-11-12; #1088; #978 not planned). Don't build features for curved
-geometry or ask a review for them; a check that relies on affine cells or planar faces is
-correct under this rule. Particle location depends on it: the inside/outside test is exact
+construction (maintainer decision 2026-11-12; #1088; #978 not planned). Don't build
+features for curved geometry or ask a review for them; a check that relies on affine cells
+or planar faces is correct under this rule. Curved geometry would be a campaign across
+particle location, cell geometry, boundary normals, mesh motion and the multigrid
+hierarchy. For particle location, the inside/outside test is exact
 only on planar faces, a curved face needs a nonlinear inverse map for every particle on
 every step, and parallel migration needs a crisp answer
 ([Finding Particles in a Distributed, Unstructured Mesh](https://www.underworldcode.org/finding-particles-in-a-distributed-unstructured-mesh/), UWTN 2026-009).
