@@ -6,6 +6,7 @@
 from setuptools import setup, Extension, find_packages
 from Cython.Build import cythonize
 
+import glob
 import os
 import shutil
 import numpy
@@ -173,6 +174,16 @@ def configure():
 
 
 conf = configure()
+
+# The build directory persists between builds, and an extension is recompiled only
+# when one of its sources or dependencies is newer than it. Cython lists the headers
+# a .pyx names; a header those headers include (uw_face_orientation.h from
+# petsc_compat.h, nanoflann.hpp from kdtree_interface.hpp) has to be listed here, so
+# every extension depends on every header of the package.
+conf["depends"] = sorted(
+    glob.glob("src/underworld3/**/*.h", recursive=True)
+    + glob.glob("src/underworld3/**/*.hpp", recursive=True)
+)
 
 extra_compile_args = ["-O3", "-g"]
 # extra_compile_args = ['-O0', '-g']
