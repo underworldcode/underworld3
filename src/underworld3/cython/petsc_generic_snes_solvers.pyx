@@ -6977,6 +6977,8 @@ class SNES_Scalar(SolverBaseClass):
         ## the values of the natural bcs can be updated
 
         self.dm.createDS()
+        # boundary terms on 3-D faces that are not at orientation 0 in their cell (#1188)
+        CHKERRQ(UW_DMPairFaceQuadratureByOrientation((<DM>self.dm).dm))
 
         # set functions
         cdef PetscInt ind=1
@@ -6985,45 +6987,12 @@ class SNES_Scalar(SolverBaseClass):
         cdef DS ds =  self.dm.getDS()
         cdef PtrContainer ext = self.compiled_extensions
 
-        # TODO(BUG): natural BC on an INTERNAL surface is partition-dependent.
-        # An interior facet has two support cells; the FE-assembly DM is kept
-        # non-overlapped on purpose (overlap double-counts volume assembly via
-        # LocalToGlobal+ADD — see discretisation_mesh.py ~L760). At a partition
-        # seam ~few interior facets have only ONE local support cell, and PETSc's
-        # DMPlexComputeBdResidual_Single_Internal attributes the whole per-facet
-        # elemVec to support[0]'s cell closure (plexfem.c ~L4928) with the facet
-        # normal oriented outward from support[0] (dmfieldds.c ~L790). When the
-        # local-only support cell is the OPPOSITE side from the serial support[0],
-        # the integral is the same value but is scattered through a different
-        # cell closure; closure DOFs that are non-owned on this rank are added
-        # locally then dropped at global assembly → the assembled load UNDER-counts
-        # by ~0.027% (the force *function* integral / RMS is identical to machine
-        # precision). In an ill-conditioned solve (augmented Stokes_Constrained)
-        # this amplifies to ~0.1% velocity.
-        #
-        # Three cheap workarounds were TESTED and do NOT work:
-        #   * editing the boundary LABEL (owner-only / ghost-strip): no-op — the
-        #     ghost facet copies already contribute nothing (PETSc integrates each
-        #     facet once), so stripping them is bit-identical;
-        #   * a 1-cell partition OVERLAP on the assembly DM: no-op — verified the
-        #     overlap propagates (+ghost cells) yet F0 is bit-identical, so overlap
-        #     does NOT recover the dropped DOFs (and it double-counts volume anyway);
-        #   * assembling the surface load on a codim-1 SUBMESH (extract_surface):
-        #     blocked — UW3 FE on an embedded surface fails at setup because the
-        #     gradient/flux term has cdim components but is reshaped to dim
-        #     (the manifold vector-FE gap).
-        # A deterministic support[0] cannot be imposed from UW3 (support order
-        # follows the DMPlex point partition). Genuine fixes, all substantial:
-        #   (a) MANUALLY assemble the boundary load (per-facet ∫ f·φ keyed by GLOBAL
-        #       velocity DOF, each facet once) into a partition-independent vector
-        #       and inject it via a guarded SNES function wrap — reimplements the bd
-        #       residual but sidesteps PETSc's support[0] scatter;
-        #   (b) fix UW3 manifold vector-FE, then assemble the load on the surface
-        #       submesh and map to the parent by coincident-node coordinate;
-        #   (c) a PETSc patch making the interior-facet bd residual scatter to the
-        #       OWNED support cell.
-        # See planning file (underworld.md, Bugs) and
-        # project_stokes_constrained_parallel_session.
+        # An interior face's boundary terms are assembled in the frame of its first
+        # support cell, which in parallel is whichever cell the partition leaves
+        # first. With boundary quadrature paired by face orientation
+        # (uw_face_orientation.h, #1188) a term written in the coordinates or the
+        # fields is the same from either cell; PETSc's own face normal is not, and
+        # mesh.Gamma replaces it on an internal surface (#327).
         for index,bc in enumerate(self.natural_bcs):
 
             components = bc.components
@@ -8013,6 +7982,8 @@ class SNES_Vector(SolverBaseClass):
         self.petsc_fe_u.setName("_vector_unknown_")
 
         self.dm.createDS()
+        # boundary terms on 3-D faces that are not at orientation 0 in their cell (#1188)
+        CHKERRQ(UW_DMPairFaceQuadratureByOrientation((<DM>self.dm).dm))
 
 
         ## This part is done once on the solver dm ... not required every time we update the functions ...
@@ -8833,6 +8804,8 @@ class SNES_MultiComponent(SolverBaseClass):
         self.petsc_fe_u.setName("_multicomponent_unknown_")
 
         self.dm.createDS()
+        # boundary terms on 3-D faces that are not at orientation 0 in their cell (#1188)
+        CHKERRQ(UW_DMPairFaceQuadratureByOrientation((<DM>self.dm).dm))
 
         cdef PetscInt ind=1
         cdef PetscInt [::1] comps_view
@@ -11698,6 +11671,8 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                 self.dm.setField(mvar._solver_field_id, fe_h)
 
         self.dm.createDS()
+        # boundary terms on 3-D faces that are not at orientation 0 in their cell (#1188)
+        CHKERRQ(UW_DMPairFaceQuadratureByOrientation((<DM>self.dm).dm))
 
         ## This part is done once on the solver dm ... not required every time we update the functions ...
         ## the values of the natural bcs can be updated
