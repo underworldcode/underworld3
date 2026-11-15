@@ -17,6 +17,7 @@ import pytest
 # Physics solver tests - full solver execution
 pytestmark = pytest.mark.level_3
 import underworld3 as uw
+from _units_helpers import model_units
 import numpy as np
 
 
@@ -40,7 +41,7 @@ def test_vector_projection_after_poisson():
     # Set up and solve Poisson equation
     poisson = uw.systems.Poisson(mesh, u_Field=T)
     poisson.constitutive_model = uw.constitutive_models.DiffusionModel
-    poisson.constitutive_model.Parameters.diffusivity = 1
+    poisson.constitutive_model.Parameters.diffusivity = model_units(1, "m**2/s")
     poisson.f = 0.0
     poisson.add_dirichlet_bc(0.0, "Bottom")
     poisson.add_dirichlet_bc(1.0, "Top")
@@ -91,7 +92,7 @@ def test_vector_projection_after_poisson_with_units():
     # Set up and solve Poisson equation
     poisson = uw.systems.Poisson(mesh, u_Field=T)
     poisson.constitutive_model = uw.constitutive_models.DiffusionModel
-    poisson.constitutive_model.Parameters.diffusivity = 1
+    poisson.constitutive_model.Parameters.diffusivity = model_units(1, "m**2/s")
     poisson.f = 0.0
     poisson.add_dirichlet_bc(300.0, "Bottom")
     poisson.add_dirichlet_bc(1600.0, "Top")
@@ -130,7 +131,7 @@ def test_multiple_solvers_sequence():
     T1 = uw.discretisation.MeshVariable("T1", mesh, 1, degree=2)
     poisson1 = uw.systems.Poisson(mesh, u_Field=T1)
     poisson1.constitutive_model = uw.constitutive_models.DiffusionModel
-    poisson1.constitutive_model.Parameters.diffusivity = 1
+    poisson1.constitutive_model.Parameters.diffusivity = model_units(1, "m**2/s")
     poisson1.f = 0.0
     poisson1.add_dirichlet_bc(0.0, "Bottom")
     poisson1.add_dirichlet_bc(1.0, "Top")
@@ -140,7 +141,7 @@ def test_multiple_solvers_sequence():
     T2 = uw.discretisation.MeshVariable("T2", mesh, 1, degree=2)
     poisson2 = uw.systems.Poisson(mesh, u_Field=T2)
     poisson2.constitutive_model = uw.constitutive_models.DiffusionModel
-    poisson2.constitutive_model.Parameters.diffusivity = 1
+    poisson2.constitutive_model.Parameters.diffusivity = model_units(1, "m**2/s")
     poisson2.f = 0.0
     poisson2.add_dirichlet_bc(0.5, "Bottom")
     poisson2.add_dirichlet_bc(1.5, "Top")

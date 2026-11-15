@@ -127,6 +127,7 @@ def _evaluate_impl(
             f"different meshes. All variables in an expression must belong to "
             f"the same mesh. Use var.copy_into() to transfer data first."
         )
+    _refuse_mixed_unit_leaves(expr)
 
     # Step 1: UNWRAP to canonical form (preprocessing/compiler IR)
     # This converts ALL expressions to a standardized form:
@@ -282,6 +283,11 @@ def _evaluate_impl(
     # This handles single coordinate evaluation: coords[60] -> shape (2,) -> (1, 2)
     if coords_for_eval.ndim == 1:
         coords_for_eval = np.atleast_2d(coords_for_eval)
+
+    # Serial only: a rank-local evaluate in parallel does not know the global
+    # extent without a collective; global_evaluate does the same check there.
+    if uw.mpi.size == 1 and not check_extrapolated:
+        _refuse_points_far_outside(expr, coords_for_eval, collective=False)
 
     # Step 3: Call Cython implementation with plain non-dimensional arrays
     # NOTE: Returns NON-DIMENSIONAL values [0-1] since we queried
@@ -457,6 +463,7 @@ def _global_evaluate_impl(
     # OPTIMIZATION: Check if this is a pure sympy expression (no UW3 variable data)
     # If so, use fast lambdified evaluation instead of full RBF machinery
     # This includes expressions with mesh coordinates (BaseScalar) or pure symbols
+    _refuse_mixed_unit_leaves(expr)
     is_pure_sympy, free_symbols, symbol_type = is_pure_sympy_expression(expr)
 
     if is_pure_sympy and coords is not None and (rbf_flag or evalf):
@@ -528,6 +535,10 @@ def _global_evaluate_impl(
     from .expressions import unwrap_for_evaluate
     scaling_is_active = uw.is_nondimensional_scaling_active()
     _, result_dimensionality = unwrap_for_evaluate(expr, scaling_active=scaling_is_active)
+
+    # Every rank calls this, whatever its own points: it is collective (#786).
+    if not check_extrapolated:
+        _refuse_points_far_outside(expr, coords_for_cython, collective=True)
 
     # Call the original Cython implementation with all parameters
     # Note: Pass original expr, not unwrapped - _global_evaluate_nd handles the expression directly
@@ -913,6 +924,296 @@ def _warn_if_points_are_not_owned(extrapolated):
         stacklevel=3,
     )
 
+
+_internal_resampling_depth = 0
+
+
+class _internal_resampling:
+    """Context for the library's own work that the user-facing units refusals
+    are not meant for: a remap after a mesh move or a refinement transfer (whose
+    points can lie more than a cell outside the old geometry), a solver's own
+    history evaluation, and the adjoint's inert scratch assemblers (whose bare
+    parameter values are overridden by their templates). Under it the far-point
+    refusal (#786), the mixed-units refusal (#904) and the bare-number setter
+    refusal stand aside. Entered on every rank by collective code, so the checks
+    it switches off are skipped on every rank alike."""
+
+    def __enter__(self):
+        global _internal_resampling_depth
+        _internal_resampling_depth += 1
+        return self
+
+    def __exit__(self, *exc):
+        global _internal_resampling_depth
+        _internal_resampling_depth -= 1
+        return False
+
+
+def _as_symbolic(expr):
+    """``expr`` as sympy: a mesh or swarm variable passed itself, rather than its
+    ``.sym``, is read through ``.sym``, as the evaluators read it."""
+    import sympy
+
+    if not isinstance(expr, (sympy.Basic, sympy.MatrixBase)) and hasattr(expr, "sym"):
+        return expr.sym
+    return expr
+
+def _has_dimension(units):
+    """True for units with a physical dimension. Pint's ``dimensionless`` (and
+    any unit that reduces to it) is no units for every check here: a field or
+    constant declared dimensionless is a known pure number (#904)."""
+    if units is None:
+        return False
+    try:
+        return bool(dict((1.0 * uw.units(str(units))).dimensionality))
+    except Exception:
+        # Sanctioned fallback: a unit label pint cannot parse is treated as
+        # dimensional, the safe side for a refusal that names it.
+        return True
+
+def _unit_leaves(expr):
+    """The leaves of ``expr`` that decide its units, split by whether they carry
+    units: ``(unitless_fields, dimensional)``, each a sorted list of names.
+
+    A leaf is a mesh or swarm variable (through its function's ``meshvar``
+    back-reference, derivatives included) or a named expression that carries
+    units. Named expressions are walked into, each once, so a nested chain costs
+    one visit per expression (#1080). Coordinates and plain numbers are not
+    leaves: a number is a pure number, and a coordinate inside a composite
+    expression is already read in model units.
+    """
+    import sympy
+    from .expressions import UWexpression
+
+    unitless, dimensional = set(), set()
+    seen = set()
+    stack = [_as_symbolic(expr)]
+    while stack:
+        e = stack.pop()
+        if isinstance(e, UWexpression):
+            if id(e) in seen:
+                continue
+            seen.add(id(e))
+            if (getattr(e, "has_units", False)
+                    and _has_dimension(getattr(e, "units", None))):
+                dimensional.add(str(e.name))
+            stack.append(e.sym)
+            continue
+        if isinstance(e, sympy.MatrixBase):
+            stack.extend(list(e))
+            continue
+        if not hasattr(e, "atoms"):
+            continue
+        for atom in e.atoms(sympy.Function, sympy.Derivative):
+            ref = getattr(type(atom), "meshvar", None)
+            if ref is None and isinstance(atom, sympy.Derivative):
+                ref = getattr(type(atom.expr), "meshvar", None)
+            var = ref() if callable(ref) else ref
+            if var is None:
+                continue
+            units = getattr(var, "units", None)
+            if units is None:
+                unitless.add(str(getattr(var, "name", var)))
+            elif _has_dimension(units):
+                dimensional.add(str(getattr(var, "name", var)))
+            # declared dimensionless: a known pure number, in neither set
+        for atom in e.atoms(sympy.Symbol):
+            if isinstance(atom, UWexpression):
+                stack.append(atom)
+    return sorted(unitless), sorted(dimensional)
+
+
+def _mixed_product(expr):
+    """The first product (or sum) in ``expr`` that puts a field without units
+    beside factors whose COMBINED dimension is not dimensionless, or None.
+
+    The dimensional factors of a product are reduced together, so a viscosity
+    contrast ``T * eta1/eta0`` or an Arrhenius factor ``T * exp(-E/(R*T0))`` is
+    a known pure number beside ``T``, and is not a mix; ``T * eta1`` is. In a sum,
+    a term that depends only on unitless fields beside a dimensional term is a
+    mix (``T + eta1``). Coordinates are left out of the reduction. Named
+    expressions are walked into, each once.
+    """
+    import sympy
+    from sympy.vector import BaseScalar
+    from underworld3.units import get_units
+    from .expressions import UWexpression
+
+    unitless_cache = {}
+
+    def has_unitless_field(e):
+        key = id(e)
+        if key not in unitless_cache:
+            unitless_cache[key] = bool(_unit_leaves(e)[0])
+        return unitless_cache[key]
+
+    def dimensional(e):
+        e = e.subs({c: 1 for c in e.atoms(BaseScalar)}) if hasattr(e, "atoms") else e
+        try:
+            return _has_dimension(get_units(e))
+        except Exception:
+            # Sanctioned fallback: units inference that cannot reduce a factor
+            # does not make a mix; the refusal must not fire on what it cannot read.
+            return False
+
+    seen = set()
+    stack = [_as_symbolic(expr)]
+    while stack:
+        e = stack.pop()
+        if isinstance(e, UWexpression):
+            if id(e) in seen:
+                continue
+            seen.add(id(e))
+            stack.append(e.sym)
+            continue
+        if isinstance(e, sympy.MatrixBase):
+            stack.extend(list(e))
+            continue
+        if not isinstance(e, sympy.Basic):
+            continue
+        if isinstance(e, sympy.Mul):
+            fields = [f for f in e.args if has_unitless_field(f)]
+            others = [f for f in e.args if not has_unitless_field(f)]
+            if fields and others and dimensional(sympy.Mul(*others)):
+                return e
+        elif isinstance(e, sympy.Add):
+            field_terms = [t for t in e.args
+                           if has_unitless_field(t) and not _unit_leaves(t)[1]]
+            dim_terms = [t for t in e.args
+                         if not has_unitless_field(t) and dimensional(t)]
+            if field_terms and dim_terms:
+                return e
+        stack.extend(e.args)
+        stack.extend(a for a in e.atoms(sympy.Symbol) if isinstance(a, UWexpression))
+    return None
+
+
+
+def _refuse_unset_dimensional_defaults(leaves):
+    """Refuse a dimensional parameter left at its bare-number default, in a model
+    with reference quantities (ruling, 2026-11-13). ``leaves`` are named
+    expressions; the mark is set by the parameter descriptor and cleared when
+    the parameter is assigned. Depends only on the expressions, so it gives the
+    same answer on every rank."""
+    import sympy
+    from .expressions import UWexpression
+
+    if not uw.get_default_model().has_units():
+        return
+    seen = set()
+    stack = list(leaves)
+    while stack:
+        e = stack.pop()
+        if isinstance(e, UWexpression):
+            if id(e) in seen:
+                continue
+            seen.add(id(e))
+            mark = getattr(e, "_unset_dimensional_default", None)
+            if mark:
+                name, units, value = mark
+                raise ValueError(
+                    f"'{name}' was left at its default, {value}, which has no units "
+                    f"in a model with reference quantities. Set it with units, e.g. "
+                    f"Parameters.{name} = uw.quantity({value}, \"{units}\") "
+                    "(units ruling, 2026-11-13).")
+            stack.append(e.sym)
+            continue
+        if isinstance(e, sympy.MatrixBase):
+            stack.extend(list(e))
+        elif isinstance(e, sympy.Basic):
+            stack.extend(a for a in e.atoms(sympy.Symbol) if isinstance(a, UWexpression))
+
+def _refuse_mixed_unit_leaves(expr):
+    """Refuse an expression that puts a field without units beside dimensional
+    factors, in a model with reference quantities (#771, #904).
+
+    A field without units stores a non-dimensional number of unknown dimension.
+    Alone, or times a combination of dimensional leaves that reduces to a pure
+    number (``eta1/eta0``), it is returned as a pure number. Times a factor with
+    a dimension the result is incoherent: the gateway would re-dimensionalise
+    the product with that factor's scale only.
+    """
+    if _internal_resampling_depth or not uw.get_default_model().has_units():
+        return
+    _refuse_unset_dimensional_defaults([_as_symbolic(expr)])
+    unitless, dimensional = _unit_leaves(expr)
+    if not (unitless and dimensional):
+        return
+    offending = _mixed_product(expr)
+    if offending is None:
+        return
+    raise ValueError(
+        "evaluate: this expression puts fields without units "
+        f"({', '.join(unitless)}) beside factors with units "
+        f"({', '.join(dimensional)}), in a model with reference quantities, in "
+        f"{str(offending)[:120]}. A field without units holds a non-dimensional "
+        "number of unknown dimension, so the product has no coherent units. Give "
+        "the field units (MeshVariable(..., units=...), or units='dimensionless' "
+        "for a pure multiplier), or evaluate the pieces separately (#771, #904)."
+    )
+
+def _refuse_points_far_outside(expr, coords_nd, collective):
+    """Refuse query points further outside the mesh than its largest cell (#786).
+
+    A point further outside the node bounding box than the mesh's largest cell
+    radius lies in no cell, so this needs no point location and runs before any
+    evaluation: the refusal is the same whatever the expression (a derivative
+    included, #999) and whatever the rank count. The distance separates a
+    wholesale mistake (coordinates in metres on a model-unit mesh, say) from a
+    point just past a curved boundary, which semi-Lagrangian and remesh callers
+    ask about routinely and which is extrapolated as before. The scale is the
+    mesh's own, so it means the same on any mesh. Only expressions that read
+    mesh data are checked. COLLECTIVE when ``collective`` is True: every rank
+    calls it, a rank with no points contributing none.
+    """
+    from mpi4py import MPI
+    from .expressions import mesh_vars_in_expression
+
+    if _internal_resampling_depth:
+        return
+    from .expressions import unwrap
+    # Unwrapped, so a field inside a named expression is seen too.
+    mesh = mesh_vars_in_expression(unwrap(_as_symbolic(expr)))[0]
+    if mesh is None:
+        return
+    nodes = np.asarray(mesh._coords, dtype=np.float64).reshape(-1, mesh.cdim)
+    lo = nodes.min(axis=0) if nodes.size else np.full(mesh.cdim, np.inf)
+    hi = nodes.max(axis=0) if nodes.size else np.full(mesh.cdim, -np.inf)
+    if collective and uw.mpi.size > 1:
+        # Buffer form: elementwise. The pickled form compares whole arrays.
+        lo = np.ascontiguousarray(lo, dtype=np.float64)
+        hi = np.ascontiguousarray(hi, dtype=np.float64)
+        lo_g, hi_g = np.empty_like(lo), np.empty_like(hi)
+        uw.mpi.comm.Allreduce(lo, lo_g, op=MPI.MIN)
+        uw.mpi.comm.Allreduce(hi, hi_g, op=MPI.MAX)
+        lo, hi = lo_g, hi_g
+    largest_cell = mesh.get_max_radius() if collective else float(
+        np.max(np.asarray(mesh._cell_radii))
+    )
+    if coords_nd is None or np.size(coords_nd) == 0:
+        pts = np.zeros((0, mesh.cdim))
+    else:
+        pts = np.asarray(coords_nd, dtype=np.float64)
+        pts = pts.reshape(-1, pts.shape[-1])[:, : mesh.cdim]
+    if pts.shape[0]:
+        beyond = np.maximum(np.maximum(lo - pts, pts - hi), 0.0).max(axis=1)
+        far = beyond > largest_cell
+    else:
+        far = np.zeros(0, dtype=bool)
+    n_far, n_all = int(np.count_nonzero(far)), int(pts.shape[0])
+    if collective and uw.mpi.size > 1:
+        n_far = uw.mpi.comm.allreduce(n_far, op=MPI.SUM)
+        n_all = uw.mpi.comm.allreduce(n_all, op=MPI.SUM)
+    if n_far == 0:
+        return
+    raise ValueError(
+        f"evaluate: {n_far} of {n_all} query points lie outside the mesh, further "
+        f"than its largest cell ({largest_cell:.3g} model units). Mesh extent "
+        f"{np.round(lo, 6).tolist()} to {np.round(hi, 6).tolist()}. Coordinates "
+        "are model coordinates unless they carry units (pass mesh.X.coords, or a "
+        "unit-aware array). Pass check_extrapolated=True to get the extrapolation "
+        "mask instead of this error (#786)."
+    )
 
 def evaluate(
     expr,

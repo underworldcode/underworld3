@@ -113,12 +113,16 @@ class _Scratch:
             # Every solver family's setup reads constitutive_model._solver_is_setup
             # unguarded, so the assembler carries an inert model: its F0/F1
             # templates override the model's flux entirely.
-            if n == 1:
-                asm.constitutive_model = uw.constitutive_models.DiffusionModel
-                asm.constitutive_model.Parameters.diffusivity = 1.0
-            else:
-                asm.constitutive_model = uw.constitutive_models.ViscousFlowModel
-                asm.constitutive_model.Parameters.shear_viscosity_0 = 1.0
+            # Inert values, overridden by the templates: not a user's parameter,
+            # so the bare-number refusal of a units model does not apply.
+            from underworld3.function.functions_unit_system import _internal_resampling
+            with _internal_resampling():
+                if n == 1:
+                    asm.constitutive_model = uw.constitutive_models.DiffusionModel
+                    asm.constitutive_model.Parameters.diffusivity = 1.0
+                else:
+                    asm.constitutive_model = uw.constitutive_models.ViscousFlowModel
+                    asm.constitutive_model.Parameters.shear_viscosity_0 = 1.0
             asm.consistent_jacobian = False      # a residual evaluation only
             asm.petsc_options.delValue("ksp_monitor")
             self.assemblers[key] = asm

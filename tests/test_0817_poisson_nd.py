@@ -20,6 +20,7 @@ import numpy as np
 os.environ["SYMPY_USE_CACHE"] = "no"
 
 import underworld3 as uw
+from _units_helpers import model_units
 
 
 @pytest.fixture(autouse=True)
@@ -50,8 +51,11 @@ def test_poisson_dimensional_vs_nondimensional(resolution):
     uw.use_nondimensional_scaling(False)  # Start with dimensional
 
     model = uw.get_default_model()
+    # A time scale too: the diffusivity needs one to have a value in a units model
+    # (ruling, 2026-11-13); 1 s leaves every model value unchanged.
     model.set_reference_quantities(
-        length=uw.quantity(1, "kilometer"), temperature_diff=uw.quantity(1000, "kelvin")
+        length=uw.quantity(1, "kilometer"), temperature_diff=uw.quantity(1000, "kelvin"),
+        time=uw.quantity(1, "s"),
     )
 
     # Create mesh (with reference quantities already set)
@@ -80,7 +84,7 @@ def test_poisson_dimensional_vs_nondimensional(resolution):
 
     poisson_dim = uw.systems.Poisson(mesh, u_Field=T)
     poisson_dim.constitutive_model = uw.constitutive_models.DiffusionModel
-    poisson_dim.constitutive_model.Parameters.diffusivity = 1.0  # Dimensionless for this test
+    poisson_dim.constitutive_model.Parameters.diffusivity = model_units(1.0, "m**2/s")  # Dimensionless for this test
     poisson_dim.f = 0.0  # No source term
 
     # Boundary conditions (dimensional values in Kelvin)
@@ -102,7 +106,7 @@ def test_poisson_dimensional_vs_nondimensional(resolution):
     # Create NEW solver (important - must recompile with ND)
     poisson_nd = uw.systems.Poisson(mesh, u_Field=T)
     poisson_nd.constitutive_model = uw.constitutive_models.DiffusionModel
-    poisson_nd.constitutive_model.Parameters.diffusivity = 1.0
+    poisson_nd.constitutive_model.Parameters.diffusivity = model_units(1.0, "m**2/s")
     poisson_nd.f = 0.0
 
     # Same BCs (dimensional values - scaling happens internally)
@@ -150,7 +154,10 @@ def test_poisson_with_source_term():
     uw.use_nondimensional_scaling(False)
 
     model = uw.get_default_model()
-    model.set_reference_quantities(temperature_diff=uw.quantity(1000, "kelvin"))
+    # Length and time scales of 1 too, so the diffusivity has a value in this units
+    # model (ruling, 2026-11-13); model values are unchanged.
+    model.set_reference_quantities(temperature_diff=uw.quantity(1000, "kelvin"),
+                                   length=uw.quantity(1, "m"), time=uw.quantity(1, "s"))
 
     mesh = uw.meshing.UnstructuredSimplexBox(
         minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.2
@@ -165,7 +172,7 @@ def test_poisson_with_source_term():
 
     poisson_dim = uw.systems.Poisson(mesh, u_Field=T)
     poisson_dim.constitutive_model = uw.constitutive_models.DiffusionModel
-    poisson_dim.constitutive_model.Parameters.diffusivity = 1.0
+    poisson_dim.constitutive_model.Parameters.diffusivity = model_units(1.0, "m**2/s")
     poisson_dim.f = uw.quantity(10.0, "kelvin")  # Source term with units
 
     poisson_dim.add_dirichlet_bc(0.0, "Left")
@@ -181,7 +188,7 @@ def test_poisson_with_source_term():
 
     poisson_nd = uw.systems.Poisson(mesh, u_Field=T)
     poisson_nd.constitutive_model = uw.constitutive_models.DiffusionModel
-    poisson_nd.constitutive_model.Parameters.diffusivity = 1.0
+    poisson_nd.constitutive_model.Parameters.diffusivity = model_units(1.0, "m**2/s")
     poisson_nd.f = uw.quantity(10.0, "kelvin")  # Same source with units (auto-scaled)
 
     poisson_nd.add_dirichlet_bc(0.0, "Left")
@@ -216,7 +223,10 @@ def test_poisson_scaling_improves_conditioning():
     uw.reset_default_model()
 
     model = uw.get_default_model()
-    model.set_reference_quantities(temperature_diff=uw.quantity(1000, "kelvin"))
+    # Length and time scales of 1 too, so the diffusivity has a value in this units
+    # model (ruling, 2026-11-13); model values are unchanged.
+    model.set_reference_quantities(temperature_diff=uw.quantity(1000, "kelvin"),
+                                   length=uw.quantity(1, "m"), time=uw.quantity(1, "s"))
 
     mesh = uw.meshing.UnstructuredSimplexBox(
         minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.2
@@ -231,7 +241,7 @@ def test_poisson_scaling_improves_conditioning():
 
     poisson = uw.systems.Poisson(mesh, u_Field=T)
     poisson.constitutive_model = uw.constitutive_models.DiffusionModel
-    poisson.constitutive_model.Parameters.diffusivity = 1.0
+    poisson.constitutive_model.Parameters.diffusivity = model_units(1.0, "m**2/s")
     poisson.f = 0.0
 
     poisson.add_dirichlet_bc(0.0, "Left")
