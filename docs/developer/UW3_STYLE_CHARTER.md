@@ -209,6 +209,14 @@ Examples:
   the top of the file. A session script is a model a reader should be able to run and
   read; the founding rule applies to it in full.
 
+Mesh geometry is degree 1, for the time being: higher-order coordinates are refused at
+construction (Louis, 2026-11-12; #1088; #978 not planned). Don't build features for curved
+geometry or ask a review for them; a check that relies on affine cells or planar faces is
+correct under this rule. Particle location depends on it: the inside/outside test is exact
+only on planar faces, a curved face needs a nonlinear inverse map for every particle on
+every step, and parallel migration needs a crisp answer
+([Finding Particles in a Distributed, Unstructured Mesh](https://www.underworldcode.org/finding-particles-in-a-distributed-unstructured-mesh/), UWTN 2026-009).
+
 ## 12. Identity, Geometry and Tolerances
 
 Coordinates are values, not names. A 2026-11 survey found 41 coordinate-keyed sites and
