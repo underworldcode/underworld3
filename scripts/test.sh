@@ -606,6 +606,12 @@ if [ $PARALLEL_RANKS -gt 0 ] && shard_owns 4; then
     OMPI_MCA_rmaps_base_oversubscribe=1 $SUPERVISE mpirun -n 4 python -m pytest --with-mpi \
       tests/test_1184_general_pressure_split.py || status=1
 
+    # Boundary terms on 3-D faces not at orientation 0 (#1188, #1150), on a rank
+    # that may hold none of a boundary's faces. The np 4 pass below is opt-in, so
+    # this one file runs at np 4 always.
+    OMPI_MCA_rmaps_base_oversubscribe=1 $SUPERVISE mpirun -n 4 python -m pytest --with-mpi \
+      tests/test_1188_boundary_terms_on_rotated_faces.py || status=1
+
     # A wall that refinement left off its surface is released on every rank, also on
     # a rank holding none of the held-back vertices. At two ranks both hold one (the
     # case then skips); at four, one rank holds none. So this file runs at np 4 always.
