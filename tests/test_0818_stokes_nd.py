@@ -33,6 +33,7 @@ import sympy
 os.environ["SYMPY_USE_CACHE"] = "no"
 
 import underworld3 as uw
+from _units_helpers import model_units
 
 # Module-level markers for all tests
 pytestmark = [
@@ -114,7 +115,7 @@ def test_stokes_dimensional_vs_nondimensional(resolution):
 
     stokes_dim = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
     stokes_dim.constitutive_model = uw.constitutive_models.ViscousFlowModel(stokes_dim.Unknowns)
-    stokes_dim.constitutive_model.Parameters.viscosity = 1.0  # Dimensionless for test
+    stokes_dim.constitutive_model.Parameters.viscosity = model_units(1.0, "Pa*s")  # Dimensionless for test
 
     # Boundary conditions: simple shear (top moves right, bottom fixed)
     stokes_dim.add_dirichlet_bc((1.0, 0.0), "Top")  # vx=1, vy=0 on top
@@ -138,7 +139,7 @@ def test_stokes_dimensional_vs_nondimensional(resolution):
     # Create NEW solver (important - must recompile with ND)
     stokes_nd = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
     stokes_nd.constitutive_model = uw.constitutive_models.ViscousFlowModel(stokes_nd.Unknowns)
-    stokes_nd.constitutive_model.Parameters.viscosity = 1.0
+    stokes_nd.constitutive_model.Parameters.viscosity = model_units(1.0, "Pa*s")
 
     # Same BCs (dimensional values - scaling happens internally)
     stokes_nd.add_dirichlet_bc((1.0, 0.0), "Top")
@@ -231,7 +232,7 @@ def test_stokes_buoyancy_driven():
 
     stokes_dim = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
     stokes_dim.constitutive_model = uw.constitutive_models.ViscousFlowModel(stokes_dim.Unknowns)
-    stokes_dim.constitutive_model.Parameters.viscosity = 1.0
+    stokes_dim.constitutive_model.Parameters.viscosity = model_units(1.0, "Pa*s")
 
     # Body force (dimensionless for this test)
     x, y = mesh.X
@@ -254,7 +255,7 @@ def test_stokes_buoyancy_driven():
 
     stokes_nd = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
     stokes_nd.constitutive_model = uw.constitutive_models.ViscousFlowModel(stokes_nd.Unknowns)
-    stokes_nd.constitutive_model.Parameters.viscosity = 1.0
+    stokes_nd.constitutive_model.Parameters.viscosity = model_units(1.0, "Pa*s")
 
     # Same body force (scaling happens in unwrap)
     stokes_nd.bodyforce = (0.0, -1.0)

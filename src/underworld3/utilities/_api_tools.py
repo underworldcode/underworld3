@@ -152,6 +152,43 @@ class SymbolicProperty:
             pass
 
 
+
+def _declares_dimension(units):
+    """True when a parameter's declared units carry a physical dimension."""
+    if not units:
+        return False
+    try:
+        import underworld3 as _uw
+        return bool(dict((1.0 * _uw.units(str(units))).dimensionality))
+    except Exception:
+        # Sanctioned fallback: an unparseable declaration is not treated as
+        # dimensional, so it cannot trigger a refusal it cannot explain.
+        return False
+
+
+def _is_bare_number(value):
+    """A plain finite nonzero number: int, float, numpy or sympy number. Zero and
+    infinity are the same in any units, so they are not bare numbers here."""
+    import numbers
+    import sympy as _sympy
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, numbers.Number) or (
+            isinstance(value, _sympy.Basic) and value.is_number):
+        try:
+            v = complex(value)
+        except (TypeError, ValueError):
+            return False
+        return v != 0 and v == v and abs(v) != float("inf")
+    return False
+
+
+def _bare_number_message(name, units, value):
+    return (f"'{name}' declares units of {units}, and the model has reference "
+            f"quantities, so a bare number is ambiguous: {value} of what? Give it "
+            f"units, e.g. uw.quantity({value}, \"{units}\"), or an expression with "
+            "units (units ruling, 2026-11-13).")
+
 class ExpressionDescriptor:
     """
     Unified descriptor for persistent UWexpression containers.
@@ -275,14 +312,35 @@ class ExpressionDescriptor:
                 # Use a placeholder and will be updated on next access
                 initial_value = 0
 
-            # Create persistent expression with unique name generation
+            # Create persistent expression with unique name generation. The
+            # declared units go on the default only in a model with reference
+            # quantities: in a model without units a default must be a plain
+            # number, or it makes the expressions built on it dimensional (a
+            # viscoplastic stress came back in pascal, #881).
+            import underworld3 as _uw
+
+            units_model = _uw.get_default_model().has_units()
             expr = expression(
                 name,
                 initial_value,
                 self.description,
-                units=self.units,
+                units=self.units if units_model else None,
                 _unique_name_generation=True,
             )
+            # In a units model a dimensional parameter left at a bare-number
+            # default has no meaning: it is refused when a solve or an evaluate
+            # first reads it (_refuse_unset_dimensional_defaults). Assigning the
+            # parameter clears the mark.
+            # A default may be a bare number, or a unitless named expression
+            # holding one (create_unique_symbol(..., 1, ...)).
+            default_number = initial_value
+            if (getattr(initial_value, "units", None) is None
+                    and hasattr(initial_value, "_sym")):
+                default_number = initial_value._sym
+            if (units_model and _declares_dimension(self.units)
+                    and _is_bare_number(default_number)):
+                expr._unset_dimensional_default = (self.public_name, self.units,
+                                                   default_number)
 
             # Store the expression container
             setattr(obj, self.attr_name, expr)
@@ -309,6 +367,17 @@ class ExpressionDescriptor:
 
         # Get or create the expression
         expr = self.__get__(obj, type(obj))
+
+        # A bare number for a parameter that declares a dimension, in a model
+        # with reference quantities, is ambiguous and is refused (ruling,
+        # 2026-11-13). Numbers inside expressions are not affected.
+        import underworld3 as _uw
+        from underworld3.function import functions_unit_system as _fus
+        if (_is_bare_number(value) and _declares_dimension(self.units)
+                and not _fus._internal_resampling_depth
+                and _uw.get_default_model().has_units()):
+            raise ValueError(_bare_number_message(self.public_name, self.units, value))
+        expr._unset_dimensional_default = None
 
         # Import here to avoid circular dependency
         from ..function.quantities import UWQuantity

@@ -19,6 +19,7 @@ import sympy
 import pytest
 
 import underworld3 as uw
+from _units_helpers import model_units
 
 pytestmark = [pytest.mark.level_2, pytest.mark.tier_b]
 
@@ -58,7 +59,7 @@ def _advect_blob(use_units, vy=20.0, nsteps=5, dt=2.0, scheme="slcn"):
     else:
         adv = uw.systems.AdvDiffusionSLCN(mesh, u_Field=T, V_fn=V.sym)
     adv.constitutive_model = uw.constitutive_models.DiffusionModel
-    adv.constitutive_model.Parameters.diffusivity = 1.0e-6
+    adv.constitutive_model.Parameters.diffusivity = model_units(1.0e-6, "m**2/s")
     adv.add_dirichlet_bc([0.0], "Bottom")
     adv.add_dirichlet_bc([0.0], "Top")
     for _ in range(nsteps):
