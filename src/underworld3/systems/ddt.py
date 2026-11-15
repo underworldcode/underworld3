@@ -289,6 +289,23 @@ def _history_units(psi_fn, units=None):
     return units if units is not None else uw.get_units(psi_fn)
 
 
+def _history_evaluate(*args, **kwargs):
+    """``uw.function.evaluate`` for the solver's own history. Not a user query,
+    so the user-facing units refusals (far points, mixed units, unset
+    dimensional defaults) stand aside; every rank enters it alike."""
+    from underworld3.function.functions_unit_system import _internal_resampling
+    with _internal_resampling():
+        return uw.function.evaluate(*args, **kwargs)
+
+
+def _history_global_evaluate(*args, **kwargs):
+    """``uw.function.global_evaluate`` for the solver's own history (see
+    ``_history_evaluate``). Collective, entered on every rank."""
+    from underworld3.function.functions_unit_system import _internal_resampling
+    with _internal_resampling():
+        return uw.function.global_evaluate(*args, **kwargs)
+
+
 def _write_evaluated(var, values):
     """Write an evaluation of a store's quantity into the store.
 
@@ -1314,7 +1331,7 @@ class _DDtBase(uw_object):
         ``_components`` (its stored columns)."""
         expr = self._inflow_record()
         for column, (i, j) in enumerate(self._components):
-            vals = uw.function.evaluate(expr[i, j], coords)
+            vals = _history_evaluate(expr[i, j], coords)
             var.data[rows, column] = np.asarray(
                 _to_nondim_ndarray(vals)).reshape(-1)[rows]
 
@@ -1895,7 +1912,7 @@ class Eulerian(_DDtBase):
                 pass
 
         try:
-            self.psi_star[0].data[...] = np.asarray(_to_nondim_ndarray(uw.function.evaluate(
+            self.psi_star[0].data[...] = np.asarray(_to_nondim_ndarray(_history_evaluate(
                 self.psi_fn,
                 self.psi_star[0].coords,
                 evalf=self.evalf,
@@ -2031,7 +2048,7 @@ class Eulerian(_DDtBase):
             # u·∇φ_c = V_i * ∂φ_c/∂x_i
             advection_expr = sum(V[i] * grad_c[i] for i in range(dim))
 
-            advection_vals = uw.function.evaluate(
+            advection_vals = _history_evaluate(
                 advection_expr, coords, evalf=evalf,
             ).reshape(-1)
 
@@ -2590,7 +2607,7 @@ class CharacteristicTrace:
         return k == 0 or k <= self._levels_valid
 
     def _evaluate_into(self, level):
-        vals = uw.function.evaluate(self.V_matrix(), np.asarray(level["var"].coords_nd))
+        vals = _history_evaluate(self.V_matrix(), np.asarray(level["var"].coords_nd))
         vals = _to_nondim_ndarray(vals, units=self.velocity_units())
         level["var"].data[...] = np.asarray(vals).reshape(-1, self.mesh.cdim)
 
@@ -2638,13 +2655,13 @@ class CharacteristicTrace:
         evaluation so it inherits the unit treatment of ``V_fn``."""
         self.n_velocity_evaluations += 1
         if use_global:
-            v_result = uw.function.global_evaluate(expr, coords, evalf=evalf)
+            v_result = _history_global_evaluate(expr, coords, evalf=evalf)
             if subtract_v_mesh:
-                v_result = v_result - uw.function.global_evaluate(v_mesh_var.sym, coords, evalf=evalf)
+                v_result = v_result - _history_global_evaluate(v_mesh_var.sym, coords, evalf=evalf)
         else:
-            v_result = uw.function.evaluate(expr, coords)
+            v_result = _history_evaluate(expr, coords)
             if subtract_v_mesh:
-                v_result = v_result - uw.function.evaluate(v_mesh_var.sym, coords)
+                v_result = v_result - _history_evaluate(v_mesh_var.sym, coords)
         if isinstance(v_result, UnitAwareArray):
             v_at_pts = v_result[:, 0, :]
             if not isinstance(v_at_pts, UnitAwareArray):
@@ -3374,7 +3391,7 @@ class SemiLagrangian(_DDtBase):
         coords_nd = _to_nondim_ndarray(self.psi_star[0].coords)
 
         try:
-            _write_evaluated(self.psi_star[0], uw.function.evaluate(self.psi_fn, coords_nd))
+            _write_evaluated(self.psi_star[0], _history_evaluate(self.psi_fn, coords_nd))
         except Exception:
             # Fallback: project psi_fn onto psi_star[0] via the SNES projector.
             # Route through the shared builder so snapshot substitution
@@ -3763,7 +3780,7 @@ class SemiLagrangian(_DDtBase):
             if _direct is not None:
                 eval_result = _direct
             else:
-                eval_result = uw.function.evaluate(
+                eval_result = _history_evaluate(
                     self.psi_fn,
                     node_coords_nd,
                     evalf=evalf,
@@ -3872,14 +3889,14 @@ class SemiLagrangian(_DDtBase):
         if oldframe_active:
             with self.mesh.ephemeral_coords():
                 self.mesh._deform_mesh(oldframe_X)
-                value_at_end_points = uw.function.global_evaluate(
+                value_at_end_points = _history_global_evaluate(
                     expr_to_evaluate,
                     end_pt_coords,
                     evalf=evalf,
                     monotone=monotone_mode,
                 )
         else:
-            value_at_end_points = uw.function.global_evaluate(
+            value_at_end_points = _history_global_evaluate(
                 expr_to_evaluate,
                 end_pt_coords,
                 evalf=evalf,
@@ -4112,7 +4129,7 @@ class SemiLagrangian(_DDtBase):
         def _eval_nd(component_expr):
             """Evaluate component at coords and non-dimensionalise to a
             plain 1-D float array suitable for nodal storage."""
-            result = uw.function.evaluate(component_expr, coords_nd, evalf=evalf)
+            result = _history_evaluate(component_expr, coords_nd, evalf=evalf)
             # If the evaluation returned units (model is unit-aware),
             # non-dimensionalise before storing — keeps forcing_star's
             # internal storage non-dimensional like psi_star.
@@ -4367,7 +4384,7 @@ class Lagrangian(_DDtBase):
                 if ij in updated:
                     continue
                 updated[ij] = np.asarray(_to_nondim_ndarray(
-                    uw.function.evaluate(self.psi_fn[i, j], coords)
+                    _history_evaluate(self.psi_fn[i, j], coords)
                 )).reshape(-1)
         for ij, vals in updated.items():
             psi_star_0.data[:, ij] = vals
@@ -4455,7 +4472,7 @@ class Lagrangian(_DDtBase):
         dim = self.mesh.dim
         dt = self._nondim_timestep(dt)
         X = np.asarray(swarm._particle_coordinates.data).reshape(-1, dim)
-        U = np.asarray(_to_nondim_ndarray(uw.function.evaluate(self.V_fn, X))).reshape(X.shape[0], dim)
+        U = np.asarray(_to_nondim_ndarray(_history_evaluate(self.V_fn, X))).reshape(X.shape[0], dim)
         speed = np.linalg.norm(U, axis=1)
         moving = speed > 0.0
         direction = np.zeros_like(U)
@@ -4471,7 +4488,7 @@ class Lagrangian(_DDtBase):
         left = moving & np.any(outward != 0.0, axis=1)
         # The boundary velocity where each trace left; read on every rank.
         U_boundary = np.asarray(_to_nondim_ndarray(
-            uw.function.evaluate(self.V_fn, restored[left]))).reshape(-1, dim)
+            _history_evaluate(self.V_fn, restored[left]))).reshape(-1, dim)
         crossing = np.einsum("ij,ij->i", U_boundary, outward[left])
         steep = crossing < -0.5 * np.linalg.norm(U_boundary, axis=1) * np.linalg.norm(outward[left], axis=1)
         entered = np.zeros(X.shape[0], dtype=bool)
@@ -4524,7 +4541,7 @@ class Lagrangian(_DDtBase):
                 if ij in updated:
                     continue
                 updated[ij] = np.asarray(_to_nondim_ndarray(
-                    uw.function.evaluate(self.psi_fn[i, j], coords, evalf=evalf)
+                    _history_evaluate(self.psi_fn[i, j], coords, evalf=evalf)
                 )).reshape(-1)
         for ij, vals in updated.items():
             psi_star_0.data[:, ij] = vals
@@ -4774,7 +4791,7 @@ class Lagrangian_Swarm(_DDtBase):
         coords = np.asarray(self.swarm._particle_coordinates.data)
         for i in range(psi_star_0.shape[0]):
             for j in range(psi_star_0.shape[1]):
-                updated_psi = uw.function.evaluate(
+                updated_psi = _history_evaluate(
                     self.psi_fn[i, j],
                     coords,
                 )
@@ -4849,7 +4866,7 @@ class Lagrangian_Swarm(_DDtBase):
             for j in range(slot.shape[1]):
                 ij = slot._data_layout(i, j)
                 out[:, ij] = np.asarray(_to_nondim_ndarray(
-                    uw.function.evaluate(mv.sym[i, j], coords, evalf=evalf)
+                    _history_evaluate(mv.sym[i, j], coords, evalf=evalf)
                 )).reshape(-1)
         return out
 
@@ -4887,7 +4904,7 @@ class Lagrangian_Swarm(_DDtBase):
                 if ij in updated:
                     continue                       # symmetric storage: one evaluation per slot
                 updated[ij] = np.asarray(_to_nondim_ndarray(
-                    uw.function.evaluate(self.psi_fn[i, j], coords, evalf=evalf)
+                    _history_evaluate(self.psi_fn[i, j], coords, evalf=evalf)
                 )).reshape(-1)
 
         # Record timestep history for variable-dt BDF
@@ -5031,7 +5048,7 @@ class IntegrationPointSemiLagrangian(_DDtBase):
         for column in range(len(columns)):
             nodal = self._commit_flat.data[:, column]
             self.psi_snap[0].data[:, column] = np.asarray(nodal).reshape(-1)
-            history.data[:, column] = np.asarray(uw.function.evaluate(
+            history.data[:, column] = np.asarray(_history_evaluate(
                 self._commit_flat.sym[0, column], points)).reshape(-1)
 
         self._history_committed = True
@@ -5482,7 +5499,7 @@ class IntegrationPointSemiLagrangian(_DDtBase):
         for column in range(len(columns)):
             self.forcing_snap.data[:, column] = np.asarray(
                 self._forcing_flat.data[:, column]).reshape(-1)
-            self.forcing_star.data[:, column] = np.asarray(uw.function.evaluate(
+            self.forcing_star.data[:, column] = np.asarray(_history_evaluate(
                 self._forcing_flat.sym[0, column], points)).reshape(-1)
 
     def initialise_history(self):
@@ -5799,7 +5816,7 @@ class ForwardSemiLagrangian(_DDtBase):
         self._flux_projection.solve()
         out = np.empty_like(self._launch_values)
         for k in range(self.num_components):
-            out[:, k] = _to_nondim_ndarray(uw.function.evaluate(self._flux_var.sym[0, k], self._launch)).reshape(-1)
+            out[:, k] = _to_nondim_ndarray(_history_evaluate(self._flux_var.sym[0, k], self._launch)).reshape(-1)
         return out
 
     def carried_tensors(self, level: int = 0):
@@ -5888,7 +5905,7 @@ class ForwardSemiLagrangian(_DDtBase):
             # boundary-cell dof, whether or not any of its cells is short
             bcells = np.flatnonzero(np.isin(np.arange(ncell), self._bface_cell))
             filled = np.column_stack([
-                _to_nondim_ndarray(uw.function.evaluate(self._inflow_record()[i, j],
+                _to_nondim_ndarray(_history_evaluate(self._inflow_record()[i, j],
                                                         dofs[bcells].reshape(-1, mesh.cdim))
                                    ).reshape(-1)
                 for (i, j) in self._components]).reshape(bcells.size, ndof, self.num_components)

@@ -747,32 +747,23 @@ def SphericalShellInternalBoundary(
     # is called if the general mesh routine does some refinement
     # and the new dm object needs some tweeks
 
-    # TODO(BUG): the Internal surface is not snapped back onto radiusInternal, so
-    # after refinement it stays faceted while its normal is the analytic radial one.
+    # Refinement places the new vertices of each of the three surfaces on the chords
+    # of the coarse one; the callback moves them back onto their spheres, the
+    # embedded Internal surface included, so that the refined mesh is on the spheres
+    # registered for it below (#949 item 3).
     def spherical_mesh_refinement_callback(dm):
-        r_o = radiusOuter
-        r_i = radiusInner
-
         import underworld3 as uw
-
-        # print(f"Refinement callback - spherical", flush=True)
 
         c2 = dm.getCoordinatesLocal()
         coords = c2.array.reshape(-1, 3)
         R = np.sqrt(coords[:, 0] ** 2 + coords[:, 1] ** 2 + coords[:, 2] ** 2)
 
-        upperIndices = uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
-            dm, "Upper"
-        )
-        coords[upperIndices] *= r_o / R[upperIndices].reshape(-1, 1)
-        # print(f"Refinement callback - Upper {len(upperIndices)}", flush=True)
-
-        lowerIndices = uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
-            dm, "Lower"
-        )
-
-        coords[lowerIndices] *= r_i / (1.0e-16 + R[lowerIndices].reshape(-1, 1))
-        # print(f"Refinement callback - Lower {len(lowerIndices)}", flush=True)
+        for label, radius in (("Upper", radiusOuter), ("Lower", radiusInner),
+                              ("Internal", radiusInternal)):
+            indices = uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
+                dm, label
+            )
+            coords[indices] *= radius / R[indices].reshape(-1, 1)
 
         c2.array[...] = coords.reshape(-1)
         dm.setCoordinatesLocal(c2)

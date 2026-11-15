@@ -3097,6 +3097,31 @@ class SolverBaseClass(uw_object):
                             "normal also needs it: its continuity-row derivative is zero in "
                             "value but not symbolically.)")
                     total += integral(self.mesh, list(dp)[0] * lam.sym[0], bc.boundary)
+        # The volume continuity term (a saddle point's PF0, e.g. Stokes
+        # ``constraints``) is tested against the pressure adjoint lam (#1161).
+        pf0 = getattr(self, "PF0", None)
+        if pf0 is not None:
+            dpf = diff_wrt_field(self._peel_except(sympy.Matrix(pf0.sym), wrt), wrt)
+            if not sympy.Matrix(dpf).is_zero_matrix:
+                if lam is None:
+                    name = getattr(wrt, "name", None) or str(wrt)
+                    raise ValueError(
+                        f"sensitivity: {name} enters the continuity term of this solver, "
+                        "which is tested against the pressure adjoint: pass lam=, the "
+                        "pressure part of the adjoint_solve target.")
+                total += integral(self.mesh, list(sympy.Matrix(dpf))[0] * lam.sym[0])
+        # The datum of an add_constraint_bc multiplier condition is tested
+        # against the multiplier's adjoint, which sensitivity is not given:
+        # refused by name rather than dropped (#1161).
+        for cbc in (getattr(self, "_block_constraint_bcs", None) or []):
+            datum = sympy.Matrix([cbc.g]) if not isinstance(cbc.g, sympy.MatrixBase) else cbc.g
+            if not sympy.Matrix(diff_wrt_field(self._peel_except(datum, wrt), wrt)).is_zero_matrix:
+                name = getattr(wrt, "name", None) or str(wrt)
+                raise NotImplementedError(
+                    f"sensitivity: {name} enters the datum {cbc.g} of the add_constraint_bc "
+                    f"condition on {cbc.boundary!r}. Its part of the gradient is tested "
+                    "against the constraint multiplier's adjoint, which is not computed "
+                    "yet, so it is refused rather than left out (#1161).")
         return total
 
     def _constraint_mechanisms(self):
@@ -4954,22 +4979,24 @@ class SolverBaseClass(uw_object):
             self.snes.destroy()
             self.snes = None
 
+        # The cached field index sets (Stokes specific but safe to check here)
+        # describe the section of the DM being replaced. They go whether or not
+        # that DM is still here: ``_reset()`` drops the DM and leaves them.
+        if hasattr(self, "_pressure_is") and self._pressure_is is not None:
+            self._pressure_is.destroy()
+            self._pressure_is = None
+        if hasattr(self, "_velocity_is") and self._velocity_is is not None:
+            self._velocity_is.destroy()
+            self._velocity_is = None
+
+        if getattr(self, "_multiplier_is", None):
+            for mis in self._multiplier_is.values():
+                mis.destroy()
+            self._multiplier_is = {}
+
         if self.dm is not None:
             if verbose and uw.mpi.rank == 0:
                 print(f"Destroy solver DM hierarchy", flush=True)
-
-            # Clean up field decomposition cache (Stokes specific but safe to check here)
-            if hasattr(self, "_pressure_is") and self._pressure_is is not None:
-                self._pressure_is.destroy()
-                self._pressure_is = None
-            if hasattr(self, "_velocity_is") and self._velocity_is is not None:
-                self._velocity_is.destroy()
-                self._velocity_is = None
-
-            if getattr(self, "_multiplier_is", None):
-                for mis in self._multiplier_is.values():
-                    mis.destroy()
-                self._multiplier_is = {}
 
             if hasattr(self, "_subdict") and self._subdict:
                 for name, (is_set, subdm) in self._subdict.items():
@@ -9318,6 +9345,33 @@ class SNES_MultiComponent(SolverBaseClass):
 
 ### =================================
 
+def _stokes_default_units():
+    """Units for the velocity and pressure a Stokes solver creates for itself:
+    ``("m/s", "Pa")`` in a model with reference quantities, ``(None, None)`` in a
+    model without units.
+
+    A Stokes solve needs stress, so a units model must give length, time and
+    mass scales. A model with length and time only is purely kinematic: it can
+    run advection or diffusion, but a dynamic solver in it would get a velocity
+    with units and a pressure without, and is refused (ruling, 2026-11-13).
+    Called on every construction, whatever fields are passed.
+    """
+    orchestration_model = uw.get_default_model()
+    if not orchestration_model.has_units():
+        return None, None
+    scales = set(orchestration_model.get_fundamental_scales() or {})
+    missing = [s for s in ("length", "time", "mass") if s not in scales]
+    if missing:
+        raise ValueError(
+            "Stokes needs length, time and mass scales in a model with reference "
+            f"quantities; this model has no {' or '.join(missing)} scale. Add one "
+            "to set_reference_quantities, e.g. viscosity=uw.quantity(1e21, 'Pa*s') "
+            "or mass=uw.quantity(1e24, 'kg'). A model with length and time only is "
+            "kinematic: it can run advection and diffusion, but not a solver that "
+            "needs stress.")
+    return "m/s", "Pa"
+
+
 class SNES_Stokes_SaddlePt(SolverBaseClass):
     r"""
     Saddle point equation solver for constrained problems using PETSc SNES.
@@ -9504,13 +9558,41 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         self._degree = degree
 
-        ## Any problem with U,P, just define our own
-        if velocityField == None or pressureField == None:
+        ## Create whichever of U, P was not passed, and keep the one that was (#844).
+        ## In a model whose scales cover them, the created fields carry units (m/s,
+        ## Pa), so the default path never builds a unitless field in a units model.
+        ## A field passed alone must match `degree`: the one created beside it
+        ## takes its degree from `degree` (velocity `degree`, pressure
+        ## `degree - 1`), and a passed field of another degree is refused rather
+        ## than paired with one that does not match it.
+        u_units, p_units = _stokes_default_units()   # refuses a kinematic model
+        if (velocityField is None) != (pressureField is None):
+            if velocityField is not None and velocityField.degree != degree:
+                raise ValueError(
+                    f"Stokes: velocityField '{velocityField.clean_name}' has degree "
+                    f"{velocityField.degree}, but degree={degree}, so the pressure "
+                    f"created beside it would have degree {degree - 1}. Pass "
+                    f"degree={velocityField.degree}, or pass both fields (#844).")
+            if pressureField is not None and pressureField.degree != degree - 1:
+                # A P0 pressure would pair with a P1 velocity, which locks; point
+                # to the stable P2/P1 pair instead.
+                advice = (f"Pass degree={pressureField.degree + 1}"
+                          if pressureField.degree >= 1 else
+                          "A P0 pressure locks against the P1 velocity degree=1 "
+                          "would create; pass a P1 pressure with degree=2 (P2/P1)")
+                raise ValueError(
+                    f"Stokes: pressureField '{pressureField.clean_name}' has degree "
+                    f"{pressureField.degree}, but degree={degree} asks for a pressure "
+                    f"of degree {degree - 1} beside the velocity created here. "
+                    f"{advice}, or pass both fields (#844).")
+        if velocityField is None or pressureField is None:
 
             # Note, ensure names are unique for each solver type
             i = SNES_Stokes_SaddlePt._obj_count
-            self.Unknowns.u = uw.discretisation.MeshVariable(f"V{i}", self.mesh, self.mesh.dim, degree=degree, varsymbol=rf"{{\mathbf{{u}}^{{[{i}]}} }}" )
-            self.Unknowns.p = uw.discretisation.MeshVariable(f"P{i}", self.mesh, 1, degree=degree-1, continuous=p_continuous, varsymbol=rf"{{\mathbf{{p}}^{{[{i}]}} }}")
+            if velocityField is None:
+                self.Unknowns.u = uw.discretisation.MeshVariable(f"V{i}", self.mesh, self.mesh.dim, degree=degree, varsymbol=rf"{{\mathbf{{u}}^{{[{i}]}} }}", units=u_units)
+            if pressureField is None:
+                self.Unknowns.p = uw.discretisation.MeshVariable(f"P{i}", self.mesh, 1, degree=degree-1, continuous=p_continuous, varsymbol=rf"{{\mathbf{{p}}^{{[{i}]}} }}", units=p_units)
 
             if self.verbose and uw.mpi.rank == 0:
                 print(f"SNES Saddle Point Solver {self.instance_number}: creating new mesh variables for unknowns")
@@ -10658,11 +10740,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         except Exception:
             # Sanctioned: a Jacobian PETSc will not describe yet records "not attached"
             attached = False
-        try:
-            pbcs = sorted({bc.boundary for bc in self._pressure_dirichlet_bcs()})
-        except Exception:
-            # Sanctioned: no pressure field decomposition yet; recorded as none
-            pbcs = []
+        pbcs = sorted({bc.boundary for bc in self._pressure_dirichlet_bcs()})
         cm = getattr(self, "constitutive_model", None)
         reg = {}
         for name in ("plastic_rate_strengthening", "shear_viscosity_min", "yield_stress_min", "strainrate_inv_II_min"):
@@ -10730,11 +10808,10 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
     def _pressure_dirichlet_bcs(self):
         """Return essential boundary conditions applied to the pressure field."""
 
-        pressure_field_id = getattr(getattr(self, "p", None), "field_id", None)
-        if pressure_field_id is None:
-            raise RuntimeError("Pressure field is unavailable; cannot inspect pressure Dirichlet BCs.")
-
-        return [bc for bc in self.essential_bcs if bc.f_id == pressure_field_id]
+        # A condition carries the solver's field number (velocity 0, pressure 1).
+        # The pressure variable's position among the mesh's variables is another
+        # number: it depends on the order the variables were created in.
+        return [bc for bc in self.essential_bcs if bc.f_id == 1]
 
     def _build_pressure_nullspace_vector(self):
         """Create the constant-pressure basis vector for the coupled Stokes DM."""
@@ -10757,17 +10834,22 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
     def _build_velocity_nullspace_vector(self, mode):
         """Create a velocity nullspace basis vector from a user-supplied mode."""
 
-        mode_values = np.asarray(uw.function.evaluate(mode, self.u.coords_nd), dtype=np.float64)
-        if mode_values.ndim == 1:
-            mode_values = mode_values.reshape(-1, 1)
-        elif mode_values.ndim > 2:
-            mode_values = mode_values.reshape(mode_values.shape[0], -1)
-
-        if mode_values.shape != (self.u.coords_nd.shape[0], self.u.num_components):
+        n_nodes = self.u.coords_nd.shape[0]
+        n_components = self.u.num_components
+        # Checked on the mode's symbolic shape, before any evaluation, so every
+        # rank reaches the same verdict without communicating: a check on the
+        # evaluated array passed on a rank with no nodes and raised on the
+        # others, which then waited in a collective (#1179).
+        n_entries = int(np.prod(sympy.Matrix(mode).shape))
+        if n_entries != n_components:
             raise ValueError(
-                "Velocity nullspace mode evaluation must return an array with shape "
-                f"({self.u.coords_nd.shape[0]}, {self.u.num_components}); got {mode_values.shape}."
-            )
+                f"Velocity nullspace mode {mode} has {n_entries} entries; the velocity "
+                f"field has {n_components} components.")
+
+        mode_values = np.asarray(uw.function.evaluate(mode, self.u.coords_nd), dtype=np.float64)
+        # Laid out by the declared count: reshape(n, -1) cannot infer -1 from an
+        # empty array, which is what raised on a rank with no velocity nodes.
+        mode_values = mode_values.reshape(n_nodes, n_components)
 
         template_vec = self.dm.getGlobalVec()
         try:
@@ -12523,48 +12605,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                 finally:
                     cell_is.destroy()
 
-            local_section = self.dm.getLocalSection()
-            pStart, pEnd = local_section.getChart()
-            out = {}
-
-            for name, var in self.fields.items():
-                field_id = getattr(var, "_solver_field_id", None)
-                if field_id is None:
-                    field_id = getattr(var, "field_id", None)
-                if field_id is None:
-                    continue
-
-                is_field = None
-                created_is_field = False
-                if name == "velocity" and getattr(self, "_velocity_is", None) is not None:
-                    is_field = self._velocity_is
-                elif name == "pressure" and getattr(self, "_pressure_is", None) is not None:
-                    is_field = self._pressure_is
-                elif getattr(self, "_multiplier_is", None) is not None and name in self._multiplier_is:
-                    is_field = self._multiplier_is[name]
-                else:
-                    indices = []
-                    for point in range(pStart, pEnd):
-                        dof = local_section.getFieldDof(point, field_id)
-                        if dof > 0:
-                            offset = local_section.getFieldOffset(point, field_id)
-                            for i in range(dof):
-                                indices.append(offset + i)
-
-                    is_field = PETSc.IS().createGeneral(indices, comm=PETSc.COMM_SELF)
-                    created_is_field = True
-
-                try:
-                    subvec = flocal.getSubVector(is_field)
-                    try:
-                        out[name] = np.array(subvec.array, copy=True)
-                    finally:
-                        flocal.restoreSubVector(is_field, subvec)
-                finally:
-                    if created_is_field:
-                        is_field.destroy()
-
-            return out
+            return self._local_vector_by_field(flocal)
         finally:
             self.dm.restoreLocalVec(flocal)
             self.dm.restoreLocalVec(xlocal)
@@ -12661,48 +12702,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                 dm.dm, wf, key, xvec.vec, NULL, 0.0, fvec.vec,
             ))
 
-            local_section = self.dm.getLocalSection()
-            pStart, pEnd = local_section.getChart()
-            out = {}
-
-            for name, var in self.fields.items():
-                field_id = getattr(var, "_solver_field_id", None)
-                if field_id is None:
-                    field_id = getattr(var, "field_id", None)
-                if field_id is None:
-                    continue
-
-                is_field = None
-                created_is_field = False
-                if name == "velocity" and getattr(self, "_velocity_is", None) is not None:
-                    is_field = self._velocity_is
-                elif name == "pressure" and getattr(self, "_pressure_is", None) is not None:
-                    is_field = self._pressure_is
-                elif getattr(self, "_multiplier_is", None) is not None and name in self._multiplier_is:
-                    is_field = self._multiplier_is[name]
-                else:
-                    indices = []
-                    for point in range(pStart, pEnd):
-                        dof = local_section.getFieldDof(point, field_id)
-                        if dof > 0:
-                            offset = local_section.getFieldOffset(point, field_id)
-                            for i in range(dof):
-                                indices.append(offset + i)
-
-                    is_field = PETSc.IS().createGeneral(indices, comm=PETSc.COMM_SELF)
-                    created_is_field = True
-
-                try:
-                    subvec = flocal.getSubVector(is_field)
-                    try:
-                        out[name] = np.array(subvec.array, copy=True)
-                    finally:
-                        flocal.restoreSubVector(is_field, subvec)
-                finally:
-                    if created_is_field:
-                        is_field.destroy()
-
-            return out
+            return self._local_vector_by_field(flocal)
         finally:
             self.dm.restoreLocalVec(flocal)
             self.dm.restoreLocalVec(xlocal)
@@ -12739,6 +12739,10 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             why = (why + ". The forward solve used the Picard tangent, so the "
                    "consistent tangent is assembled for the adjoint (a rebuild "
                    "of the Jacobian kernel)")
+        if getattr(self, "_block_constraint_bcs", None):
+            why = (why + ". A parameter in an add_constraint_bc datum is refused by "
+                   "sensitivity: its part needs the constraint multiplier's adjoint, "
+                   "which is not computed yet (#1161)")
         rotated = list(getattr(self, "_rotated_freeslip_bcs", None) or [])
         if rotated:
             why = (why + f". {len(rotated)} rotated free-slip constraint(s): the "
@@ -12964,6 +12968,25 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         gvec.restoreSubVector(gis, sub)
         out = np.array(gvec.array, copy=True)
         self.dm.restoreGlobalVec(gvec)
+        return out
+
+    def _local_vector_by_field(self, lvec):
+        """Copies of a solver-DM local vector's entries, one array for each of ``self.fields``.
+
+        The cached index sets split the vector by the solver's field numbers
+        (velocity 0, pressure 1, then the multipliers). A variable's position
+        among the mesh's variables is another number.
+        """
+        self._ensure_local_field_index_sets(lvec, self.dm.getLocalSection())
+        field_is = {"velocity": self._velocity_is, "pressure": self._pressure_is,
+                    **self._multiplier_is}
+        out = {}
+        for name in self.fields:
+            subvec = lvec.getSubVector(field_is[name])
+            try:
+                out[name] = np.array(subvec.array, copy=True)
+            finally:
+                lvec.restoreSubVector(field_is[name], subvec)
         return out
 
     def _ensure_local_field_index_sets(self, clvec, local_section):

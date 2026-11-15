@@ -305,14 +305,11 @@ def test_volume_residual_fields_insert_essential_values():
     reference = np.asarray(stokes._assemble_volume_reaction())
     out = stokes.compute_volume_residual_fields()
 
-    # Extract each field's slice of the reference using the same local-section
-    # walk the method uses, and require exact agreement.
+    # Extract each field's slice of the reference by walking the solver's local
+    # section with the solver's field numbers, and require exact agreement.
     local_section = stokes.dm.getLocalSection()
     pStart, pEnd = local_section.getChart()
-    for name, var in stokes.fields.items():
-        field_id = getattr(var, "_solver_field_id", None)
-        if field_id is None:
-            field_id = var.field_id
+    for name, field_id in (("velocity", 0), ("pressure", 1)):
         indices = []
         for point in range(pStart, pEnd):
             dof = local_section.getFieldDof(point, field_id)

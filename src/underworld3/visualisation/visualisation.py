@@ -131,7 +131,7 @@ def mesh_to_pv_mesh(mesh, jupyter_backend=None):
     # Tetrahedra: PETSc uses left-handed orientation, VTK expects right-handed.
     #   Fix: swap vertices 1 and 2 → [0,2,1,3]
     if mesh.dim == 3:
-        if mesh.dm.isSimplex():
+        if mesh.isSimplex:
             tet_reorder = [0, 2, 1, 3]
             cell_points_list = [pts[tet_reorder] for pts in cell_points_list]
         else:
@@ -141,7 +141,7 @@ def mesh_to_pv_mesh(mesh, jupyter_backend=None):
     try:
         import meshio
 
-        match (mesh.dm.isSimplex(), mesh.dim):
+        match (mesh.isSimplex, mesh.dim):
             case (True, 2):
                 meshio_cell_type = "triangle"
             case (True, 3):
@@ -172,7 +172,7 @@ def mesh_to_pv_mesh(mesh, jupyter_backend=None):
 
     except ImportError:
 
-        match (mesh.dm.isSimplex(), mesh.dim):
+        match (mesh.isSimplex, mesh.dim):
             case (True, 2):
                 vtk_cell_type = pv.cell.CellType.TRIANGLE
             case (True, 3):
@@ -513,7 +513,7 @@ def _lagrange_subcell_connectivity(meshVar):
     dim, cdim, k = mesh.dim, mesh.cdim, meshVar.degree
     if not meshVar.continuous or k < 1:
         return None
-    simplex = bool(mesh.dm.isSimplex())
+    simplex = bool(mesh.isSimplex)
     weights, masks, subcells = _reference_lattice(dim, k, simplex)
     n_corners = weights.shape[1]
 
@@ -644,7 +644,7 @@ def meshVariable_to_native_pv_mesh(meshVar):
         (True, 3): pv.CellType.TETRA,
         (False, 2): pv.CellType.QUAD,
         (False, 3): pv.CellType.HEXAHEDRON,
-    }[(bool(mesh.dm.isSimplex()), dim)]
+    }[(bool(mesh.isSimplex), dim)]
 
     cdim = mesh.cdim
     coords = np.asarray(meshVar.coords, dtype=np.float64)

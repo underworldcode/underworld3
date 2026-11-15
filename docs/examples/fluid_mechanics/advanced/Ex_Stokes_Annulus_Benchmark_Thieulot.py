@@ -372,14 +372,15 @@ stokes.add_natural_bc(vel_penalty * v_diff, mesh.boundaries.Upper.name)
 stokes.add_natural_bc(vel_penalty * v_diff, mesh.boundaries.Lower.name)
 
 # For k=0, pressure is indeterminate - add Dirichlet BC
+# (add_condition takes the solver's field number: velocity 0, pressure 1)
 if k == 0:
     stokes.add_condition(
-        p_uw.field_id, "dirichlet",
+        1, "dirichlet",
         sympy.Matrix([0]), mesh.boundaries.Lower.name,
         components=(0)
     )
     stokes.add_condition(
-        p_uw.field_id, "dirichlet",
+        1, "dirichlet",
         sympy.Matrix([0]), mesh.boundaries.Upper.name,
         components=(0)
     )

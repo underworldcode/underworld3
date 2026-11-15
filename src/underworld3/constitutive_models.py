@@ -3760,16 +3760,50 @@ class DarcyFlowModel(Constitutive_Model):
         return self._q(ddu)
 
 
+def _director_as_column(value):
+    """A director as a column, the shape its default has and its readers assume
+    (``T = Edot * n``), #1185.
+
+    - A row Matrix, which is what a mesh variable's ``.sym`` is, is transposed.
+    - A list, a tuple or a numpy array (1-D, row or column) becomes a column.
+    - A named expression (``uw.expression``) holding a matrix is refused: a row
+      reads wrong in the yield law without an error, and a column is not
+      followed when its value changes. A Matrix of scalar expressions works.
+    - A mesh variable passed itself is refused, naming ``.sym``.
+    """
+    import numpy
+    from underworld3.function.expressions import UWexpression
+
+    if isinstance(value, UWexpression):
+        inner = getattr(value, "_sym", None)
+        if isinstance(inner, sympy.MatrixBase):
+            raise ValueError(
+                f"director: the expression '{value.name}' holds a {inner.shape} matrix. "
+                "A matrix-valued expression does not work as a director: a row reads "
+                "wrong in the yield law, and a column is not followed when its value "
+                "changes. Pass a sympy Matrix of scalar expressions instead, e.g. "
+                "sympy.Matrix([[nx], [ny]]) with nx and ny uw.expression scalars; it "
+                "stays live (#1185).")
+        return value
+    if hasattr(value, "sym") and not isinstance(value, (sympy.Basic, sympy.MatrixBase)):
+        raise TypeError(
+            "director: pass the variable's symbolic form, e.g. "
+            "Parameters.director = n.sym, not the variable itself (#1185).")
+    if isinstance(value, numpy.ndarray):
+        return sympy.Matrix(numpy.asarray(value).reshape(-1).tolist())
+    if isinstance(value, (list, tuple)):
+        return sympy.Matrix(value)
+    if isinstance(value, sympy.MatrixBase) and value.shape[0] == 1 and value.shape[1] > 1:
+        return value.T
+    return value
+
+
 class TransverseIsotropicFlowModel(ViscousFlowModel):
-    # TODO(BUG): the CONSISTENT (Newton) tangent of this model is inconsistent
-    # with its residual when the anisotropy is active (eta_1 != eta_0): PETSc
-    # -snes_test_jacobian at bounded curvature reads ||J-Jfd||/||J|| ~ 2e-3-5e-3
-    # in developed flow where the isotropic control is FD-limited (~4e-6) — the
-    # dC/d(eps_II) director-coupled terms are missing or wrong, so TI "Newton"
-    # runs at Picard pace. Native-path evidence (no rotated machinery); the
-    # isotropic limit through this class is clean at rest but shares the defect
-    # once eta_1 differs. See issue #457 (incl. the checker-regularisation
-    # methodology: at 1e-12 the FD reference itself is invalid for power-law).
+    # The Newton tangent is consistent with the residual (#457, fixed by #493):
+    # -snes_test_jacobian for a TI power law with eta_1 = 0.01 eta_0 reads the
+    # same as the isotropic control, at the finite-difference floor. It has no
+    # major symmetry, so the assembled Newton velocity block is non-symmetric
+    # (1e-1); the Picard block is symmetric (docs/developer/subsystems/solvers.md).
     r"""
     Transversely isotropic (anisotropic) viscous flow model.
 
@@ -3851,6 +3885,7 @@ class TransverseIsotropicFlowModel(ViscousFlowModel):
             lambda inner_self: sympy.Matrix([0] * (inner_self._owning_model.dim - 1) + [1]),
             "Director orientation",
             units=None,  # Dimensionless unit vector
+            validator=_director_as_column,
         )
 
         def __init__(
@@ -4154,6 +4189,7 @@ class TransverseIsotropicVEPFlowModel(_ExponentialCoefficients, TransverseIsotro
             r"\hat{n}",
             lambda inner_self: sympy.Matrix([0] * (inner_self._owning_model.dim - 1) + [1]),
             "Director orientation (fault normal)", units=None,
+            validator=_director_as_column,
         )
 
         # Elastic parameter

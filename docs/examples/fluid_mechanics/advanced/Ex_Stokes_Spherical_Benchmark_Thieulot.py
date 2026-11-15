@@ -489,14 +489,15 @@ stokes.add_natural_bc(vel_penalty * v_diff, "Upper")
 stokes.add_natural_bc(vel_penalty * v_diff, "Lower")
 
 # Pressure boundary conditions
+# (add_condition takes the solver's field number: velocity 0, pressure 1)
 stokes.add_condition(
-    p_uw.field_id, "dirichlet",
+    1, "dirichlet",
     sp.Matrix([0]), mesh.boundaries.Lower.name,
     components=(0)
 )
 
 stokes.add_condition(
-    p_uw.field_id, "dirichlet",
+    1, "dirichlet",
     sp.Matrix([0]), mesh.boundaries.Upper.name,
     components=(0)
 )
@@ -504,7 +505,7 @@ stokes.add_condition(
 if r_int != 0.0:
     ana_p = p.subs({r: r_uw, theta: th_uw, phi: phi_uw})
     stokes.add_condition(
-        p_uw.field_id, "dirichlet",
+        1, "dirichlet",
         sp.Matrix([ana_p]), mesh.boundaries.Internal.name,
         components=(0)
     )
