@@ -461,3 +461,47 @@ def test_the_default_viscosity_is_refused_when_first_read(units_model):
     st.add_dirichlet_bc((uw.quantity(0, "cm/yr"), uw.quantity(0, "cm/yr")), "Bottom")
     with pytest.raises(ValueError, match="left at its default"):
         st.solve()
+
+
+# --- dimensional arguments to transcendental functions -----------------------------
+
+
+def _arrhenius_constants():
+    e1 = uw.expression(r"\eta_{1,t}", uw.quantity(1e21, "Pa*s"), "eta1")
+    e0 = uw.expression(r"\eta_{0,t}", uw.quantity(1e24, "Pa*s"), "eta0")
+    E = uw.expression("E_t", uw.quantity(3.0e5, "J/mol"), "activation energy")
+    R = uw.expression("R_t", uw.quantity(8.314, "J/(mol*K)"), "gas constant")
+    T0 = uw.expression("T_{0,t}", uw.quantity(1600, "K"), "reference temperature")
+    return e1, e0, E, R, T0
+
+
+@pytest.mark.level_1
+@pytest.mark.tier_b
+@pytest.mark.parametrize("func", ["exp", "log", "sin", "tanh"])
+def test_a_dimensional_argument_is_refused(units_model, func):
+    """``exp(eta1)`` has no meaning: a transcendental function needs a
+    dimensionless argument (H1's case ``T*exp(eta1)`` was accepted)."""
+    _box()
+    e1, _e0, _E, _R, _T0 = _arrhenius_constants()
+    with pytest.raises(ValueError, match=func):
+        uw.function.evaluate(getattr(sympy, func)(e1), _PTS)
+
+
+@pytest.mark.level_1
+@pytest.mark.tier_b
+def test_a_dimensional_exponent_is_refused(units_model):
+    _box()
+    e1, _e0, _E, _R, _T0 = _arrhenius_constants()
+    with pytest.raises(ValueError, match="power"):
+        uw.function.evaluate(sympy.Integer(2) ** e1, _PTS)
+
+
+@pytest.mark.level_1
+@pytest.mark.tier_b
+def test_dimensionless_arguments_are_accepted(units_model):
+    _box()
+    e1, e0, E, R, T0 = _arrhenius_constants()
+    r1 = uw.function.evaluate(sympy.exp(e1 / e0), _PTS)
+    r2 = uw.function.evaluate(sympy.exp(-E / (R * T0)), _PTS)
+    assert float(np.asarray(r1).ravel()[0]) == pytest.approx(np.exp(1e-3))
+    assert float(np.asarray(r2).ravel()[0]) == pytest.approx(np.exp(-3.0e5 / (8.314 * 1600)))

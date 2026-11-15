@@ -1023,6 +1023,55 @@ def _unit_leaves(expr):
     return sorted(unitless), sorted(dimensional)
 
 
+def _reduces_to_a_dimension(e):
+    """True when the leaves of ``e``, reduced together, carry a physical
+    dimension (``eta1/eta0`` does not; ``eta1`` does). Coordinates are left out."""
+    from sympy.vector import BaseScalar
+    from underworld3.units import get_units
+
+    e = e.subs({c: 1 for c in e.atoms(BaseScalar)}) if hasattr(e, "atoms") else e
+    try:
+        return _has_dimension(get_units(e))
+    except Exception:
+        # Sanctioned fallback: units inference that cannot reduce an expression
+        # does not make a refusal; it must not fire on what it cannot read.
+        return False
+
+
+def _dimensional_function_argument(expr):
+    """The first transcendental function (exp, log, the trigonometric and
+    hyperbolic functions, erf) whose argument, or power whose exponent, carries
+    a dimension once its leaves are reduced together; ``(name, argument)`` or
+    None. ``exp(eta1)`` has no meaning, ``exp(eta1/eta0)`` and
+    ``exp(-E/(R*T0))`` do. Named expressions are walked into, each once."""
+    import sympy
+    from .expressions import UWexpression
+
+    functions = (sympy.exp, sympy.log, sympy.sin, sympy.cos, sympy.tan, sympy.sinh,
+                 sympy.cosh, sympy.tanh, sympy.asin, sympy.acos, sympy.atan, sympy.erf)
+    seen = set()
+    stack = [_as_symbolic(expr)]
+    while stack:
+        e = stack.pop()
+        if isinstance(e, UWexpression):
+            if id(e) in seen:
+                continue
+            seen.add(id(e))
+            stack.append(e.sym)
+            continue
+        if isinstance(e, sympy.MatrixBase):
+            stack.extend(list(e))
+            continue
+        if not isinstance(e, sympy.Basic):
+            continue
+        if isinstance(e, functions) and e.args and _reduces_to_a_dimension(e.args[0]):
+            return type(e).__name__, e.args[0]
+        if isinstance(e, sympy.Pow) and _reduces_to_a_dimension(e.exp):
+            return "a power with exponent", e.exp
+        stack.extend(e.args)
+        stack.extend(a for a in e.atoms(sympy.Symbol) if isinstance(a, UWexpression))
+    return None
+
 def _mixed_product(expr):
     """The first product (or sum) in ``expr`` that puts a field without units
     beside factors whose COMBINED dimension is not dimensionless, or None.
@@ -1047,14 +1096,7 @@ def _mixed_product(expr):
             unitless_cache[key] = bool(_unit_leaves(e)[0])
         return unitless_cache[key]
 
-    def dimensional(e):
-        e = e.subs({c: 1 for c in e.atoms(BaseScalar)}) if hasattr(e, "atoms") else e
-        try:
-            return _has_dimension(get_units(e))
-        except Exception:
-            # Sanctioned fallback: units inference that cannot reduce a factor
-            # does not make a mix; the refusal must not fire on what it cannot read.
-            return False
+    dimensional = _reduces_to_a_dimension
 
     seen = set()
     stack = [_as_symbolic(expr)]
@@ -1137,7 +1179,17 @@ def _refuse_mixed_unit_leaves(expr):
         return
     _refuse_unset_dimensional_defaults([_as_symbolic(expr)])
     unitless, dimensional = _unit_leaves(expr)
-    if not (unitless and dimensional):
+    if not dimensional:
+        return
+    bad_argument = _dimensional_function_argument(expr)
+    if bad_argument is not None:
+        name, argument = bad_argument
+        raise ValueError(
+            f"evaluate: {name} of {str(argument)[:120]}, which carries units once "
+            "its leaves are reduced together. A transcendental function needs a "
+            "dimensionless argument: divide by a reference (eta1/eta0, "
+            "E/(R*T0)), in a model with reference quantities.")
+    if not unitless:
         return
     offending = _mixed_product(expr)
     if offending is None:
