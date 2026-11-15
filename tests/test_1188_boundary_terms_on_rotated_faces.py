@@ -24,6 +24,10 @@ The cube and the shell are refined once, which puts wall faces at orientations 1
 and 2; swapping the internal faces' cells puts them at -1, -2 and -3. P1 holds 1
 and x, and qdegree 3 integrates every moment exactly.
 
+A sixth check deals the shell's cells to the ranks at random, which splits most
+Internal faces between two ranks (#1150), and compares the load's moments with the
+default partition's.
+
 The file runs serially and under mpirun (scripts/test.sh, np 4): counts and
 maxima are taken over all ranks, and a rank may hold none of a boundary's faces.
 """
@@ -219,3 +223,94 @@ def test_an_internal_load_does_not_depend_on_which_cell_assembles_it():
     assert _largest(load0) > 1.0e-3
     # development: 534 of 534 loaded nodes change, by up to half the largest load
     assert _largest(load1 - load0) < 1.0e-14 * _largest(load0)
+
+
+
+def _weights(X):
+    """Polynomials in the node coordinates up to degree 2, to weight the load by."""
+    x, y, z = X[:, 0], X[:, 1], X[:, 2]
+    return np.stack([np.ones_like(x), x, y, z, x * x, y * y, z * z, x * y, y * z, z * x], axis=1)
+
+
+def _internal_load_moments(monkeypatch, seed):
+    """#1150's shell, its cells dealt to the ranks at random by ``seed`` (``None``: the
+    default partition). Returns the moments of the Internal load under _weights,
+    their scale, and the number of Internal faces split between ranks, each summed
+    over every rank."""
+    from petsc4py import PETSc
+    from underworld3.discretisation import discretisation_mesh
+
+    read_plex = discretisation_mesh._from_plexh5
+
+    def read_and_deal_cells_at_random(*args, **kwargs):
+        result = read_plex(*args, **kwargs)
+        dm = result[1] if isinstance(result, tuple) else result
+        c_start, c_end = dm.getHeightStratum(0)
+        assign = np.random.default_rng(seed).integers(0, uw.mpi.size, c_end - c_start)
+        part = dm.getPartitioner()
+        part.setType(PETSc.Partitioner.Type.SHELL)
+        part.setShellPartition(
+            uw.mpi.size,
+            sizes=np.bincount(assign, minlength=uw.mpi.size).astype(PETSc.IntType),
+            points=np.argsort(assign, kind="stable").astype(PETSc.IntType))
+        return result
+
+    if seed is not None and uw.mpi.size > 1:
+        monkeypatch.setattr(discretisation_mesh, "_from_plexh5", read_and_deal_cells_at_random)
+    mesh = uw.meshing.SphericalShellInternalBoundary(
+        radiusOuter=1.0, radiusInternal=0.775, radiusInner=0.55, cellSize=0.2, qdegree=2)
+    monkeypatch.undo()
+
+    split = 0
+    if uw.mpi.size > 1:
+        # a split face has one of its two cells on this rank, or one only as a ghost
+        dm = mesh.dm
+        ghosts = set(np.asarray(dm.getPointSF().getGraph()[1]).tolist())
+        split = sum(1 for face in _faces(mesh, "Internal")
+                    if dm.getSupportSize(face) == 1
+                    or any(int(cell) in ghosts for cell in dm.getSupport(face)))
+
+    tag = "d" if seed is None else str(seed)
+    velocity = uw.discretisation.MeshVariable(f"U1188p{tag}", mesh, 3, degree=2,
+                                              vtype=uw.VarType.VECTOR)
+    pressure = uw.discretisation.MeshVariable(f"P1188p{tag}", mesh, 1, degree=1)
+    stokes = uw.systems.Stokes(mesh, velocityField=velocity, pressureField=pressure)
+    stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    stokes.constitutive_model.Parameters.shear_viscosity_0 = 1.0
+    stokes.bodyforce = sympy.Matrix([0.0, 0.0, 0.0]).T
+    shape = sympy.assoc_legendre(2, 0, sympy.cos(mesh.CoordinateSystem.xR[1]))
+    stokes.add_natural_bc(shape * mesh.CoordinateSystem.unit_e_0, "Internal")
+    stokes._build()
+    for var in stokes.fields.values():
+        var.array[...] = 0.0
+    load = np.asarray(stokes.compute_volume_residual_fields()["velocity"]).reshape(-1, 3)
+    W = _weights(np.asarray(velocity.coords))
+
+    # each rank's rows hold its own cells' and faces' parts, so the sums over every
+    # rank's rows are the moments of the whole load
+    moments = uw.mpi.comm.allreduce(load.T @ W, op=MPI.SUM)
+    scale = uw.mpi.comm.allreduce(float(np.max(np.abs(load).T @ np.abs(W), initial=0.0)), op=MPI.MAX)
+    return moments, scale, uw.mpi.comm.allreduce(split, op=MPI.SUM)
+
+
+def test_an_internal_load_does_not_depend_on_the_partition(monkeypatch):
+    """#1150: in parallel, an Internal face whose two cells are on different ranks is
+    assembled from the cell its owning rank holds. Random partitions split most of
+    the Internal faces (on a 540-face mesh, seed 1: 403 at np 4, 478 at np 8; seed
+    2: 400 and 459); the default partition split none at np 4 and one at np 8. The
+    moments of the load must be the same under all three. Serially the three are
+    one partition. The mesh comes from gmsh and differs a little between gmsh
+    builds, so the reference is taken in the same run, not stored.
+
+    One rank, with every Internal face's supports swapped instead (what a split
+    face does to its owner's frame): the largest moment moves by 3.4e-3 on
+    development and by 1.1e-16 on this branch, against a scale of 1.56."""
+    reference, scale, _split = _internal_load_moments(monkeypatch, None)
+    assert scale > 0.1
+    for seed in (1, 2):
+        moments, _scale, split = _internal_load_moments(monkeypatch, seed)
+        if uw.mpi.size > 1:
+            assert split > 0, seed                         # the partition splits faces
+        # the sums over ranks differ only by the order of the additions
+        assert np.all(np.abs(moments - reference) < 1.0e-13 * scale), (
+            seed, np.abs(moments - reference).max() / scale)
