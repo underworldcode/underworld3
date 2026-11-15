@@ -486,6 +486,33 @@ def _orient_subcells_on_surface(conn, X, parent_x, simplex):
     return conn
 
 
+def _fe_reference_nodes(dm, cdim, lattice_ref):
+    """The Lagrange nodes of the FE on ``dm``'s field 0, in reference
+    coordinates on ``[0, 1]``, ordered as the equispaced lattice ``lattice_ref``.
+
+    PETSc places its nodes off the equispaced lattice (``node_endpoints`` is
+    off, and from degree 3 the nodes are not equispaced), increasingly so with
+    the degree. Each node is paired with a lattice site by an assignment on the
+    reference cell, where nodes and sites are in the same order along every
+    axis. Returns ``None`` if the FE does not have one node per lattice site.
+    """
+    import numpy as np
+    from scipy.optimize import linear_sum_assignment
+
+    fe = dm.getField(0)
+    fe = fe[0] if isinstance(fe, tuple) else fe
+    dual = fe.getDualSpace()
+    dim = lattice_ref.shape[1]
+    # one point functional per node and component; PETSc's reference cell is [-1, 1]
+    points = np.array([np.asarray(dual.getFunctional(i).getData()[0]).reshape(-1, dim)[0]
+                       for i in range(0, dual.getDimension(), cdim)])
+    if len(points) != len(lattice_ref):
+        return None
+    nodes = 0.5 * (points + 1.0)
+    cost = ((lattice_ref[:, None, :] - nodes[None, :, :]) ** 2).sum(-1)
+    return nodes[linear_sum_assignment(cost)[1]]
+
+
 def _lagrange_subcell_connectivity(meshVar):
     """Sub-cells of the mesh's own cells through a continuous Lagrange
     variable's nodes: an ``(n, nv)`` table of the variable's DOF rows, or
@@ -498,11 +525,12 @@ def _lagrange_subcell_connectivity(meshVar):
     corners. Position is used for one thing only: ordering the several nodes
     of a single edge, face or interior, which follow that entity's own
     orientation. Those are matched to the lattice positions of the same
-    entity, mapped through the cell's corners, and the competing positions are
-    a lattice spacing apart, so a node a little off its lattice position is
-    still matched to the right one.
-    The match is refused, and ``None`` returned, if a node lies more than half
-    a spacing from its lattice position.
+    entity in the cell's reference coordinates, where the competing positions
+    are ``1/k`` apart along every axis whatever the cell's aspect ratio, so a
+    node off its equispaced lattice position (PETSc's nodes are not equispaced
+    at high degree) is still matched to the right one.
+    The match is refused, and ``None`` returned, if a node lies ``1/(2k)`` or
+    more from its lattice position in reference coordinates (#1083).
     """
     import itertools
     import numpy as np
@@ -517,9 +545,20 @@ def _lagrange_subcell_connectivity(meshVar):
     weights, masks, subcells = _reference_lattice(dim, k, simplex)
     n_corners = weights.shape[1]
 
+    # Each corner's reference coordinates, and from them every lattice node's.
+    # On a simplex the reference coordinates are the barycentric weights of
+    # corners 1..dim; on a quad or hexahedron the corner's lattice position.
+    if simplex:
+        corner_ref = np.vstack([np.zeros(dim), np.eye(dim)])
+    else:
+        corner_ref = np.array(_TENSOR_CORNERS[dim], dtype=float)
+
     X = np.asarray(meshVar.coords_nd, dtype=np.float64)
     dm = mesh._basis_coordinate_dm(k, True)
     try:
+        ref_lattice = _fe_reference_nodes(dm, cdim, weights @ corner_ref)  # (n_nodes, dim)
+        if ref_lattice is None:
+            return None
         section = dm.getLocalSection()
         cells = np.arange(*dm.getHeightStratum(0))
         nc = len(cells)
@@ -552,8 +591,19 @@ def _lagrange_subcell_connectivity(meshVar):
 
     nodes = np.full((nc, len(masks)), -1, dtype=np.int64)
     corner_nodes = [int(np.flatnonzero(masks == 1 << c)[0]) for c in range(n_corners)]
+
+    origin_node = corner_nodes[int(np.flatnonzero(~corner_ref.any(axis=1))[0])]
+    axis_nodes = [corner_nodes[int(np.flatnonzero((corner_ref == row).all(axis=1))[0])]
+                  for row in np.eye(dim)]
+    # The cells are affine (mesh geometry is degree 1; a quad or hexahedron is
+    # mapped through the edges at its first corner), so a position maps back
+    # to reference coordinates through the pseudo-inverse of the edge vectors.
+    # There the spacing between an entity's nodes does not depend on the
+    # cell's aspect ratio.
+
     # Vertices first: their positions place every other lattice node.
     slots = sorted(set(masks.tolist()), key=lambda s: bin(s).count("1"))
+    to_ref = None
     for slot in slots:
         lattice = np.flatnonzero(masks == slot)
         m = len(lattice)
@@ -568,9 +618,14 @@ def _lagrange_subcell_connectivity(meshVar):
         if m == 1:
             nodes[:, lattice[0]] = rows[:, 0]
             continue
-        corner_x = X[nodes[:, corner_nodes]]                             # (nc, corners, cdim)
-        target = np.einsum("lc,ncx->nlx", weights[lattice], corner_x)    # (nc, m, cdim)
-        actual = X[rows]                                                 # (nc, m, cdim)
+        if to_ref is None:
+            edge = X[nodes[:, axis_nodes]] - X[nodes[:, origin_node]][:, None]   # (nc, dim, cdim)
+            to_ref = np.linalg.pinv(np.transpose(edge, (0, 2, 1)))               # (nc, dim, cdim)
+        target = ref_lattice[lattice][None]                              # (1, m, dim)
+        spacing = np.sqrt(np.where(np.eye(m, dtype=bool), np.inf,
+                                   ((target[0, :, None] - target[0, None]) ** 2).sum(-1)).min())
+        actual = np.einsum("nax,nmx->nma", to_ref,
+                           X[rows] - X[nodes[:, origin_node]][:, None])  # (nc, m, dim)
         cost = ((target[:, :, None, :] - actual[:, None, :, :]) ** 2).sum(-1)
         if m <= 4:
             perms = np.array(list(itertools.permutations(range(m))))
@@ -579,8 +634,6 @@ def _lagrange_subcell_connectivity(meshVar):
         else:
             choice = np.array([linear_sum_assignment(c)[1] for c in cost])
         matched = np.take_along_axis(cost, choice[:, :, None], axis=2)[..., 0]
-        spacing = np.sqrt(np.where(np.eye(m, dtype=bool), np.inf,
-                                   ((target[:, :, None] - target[:, None]) ** 2).sum(-1)).min(axis=(1, 2)))
         if (np.sqrt(matched.max(axis=1)) >= 0.5 * spacing).any():
             return None
         nodes[:, lattice] = np.take_along_axis(rows, choice, axis=1)
@@ -666,7 +719,8 @@ def meshVariable_to_pv_mesh_object(meshVar, alpha=None):
     route silently drops coarse cells on an adapted mesh.
 
     Otherwise (a discontinuous variable, or a layout the native path refuses)
-    the points are Delaunay-triangulated.
+    the points are Delaunay-triangulated. A refused continuous variable is
+    reported with a warning, since it is meant to be drawn natively.
 
     Parameters
     ----------
@@ -690,6 +744,18 @@ def meshVariable_to_pv_mesh_object(meshVar, alpha=None):
         native = meshVariable_to_native_pv_mesh(meshVar)
         if native is not None:
             return native
+        if meshVar.continuous:
+            # A continuous variable is meant to be drawn on the mesh's own
+            # cells; the Delaunay of its nodes can leave nodes uncovered.
+            import warnings
+
+            warnings.warn(
+                f"meshVariable_to_pv_mesh_object: the native rendering refused "
+                f"'{meshVar.clean_name}' (continuous, degree {meshVar.degree}); drawing "
+                f"a Delaunay triangulation of its nodes instead, which can leave "
+                f"nodes uncovered (#1083).",
+                stacklevel=2,
+            )
 
     point_cloud = meshVariable_to_pv_cloud(meshVar)
 
@@ -1202,7 +1268,7 @@ def plot_scalar(
     mesh,
     scalar,
     scalar_name="",
-    cmap="",
+    cmap=None,
     clim="",
     window_size=(750, 750),
     title="",
@@ -1232,7 +1298,7 @@ def plot_scalar(
 
     cmap : str, optional
         The colormap to be used for visualizing the scalar values. This can be any colormap
-        recognized by PyVista or Matplotlib. Default is an empty string, which uses the default colormap.
+        recognized by PyVista or Matplotlib. Default is None, which uses PyVista's theme colormap.
 
     clim : tuple of float, optional
         The scalar range to be used for coloring the mesh (e.g., `(min_value, max_value)`). If not
@@ -1334,7 +1400,7 @@ def plot_vector(
     mesh,
     vector,
     vector_name="",
-    cmap="",
+    cmap=None,
     clim="",
     vmag="",
     vfreq="",
@@ -1369,7 +1435,7 @@ def plot_vector(
 
     cmap : str, optional
         The colormap to be used for visualizing the vector magnitudes. This can be any colormap
-        recognized by PyVista or Matplotlib. Default is an empty string, which uses the default colormap.
+        recognized by PyVista or Matplotlib. Default is None, which uses PyVista's theme colormap.
 
     clim : tuple of float, optional
         The scalar range to be used for coloring the mesh based on vector magnitudes (e.g., `(min_value, max_value)`).
@@ -1514,7 +1580,7 @@ def plot_vector(
 
 
 def save_colorbar(
-    colormap="",
+    colormap=None,
     cb_bounds=None,
     vmin=None,
     vmax=None,
@@ -1535,7 +1601,7 @@ def save_colorbar(
     -----------
     colormap : str, optional
         The name of the colormap to be used for the colorbar. This should be a valid Matplotlib colormap name.
-        Default is an empty string, which uses the default colormap.
+        Default is None, which uses Matplotlib's default colormap.
 
     cb_bounds : list or array-like, optional
         The bounds to be used for the colorbar. If provided, the colorbar will be generated with these bounds.

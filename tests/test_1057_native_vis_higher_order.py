@@ -218,3 +218,44 @@ def test_spherical_manifold(degree):
 
     parent = np.repeat(normals(vis.mesh_to_pv_mesh(mesh)), degree**2, axis=0)
     assert ((normals(grid) * parent).sum(axis=1)).min() > 0.0
+
+
+def _stretched(simplex, aspect):
+    """A box whose every cell is exactly affine with the given aspect ratio."""
+    if simplex:
+        mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0),
+                                                 cellSize=0.5, regular=True)
+    else:
+        mesh = uw.meshing.StructuredQuadBox(elementRes=(2, 2))
+    mesh.deform(np.asarray(mesh.X.coords) * np.array([float(aspect), 1.0]))
+    return mesh
+
+
+@pytest.mark.tier_b
+@pytest.mark.parametrize("simplex, degree, aspect",
+                         [(True, 4, 100), (True, 5, 10), (True, 8, 1),
+                          (False, 3, 100), (False, 4, 10)])
+def test_high_aspect_and_high_degree_cells_are_drawn_natively(simplex, degree, aspect):
+    # Exactly affine cells. The nodes of an edge, face or interior are matched
+    # to the lattice in the cell's reference coordinates, so neither the aspect
+    # ratio nor PETSc's node placement at high degree refuses them (#1083).
+    _check(_stretched(simplex, aspect), degree, exact_volume=float(aspect))
+
+
+@pytest.mark.tier_b
+def test_a_refused_continuous_variable_warns_on_the_fallback(monkeypatch):
+    # A continuous variable is meant to draw natively; when it does not, the
+    # Delaunay of its nodes can leave nodes uncovered, so the fallback says so.
+    mesh = _box(2, True)
+    T = uw.discretisation.MeshVariable("T_refused", mesh, 1, degree=2)
+    monkeypatch.setattr(vis.visualisation, "_lagrange_subcell_connectivity", lambda v: None)
+    with pytest.warns(UserWarning, match="Delaunay"):
+        vis.meshVariable_to_pv_mesh_object(T)
+
+
+@pytest.mark.tier_b
+def test_a_discontinuous_variable_falls_back_without_a_warning(recwarn):
+    mesh = _box(2, True)
+    T = uw.discretisation.MeshVariable("T_dg_quiet", mesh, 1, degree=1, continuous=False)
+    vis.meshVariable_to_pv_mesh_object(T)
+    assert not [w for w in recwarn if "Delaunay" in str(w.message)]
