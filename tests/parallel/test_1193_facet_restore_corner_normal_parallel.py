@@ -61,3 +61,31 @@ def test_points_at_a_corner_come_back_inside_and_the_same_on_every_rank(dim, cel
     answers = uw.mpi.comm.allgather(out)
     differ = [r for r, other in enumerate(answers) if not np.array_equal(other, answers[0])]
     assert not differ, f"ranks {differ} restore the points differently from rank 0"
+
+
+@pytest.mark.mpi(min_size=2)
+def test_points_beyond_a_corner_along_an_edge_line_come_back_inside_on_every_rank():
+    """Beyond each corner of the graded cube along its edges' lines, where the
+    nearest boundary point is the corner vertex: every point comes back inside on
+    every rank, so the in/out answer is the one-rank answer, and the coordinates
+    agree across ranks bit for bit."""
+    mesh = _graded_box(3, 0.2, 2)
+    h = float(mesh.get_min_radius())
+    corners = np.array(np.meshgrid([0, 1], [0, 1], [0, 1], indexing="ij")).reshape(3, -1).T
+    pts = []
+    for c in corners:
+        for axis in range(3):
+            d = np.zeros(3)
+            d[axis] = -1.0 if c[axis] == 0 else 1.0
+            for f in (1e-12, 1e-9, 1e-6, 1e-3):
+                pts.append(c + f * h * d)
+    probe = np.array(pts, dtype=float)
+    out = np.asarray(mesh.return_coords_to_bounds(probe.copy()))
+
+    outside = np.any((out < 0.0) | (out > 1.0), axis=1)
+    assert not outside.any(), (
+        f"rank {uw.mpi.rank}: {int(outside.sum())} of {len(probe)} points left outside: "
+        f"{probe[outside]}")
+    every = uw.mpi.comm.allgather(out)
+    assert all(np.array_equal(every[0], o) for o in every), (
+        f"rank {uw.mpi.rank}: the ranks return different coordinates for the same points")

@@ -143,3 +143,36 @@ def test_points_beyond_an_edge_and_a_corner_of_a_box_are_returned_inside():
     assert not left_outside.any(), (
         f"{int(left_outside.sum())} of {len(probe)} points beyond an edge or corner left "
         f"outside: {probe[left_outside]}")
+
+
+def _points_beyond_each_corner_along_its_edges(mesh):
+    """Beyond each corner of the unit cube, along the line of each of the three
+    edges that meet there, at 1e-12 to 1e-3 of the smallest cell radius. The
+    nearest boundary point is the corner vertex itself. The parallel review of
+    #1193 found 7 to 9 of such points left outside: the clamped nearest point came
+    back a rounding error off the vertex, so the side test used one face's normal,
+    square to the point's offset."""
+    h = float(mesh.get_min_radius())
+    corners = np.array(np.meshgrid([0, 1], [0, 1], [0, 1], indexing="ij")).reshape(3, -1).T
+    pts = []
+    for c in corners:
+        for axis in range(3):
+            d = np.zeros(3)
+            d[axis] = -1.0 if c[axis] == 0 else 1.0
+            for f in (1e-12, 1e-9, 1e-6, 1e-3):
+                pts.append(c + f * h * d)
+    return np.array(pts, dtype=float)
+
+
+def test_points_beyond_a_corner_along_an_edge_line_are_returned_inside():
+    mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0, 0.0, 0.0),
+                                             maxCoords=(1.0, 1.0, 1.0), cellSize=0.2)
+    X = np.asarray(mesh.X.coords, dtype=float).copy()
+    X[:, 1] = X[:, 1] ** 2
+    mesh.deform(X)
+    probe = _points_beyond_each_corner_along_its_edges(mesh)
+    out = np.asarray(mesh.return_coords_to_bounds(probe.copy()))
+    left_outside = np.any((out < 0.0) | (out > 1.0), axis=1)
+    assert not left_outside.any(), (
+        f"{int(left_outside.sum())} of {len(probe)} points beyond a corner along an edge's "
+        f"line left outside: {probe[left_outside]}")
