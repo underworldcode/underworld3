@@ -37,7 +37,10 @@ def test_a_lid_datum_gradient_matches_central_differences(references, datum):
     alpha = uw.expression(r"\alpha", 2.0, "lid speed")
     stokes = uw.systems.Stokes(mesh)
     stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
-    stokes.constitutive_model.Parameters.shear_viscosity_0 = 1.0
+    # One viscosity in model units: explicit in a units model, where a bare number
+    # for a dimensional parameter is refused (ruling, 2026-11-13).
+    stokes.constitutive_model.Parameters.shear_viscosity_0 = (
+        uw.quantity(1e21, "Pa*s") if references else 1.0)
     stokes.bodyforce = sympy.Matrix([0, -sympy.sin(sympy.pi * x)])
     lid = alpha * x * (1 - x)
     if datum == "field":

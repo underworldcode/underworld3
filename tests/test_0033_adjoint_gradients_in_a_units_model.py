@@ -24,6 +24,7 @@ by accident.
 import pytest
 import sympy
 import underworld3 as uw
+from _units_helpers import model_units
 
 pytestmark = [pytest.mark.level_2, pytest.mark.tier_b]
 
@@ -48,7 +49,7 @@ def _box(case, references):
         eta = uw.expression(r"\eta_0", uw.quantity(1e22, "Pa*s"), "viscosity")
         stokes.constitutive_model.Parameters.shear_viscosity_0 = alpha * eta
     else:
-        stokes.constitutive_model.Parameters.shear_viscosity_0 = 1.0
+        stokes.constitutive_model.Parameters.shear_viscosity_0 = model_units(1.0, "Pa*s")
     stokes.bodyforce = sympy.Matrix([0, -sympy.sin(sympy.pi * x)])
     lid = alpha * x * (1 - x) if case == "datum" else 0.0
     free_top = case in ("traction", "dimensional traction")

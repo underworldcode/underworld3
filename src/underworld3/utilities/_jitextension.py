@@ -717,6 +717,12 @@ def _pack_constants(manifest):
     if not manifest:
         return np.array([], dtype=np.float64)
 
+    # A dimensional parameter left at its bare-number default, in a units model.
+    # Decided from the manifest alone, which every rank holds the same, so every
+    # rank raises together.
+    from underworld3.function.functions_unit_system import _refuse_unset_dimensional_defaults
+    _refuse_unset_dimensional_defaults([uw_expr for _idx, uw_expr in manifest])
+
     values = np.zeros(len(manifest), dtype=np.float64)
     for idx, uw_expr in manifest:
         try:
