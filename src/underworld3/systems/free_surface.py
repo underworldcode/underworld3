@@ -219,6 +219,11 @@ class FreeSurface:
         Report per-step surface diagnostics through :func:`uw.mpi.rank`-safe output.
     """
 
+    # Free surfaces are numbered in creation order, the same on every rank;
+    # the number names the mesh variables each one makes, so two free
+    # surfaces on one mesh (a top and a base) keep their own fields.
+    _instances = 0
+
     def __init__(
         self,
         stokes,
@@ -243,6 +248,8 @@ class FreeSurface:
         swarm_restore_fn=None,
         verbose=False,
     ):
+        self._number = FreeSurface._instances
+        FreeSurface._instances += 1
         if advection not in (None, "slcn", "supg", "swarm"):
             raise ValueError(
                 f"advection must be None, 'slcn', 'supg' or 'swarm', not {advection!r}."
@@ -427,7 +434,7 @@ class FreeSurface:
 
         # Equilibrium-topography field, filled on the surface nodes by the held solve.
         self._hinf_field = uw.discretisation.MeshVariable(
-            "h_inf", self.mesh, vtype=uw.VarType.SCALAR, degree=1, continuous=True
+            f"h_inf_fs{self._number}", self.mesh, vtype=uw.VarType.SCALAR, degree=1, continuous=True
         )
         self._hinf_rows, _ = self._field_rows(self._hinf_field, self._surf_coords)
 
@@ -716,10 +723,10 @@ class FreeSurface:
         """A Stokes solve sharing the free solve's mesh, discretisation, physics and
         options — the common construction for the held and consistent lids."""
         v = uw.discretisation.MeshVariable(
-            f"V_{name}", self.mesh, vtype=uw.VarType.VECTOR, degree=2, continuous=True
+            f"V_{name}_fs{self._number}", self.mesh, vtype=uw.VarType.VECTOR, degree=2, continuous=True
         )
         p = uw.discretisation.MeshVariable(
-            f"P_{name}", self.mesh, vtype=uw.VarType.SCALAR, degree=1,
+            f"P_{name}_fs{self._number}", self.mesh, vtype=uw.VarType.SCALAR, degree=1,
             continuous=getattr(self.free, "_p_continuous", True),
         )
         solver = uw.systems.Stokes(self.mesh, velocityField=v, pressureField=p)
@@ -891,7 +898,7 @@ class FreeSurface:
             self.held_bg.add_rotated_freeslip_bc(0.0, self.surface, normal=self.normal)
             self.held_bg.petsc_use_pressure_nullspace = True
             self._hinf_bg_field = uw.discretisation.MeshVariable(
-                "h_inf_bg", self.mesh, vtype=uw.VarType.SCALAR, degree=1, continuous=True
+                f"h_inf_bg_fs{self._number}", self.mesh, vtype=uw.VarType.SCALAR, degree=1, continuous=True
             )
             self._hinf_bg_rows, _ = self._field_rows(self._hinf_bg_field, self._surf_coords)
 
@@ -922,7 +929,7 @@ class FreeSurface:
         self.consistent.bodyforce = self.free.bodyforce
         self._apply_walls(self.consistent)
         self._un_target = uw.discretisation.MeshVariable(
-            "un_tgt", self.mesh, vtype=uw.VarType.SCALAR, degree=1, continuous=True
+            f"un_tgt_fs{self._number}", self.mesh, vtype=uw.VarType.SCALAR, degree=1, continuous=True
         )
         self._un_target_rows, _ = self._field_rows(self._un_target, self._surf_coords)
         self._un_target.array[...] = 0.0
@@ -969,7 +976,7 @@ class FreeSurface:
         driven from the P1-smoothed velocity, not a point-eval of the P2 field, so it
         is consistent with the P1 mesh geometry."""
         self._v_p1 = uw.discretisation.MeshVariable(
-            "V_p1", self.mesh, vtype=uw.VarType.VECTOR, degree=1, continuous=True
+            f"V_p1_fs{self._number}", self.mesh, vtype=uw.VarType.VECTOR, degree=1, continuous=True
         )
         self._v_p1_proj = uw.systems.Vector_Projection(self.mesh, self._v_p1)
         self._v_p1_proj.uw_function = self.free.u.sym
@@ -982,10 +989,10 @@ class FreeSurface:
         the nodal surface increment and which decays it to zero at the base, giving a
         smooth minimal interior deformation (no full remesh)."""
         self._carry = uw.discretisation.MeshVariable(
-            "carry", self.mesh, vtype=uw.VarType.SCALAR, degree=1, continuous=True
+            f"carry_fs{self._number}", self.mesh, vtype=uw.VarType.SCALAR, degree=1, continuous=True
         )
         self._carry_bc = uw.discretisation.MeshVariable(
-            "carry_bc", self.mesh, vtype=uw.VarType.SCALAR, degree=1, continuous=True
+            f"carry_bc_fs{self._number}", self.mesh, vtype=uw.VarType.SCALAR, degree=1, continuous=True
         )
         self._carry_bc_rows, _ = self._field_rows(self._carry_bc, self._surf_coords)
         self._carry_bc.array[...] = 0.0
@@ -1066,9 +1073,9 @@ class FreeSurface:
         mesh hasn't moved yet — the correct initial value.
         """
         self._mesh_disp_p1 = uw.discretisation.MeshVariable(
-            "mesh_disp_p1_fs", self.mesh, vtype=uw.VarType.VECTOR, degree=1, continuous=True)
+            f"mesh_disp_p1_fs{self._number}", self.mesh, vtype=uw.VarType.VECTOR, degree=1, continuous=True)
         self._mesh_velocity = uw.discretisation.MeshVariable(
-            "mesh_vel_fs", self.mesh, vtype=uw.VarType.VECTOR, degree=2, continuous=True)
+            f"mesh_vel_fs{self._number}", self.mesh, vtype=uw.VarType.VECTOR, degree=2, continuous=True)
         self._mesh_vel_proj = uw.systems.Vector_Projection(self.mesh, self._mesh_velocity)
         self._mesh_vel_proj.uw_function = self._mesh_disp_p1.sym
         # Zero on the very first step, since the mesh has not moved yet.
@@ -1082,7 +1089,7 @@ class FreeSurface:
         # (see _build_composition_transport), which stays current
         # automatically — no explicit sync needed there.
         self._adv_velocity_relative = uw.discretisation.MeshVariable(
-            "V_adv_rel_fs", self.mesh, vtype=uw.VarType.VECTOR, degree=2, continuous=True)
+            f"V_adv_rel_fs{self._number}", self.mesh, vtype=uw.VarType.VECTOR, degree=2, continuous=True)
 
     def _build_composition_transport(self):
         """Transport of the material field by the consistent surface velocity.

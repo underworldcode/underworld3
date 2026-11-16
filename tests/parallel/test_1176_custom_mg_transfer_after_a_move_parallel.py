@@ -150,9 +150,12 @@ def _split_level_mesh():
 
 # Velocity iterations at rest and after each of three moves, and those of a
 # solver built on the moved mesh, by rank count, where the level under the
-# fault is split.
-SPLIT_COUNTS = {2: ([6, 7, 7, 7], 7), 3: ([6, 7, 7, 7], 7), 4: ([6, 7, 7, 7], 7),
-                5: ([6, 7, 7, 7], 7)}
+# fault is split. The count is the last velocity application's. At rest it was
+# 6 before the split-level transfer gave every coarse fault copy a fine image
+# (#1120); the total over the solve barely moves (np 2: 141 to 144 over 18
+# applications, np 3: 149 to 153 over 19), as in the serial file.
+SPLIT_COUNTS = {2: ([7, 7, 7, 7], 7), 3: ([7, 7, 7, 7], 7), 4: ([7, 7, 7, 7], 7),
+                5: ([7, 7, 7, 7], 7)}
 # The same where that level is welded. The finest level then carries a FAC
 # patch at rest and a move drops it (the rule of
 # tests/parallel/test_1152_fac_zone_survives_a_mover_parallel.py), so the

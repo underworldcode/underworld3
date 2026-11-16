@@ -3,9 +3,11 @@
 On a strongly sheared 3-D simplex mesh the old locator tested only the 50 cells
 with the nearest centroids, and the containing cell can rank farther down: points
 1e-8 to 1e-4 from interior edges were classified exterior and filled by RBF, wrong
-by up to 0.18 for a field the element represents exactly (10 to 18 of about 1260
-points at each distance). The walk crosses the face a point fails worst until a
-cell contains it, so the containing cell is found whatever its centroid's rank.
+for a field the element represents exactly. On the fixture here (sheared_box_fixture:
+a structured, gmsh-independent box that cannot tangle), development before #1175
+classified 116 to 125 inside points exterior at each distance. The walk crosses the
+face a point fails worst until a cell contains it, so the containing cell is found
+whatever its centroid's rank.
 
 A point several cells contain gets the lowest-numbered local cell in the star of
 the entity it lies on, whatever cell the walk started from.
@@ -16,6 +18,11 @@ import numpy as np
 import pytest
 
 import underworld3 as uw
+
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent / "parallel"))
+import sheared_box_fixture  # noqa: E402  the same fixture as the parallel files
 
 pytestmark = [pytest.mark.level_1, pytest.mark.tier_b]
 
@@ -41,15 +48,7 @@ def _min_barycentric(P, V):
 
 @pytest.fixture(scope="module")
 def sheared_box():
-    mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0., 0., 0.), maxCoords=(1., 1., 1.),
-                                             cellSize=1 / 6, qdegree=3)
-    X = np.asarray(mesh.X.coords).copy()
-    A = np.array([[1.0, 1.2, 0.3], [0.1, 0.7, 0.5], [0.0, 0.2, 0.5]])
-    Y = X @ A.T
-    Y[:, 0] += 0.03 * np.sin(2 * np.pi * X[:, 1])
-    Y[:, 1] += 0.03 * np.sin(2 * np.pi * X[:, 2])
-    Y[:, 2] += 0.03 * np.sin(2 * np.pi * X[:, 0])
-    mesh.deform(Y)
+    mesh = sheared_box_fixture.sheared_box()
     T = uw.discretisation.MeshVariable("T1123", mesh, 1, degree=1)
     T.array[:, 0, 0] = _linear(np.asarray(T.coords))
     return mesh, T
@@ -104,11 +103,11 @@ def test_a_point_on_a_vertex_gets_the_lowest_cell_of_its_star():
 
 
 def test_the_walk_finds_every_contained_point_on_a_non_convex_boundary(sheared_box):
-    """On #1123's mesh the most violated face of a cell near the wavy boundary can
-    be a boundary face although the point is inside, further along the wall. The
-    walk crosses the most violated face that has a neighbour instead, and finds
-    every contained point from its start cell alone (it lost 7 of 2e5 when it left
-    through the boundary)."""
+    """From the cell of the nearest control point (the start the locator uses),
+    the walk finds every contained point on its own. This pins that guarantee; on
+    the structured fixture it holds before the boundary-following walk too (it
+    lost 7 of 2e5 on the old gmsh fixture). The boundary-following walk is tested
+    from far starts in test_the_walk_from_boundary_cells_and_its_recovery."""
     if uw.mpi.size > 1:
         pytest.skip("serial: local cells")
     mesh, _ = sheared_box
@@ -121,3 +120,38 @@ def test_the_walk_finds_every_contained_point_on_a_non_convex_boundary(sheared_b
     start = mesh._indexMap[np.asarray(nearest).reshape(-1)] - mesh.dm.getHeightStratum(0)[0]
     found, _, _ = locator.walk(P, start)
     assert (found >= 0).all(), f"{int((found < 0).sum())} contained points not found by the walk"
+
+
+def test_the_walk_from_boundary_cells_and_its_recovery(sheared_box):
+    """From a random boundary cell, the walk has to get round the wavy wall. Where
+    a cell's most violated face is a boundary face the walk crosses the most
+    violated face that has a neighbour instead; a walk that left through the
+    boundary there lost 1189 of 2e5 (H1's measurement on #1214). What the walk
+    guarantees, and what the locator adds:
+    - every cell the walk returns contains its point;
+    - a point it loses has left through the boundary (no cycling, no step limit),
+      and it loses fewer than 0.1 % (54 of 2e5 on this fixture);
+    - the restarts and the exact fallback place every one it loses."""
+    if uw.mpi.size > 1:
+        pytest.skip("serial: local cells")
+    mesh, _ = sheared_box
+    locator = mesh._simplex_locator()
+    X, cellv = _cells_and_vertices(mesh)
+    rng = np.random.default_rng(9)
+    cells = rng.integers(0, cellv.shape[0], 200000)
+    P = np.einsum("nk,nkd->nd", rng.dirichlet(np.ones(4), cells.shape[0]), X[cellv][cells])
+    boundary = np.flatnonzero((locator.nbr < 0).any(axis=1))
+    start = rng.choice(boundary, P.shape[0])
+
+    found, _, exit_cell = locator.walk(P, start)
+    lost = found < 0
+    placed = locator.barycentric(P[~lost], found[~lost])
+    assert placed.min() >= -locator.ROUNDOFF, "the walk returned a cell that does not contain its point"
+    assert (exit_cell[lost] >= 0).all(), "a lost point did not leave through the boundary"
+    assert lost.sum() < 0.001 * P.shape[0], f"{int(lost.sum())} of {P.shape[0]} lost"
+
+    recovered = np.asarray(mesh._robust_owning_cells(P[lost]))
+    assert (recovered >= 0).all(), f"{int((recovered < 0).sum())} not recovered"
+    cs = mesh.dm.getHeightStratum(0)[0]
+    if lost.any():
+        assert locator.barycentric(P[lost], recovered - cs).min() >= -locator.ROUNDOFF
