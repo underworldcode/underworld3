@@ -206,8 +206,19 @@ class _BaseMeshVariable(Stateful, uw_object):
         clean_name = re.sub(r"[^a-zA-Z0-9_]", "", name)
 
         if clean_name in mesh.vars.keys():
+            existing = mesh.vars[clean_name]
+            changes = existing._declaration_changes(
+                num_components, vtype, degree, continuous,
+                None if isinstance(varname, list) else varsymbol)
+            if changes:
+                raise ValueError(
+                    f"A variable named '{name}' already exists on this mesh, and this "
+                    f"declaration would change its {', '.join(changes)}. Use "
+                    f"mesh.vars['{clean_name}'] for the existing variable, or give the "
+                    f"new one another name (#1118)."
+                )
             print(f"Variable with name {name} already exists on the mesh - Skipping.")
-            return mesh.vars[clean_name]
+            return existing
 
         # NOTE: DM reconstruction is now handled in _setup_ds() - no snapshotting needed here
 
@@ -230,6 +241,39 @@ class _BaseMeshVariable(Stateful, uw_object):
         }
 
         return obj
+
+    def _declaration_changes(self, num_components, vtype, degree, continuous, varsymbol):
+        """What a re-declaration under this variable's name asks for differently.
+
+        The variable is identified by its name, so a declaration under the name
+        either asks for this variable or is an error. Returns the attributes it
+        would change, empty when it asks for what is held. Arguments left as
+        ``None`` are not compared. On a manifold mesh a vector or tensor may be
+        declared with ``dim`` or ``cdim`` components and is held with ``cdim``.
+        """
+        mesh = self.mesh
+        changes = []
+        if num_components is not None:
+            tensor = self.vtype in (uw.VarType.TENSOR, uw.VarType.SYM_TENSOR)
+            if isinstance(num_components, tuple):
+                same = tuple(num_components) == tuple(self.shape) or (
+                    tensor and tuple(num_components) in ((mesh.dim, mesh.dim),
+                                                         (mesh.cdim, mesh.cdim)))
+            else:
+                same = (num_components == self.num_components
+                        or (self.vtype == uw.VarType.VECTOR
+                            and num_components in (mesh.dim, mesh.cdim)))
+            if not same:
+                changes.append("number of components")
+        if vtype is not None and vtype != self.vtype:
+            changes.append("type")
+        if degree != self.degree:
+            changes.append("degree")
+        if bool(continuous) != bool(self.continuous):
+            changes.append("continuity")
+        if varsymbol is not None and "{" + varsymbol + "}" != self.symbol:
+            changes.append("symbol")
+        return changes
 
     @timing.routine_timer_decorator
     def __init__(
