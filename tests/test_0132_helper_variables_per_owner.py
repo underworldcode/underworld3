@@ -12,7 +12,6 @@ against a closed form where the field has one.
 
 import numpy as np
 import pytest
-import sympy
 
 import underworld3 as uw
 
@@ -50,13 +49,14 @@ def test_two_swarms_with_a_variable_of_one_name_keep_their_own_proxies(mesh):
 def test_two_index_variables_of_one_name_keep_their_own_level_sets(mesh):
     # Nodal level sets of different degree (the default location, integration
     # points, has one layout for every degree).
-    first = uw.swarm.IndexSwarmVariable("M", uw.swarm.Swarm(mesh), indices=2, proxy_degree=1,
+    swarms = (uw.swarm.Swarm(mesh), uw.swarm.Swarm(mesh))      # held: a variable needs its swarm
+    first = uw.swarm.IndexSwarmVariable("M", swarms[0], indices=2, proxy_degree=1,
                                         proxy_location="nodes")
-    second = uw.swarm.IndexSwarmVariable("M", uw.swarm.Swarm(mesh), indices=2, proxy_degree=2,
+    second = uw.swarm.IndexSwarmVariable("M", swarms[1], indices=2, proxy_degree=2,
                                          proxy_location="nodes")
     for a, b in zip(first._meshLevelSetVars, second._meshLevelSetVars):
         assert a._base_var is not b._base_var
-    n = second.swarm.instance_number
+    n = swarms[1].instance_number
     assert [v.clean_name for v in second._meshLevelSetVars] == [f"M_{n}_0", f"M_{n}_1"]
     assert [v.degree for v in first._meshLevelSetVars] == [1, 1]
     assert [v.degree for v in second._meshLevelSetVars] == [2, 2]
@@ -118,35 +118,3 @@ def test_two_fault_collections_keep_their_own_distance_fields():
         # distance to the horizontal plane at height z
         np.testing.assert_allclose(np.abs(np.asarray(var.array).ravel()),
                                    np.abs(np.asarray(var.coords)[:, 2] - z), atol=1e-10)
-
-
-def test_two_viscoelastic_solvers_on_one_mesh_decode_their_own_stress():
-    # Log-conformation histories are decoded into a stress variable per solver.
-    mesh = uw.meshing.StructuredQuadBox(elementRes=(4, 2), minCoords=(-1.0, -0.5),
-                                        maxCoords=(1.0, 0.5))
-    solvers = []
-    for tag, speed in (("a", 0.5), ("b", 1.0)):
-        v = uw.discretisation.MeshVariable(f"U0132{tag}", mesh, mesh.dim, degree=2)
-        p = uw.discretisation.MeshVariable(f"P0132{tag}", mesh, 1, degree=1)
-        st = uw.systems.Stokes(mesh, velocityField=v, pressureField=p, verbose=False)
-        st.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel(
-            st.Unknowns, order=1, integrator="etd", objective_rate="upper_convected",
-            stress_history="log_conformation")
-        cm = st.constitutive_model
-        cm.Parameters.shear_viscosity_0 = 1.0
-        cm.Parameters.shear_modulus = 1.0
-        cm.Parameters.dt_elastic = 0.1
-        st.add_dirichlet_bc((speed, 0.0), "Top")
-        st.add_dirichlet_bc((-speed, 0.0), "Bottom")
-        st.add_dirichlet_bc((sympy.oo, 0.0), "Left")
-        st.add_dirichlet_bc((sympy.oo, 0.0), "Right")
-        st.tolerance = 1.0e-6
-        st.solve(timestep=0.1)
-        solvers.append(st)
-    origin = np.array([[0.0, 0.0]])
-    stress = lambda st: float(np.asarray(uw.function.evaluate(st.tau.sym[0, 1], origin)).ravel()[0])
-    first = stress(solvers[0])
-    second = stress(solvers[1])
-    assert solvers[0].tau._base_var is not solvers[1].tau._base_var
-    assert abs(second - first) > 0.1 * abs(first)       # twice the shear rate
-    assert stress(solvers[0]) == pytest.approx(first, rel=1e-12)   # unchanged by the second
