@@ -612,30 +612,40 @@ def cell_located_transfer_parallel(coarse, fine, degree, continuous,
     from underworld3.utilities.fault_contact import _collective_raise
 
     m4 = comm.tompi4py()
+    # The node tables build a basis DM, which is collective, so they are read
+    # on every rank first (and cached on the mesh); the rest of the opening is
+    # rank-local and read under one guard, raised on every rank (#874)
     cn = np.asarray(coarse._cell_node_indices(degree, continuous))
     fn = np.asarray(fine._cell_node_indices(degree, continuous))
-    Xc = np.asarray(coarse_coords)
-    Xf = np.asarray(fine_coords)
-    vxy_c, cv_c = _cell_vertex_table(coarse)
-    vxy_f, cv_f = _cell_vertex_table(fine)
-    if fine_vertices is not None:
-        vxy_f = fine_vertices
-    l2g_c = np.asarray(coarse_layout.l2g, dtype=np.int64).reshape(-1, ncomp)
-    l2g_f = np.asarray(fine_layout.l2g, dtype=np.int64).reshape(-1, ncomp)
-    fstart, fend = fine_layout.rstart, fine_layout.rend
-    cstart, cend = coarse_layout.rstart, coarse_layout.rend
-    n_f = Xf.shape[0]
-    nb = cn.shape[1]
+    problem = None
+    try:
+        Xc = np.asarray(coarse_coords)
+        Xf = np.asarray(fine_coords)
+        vxy_c, cv_c = _cell_vertex_table(coarse)
+        vxy_f, cv_f = _cell_vertex_table(fine)
+        if fine_vertices is not None:
+            vxy_f = fine_vertices
+        l2g_c = np.asarray(coarse_layout.l2g, dtype=np.int64).reshape(-1, ncomp)
+        l2g_f = np.asarray(fine_layout.l2g, dtype=np.int64).reshape(-1, ncomp)
+        fstart, fend = fine_layout.rstart, fine_layout.rend
+        cstart, cend = coarse_layout.rstart, coarse_layout.rend
+        n_f = Xf.shape[0]
+        nb = cn.shape[1]
+        owner = _fine_cell_of_node(fn, n_f)
+        # the fine nodes with at least one owned row (ghost nodes are another
+        # rank's)
+        mine = np.flatnonzero(((l2g_f >= fstart) & (l2g_f < fend)).any(axis=1))
+        fcent = vxy_f[cv_f].mean(axis=1)
+    except Exception as err:   # sanctioned: raised on every rank just below
+        problem = (f"fault_mg: the cell-located transfer failed to read the level "
+                   f"tables: {type(err).__name__}: {err}")
+    _collective_raise(problem, error=CollectiveBuildError)
 
-    owner = _fine_cell_of_node(fn, n_f)
     # A failure on one rank is raised on every rank, at the next collective
     # (fault_contact._collective_raise), never alone: a rank-local raise left
     # the others waiting in the stats allreduce (#874).
     problem = ("fault_mg: a fine node belongs to no cell"
                if (owner < 0).any() else None)
-    # the fine nodes with at least one owned row (ghost nodes are another rank's)
-    mine = np.flatnonzero(((l2g_f >= fstart) & (l2g_f < fend)).any(axis=1))
-    fcent = vxy_f[cv_f].mean(axis=1)
     pcell = np.full(mine.size, -1)
     lam_c = np.full((mine.size, cv_c.shape[1]), -np.inf)
     if cv_c.shape[0] and problem is None:
@@ -783,15 +793,26 @@ def _recorded_rows_where_weak_parallel(coarse, fine, degree, continuous, Xf, Xc,
     global last_parent_rows
     problem = None
     copy_cols = np.zeros(0, dtype=np.int64)
+    copy_nodes = np.zeros((0, ncomp), dtype=np.int64)
     try:
         copies = _fault_copy_nodes(coarse, degree, continuous)
-        copy_cols = np.unique(l2g_c[copies].ravel())
+        # each copy node by its global columns (one per component): the counts
+        # below are of nodes, as in serial, not of columns (#1206 review)
+        copy_nodes = l2g_c[copies]
+        copy_nodes = copy_nodes[(copy_nodes >= 0).any(axis=1)]
+        copy_cols = np.unique(copy_nodes.ravel())
         copy_cols = copy_cols[copy_cols >= 0]
     except Exception as err:   # sanctioned: raised on every rank just below
         problem = (f"fault_mg: reading the coarse fault copies failed: "
                    f"{type(err).__name__}: {err}")
     _collective_raise(problem, error=CollectiveBuildError)
     every = np.unique(np.concatenate(m4.allgather(copy_cols)))
+    node_table = np.unique(np.vstack(m4.allgather(copy_nodes)), axis=0) \
+        if every.size else np.zeros((0, ncomp), dtype=np.int64)
+
+    def nodes_touching(cols):
+        """How many copy nodes have a column in ``cols`` (every rank agrees)."""
+        return int(np.isin(node_table, cols).any(axis=1).sum()) if cols.size else 0
     if not every.size:
         last_parent_rows = None
         return Wall, Call
@@ -884,7 +905,8 @@ def _recorded_rows_where_weak_parallel(coarse, fine, degree, continuous, Xf, Xc,
         after = np.empty_like(after_local)
         m4.Allreduce(after_local, after)
         bar = _WEAK_COPY * float(np.median(norms))
-        remaining = int((after[weak_mask] < bar).sum())
+        remaining = nodes_touching(every[weak_mask][after[weak_mask] < bar])
+    n_weak = nodes_touching(weak_cols)
     last_parent_rows = dict(
         weak_copies=n_weak,
         rows=int(m4.allreduce(rows_taken)),
@@ -964,32 +986,40 @@ def provenance_transfer_parallel(coarse, fine, pre, degree, continuous,
     cell of ``pre``, which is affine, so the pair has the transfer it had
     before the move (#1091).
     """
-    m4 = comm.tompi4py()
-    cn = np.asarray(coarse._cell_node_indices(degree, continuous))
-    fn = np.asarray(fine._cell_node_indices(degree, continuous))
-    Xc = np.asarray(coarse_coords)
-    Xf = np.asarray(fine_coords)
-    vxy_c, cv_c = _cell_vertex_table(coarse)
-    vxy_f, cv_f = _cell_vertex_table(fine)
-    vxy_p, cv_p = _cell_vertex_table(pre)
-    l2g_c = np.asarray(coarse_layout.l2g, dtype=np.int64).reshape(-1, ncomp)
-    l2g_f = np.asarray(fine_layout.l2g, dtype=np.int64).reshape(-1, ncomp)
-    fstart, fend = fine_layout.rstart, fine_layout.rend
-    cstart, cend = coarse_layout.rstart, coarse_layout.rend
-    n_f = Xf.shape[0]
-    nb = cn.shape[1]
-    nv = cv_c.shape[1]
-    dim = Xc.shape[1]
-
     # Every failure below is raised on every rank together, as a
     # CollectiveBuildError, so the hierarchy build degrades on all of them
     # (#886, #874): the checks on allreduced counts directly, the rank-local
-    # location and weighting through fault_contact._collective_raise. None
-    # passes builder_failure: another builder cannot change a location or a
-    # weight that failed, so a retry would fail the same way.
+    # reads, location and weighting through fault_contact._collective_raise.
+    # None passes builder_failure: another builder cannot change a location or
+    # a weight that failed, so a retry would fail the same way.
     from underworld3.utilities.custom_mg import CollectiveBuildError
     from underworld3.utilities.fault_contact import _collective_raise
-    owner = _fine_cell_of_node(fn, n_f)
+    m4 = comm.tompi4py()
+    # The node tables build a basis DM, which is collective, so they are read
+    # on every rank first (and cached on the mesh); everything else the
+    # transfer opens with is rank-local and read under one guard.
+    cn = np.asarray(coarse._cell_node_indices(degree, continuous))
+    fn = np.asarray(fine._cell_node_indices(degree, continuous))
+    problem = None
+    try:
+        Xc = np.asarray(coarse_coords)
+        Xf = np.asarray(fine_coords)
+        vxy_c, cv_c = _cell_vertex_table(coarse)
+        vxy_f, cv_f = _cell_vertex_table(fine)
+        vxy_p, cv_p = _cell_vertex_table(pre)
+        l2g_c = np.asarray(coarse_layout.l2g, dtype=np.int64).reshape(-1, ncomp)
+        l2g_f = np.asarray(fine_layout.l2g, dtype=np.int64).reshape(-1, ncomp)
+        fstart, fend = fine_layout.rstart, fine_layout.rend
+        cstart, cend = coarse_layout.rstart, coarse_layout.rend
+        n_f = Xf.shape[0]
+        nb = cn.shape[1]
+        nv = cv_c.shape[1]
+        dim = Xc.shape[1]
+        owner = _fine_cell_of_node(fn, n_f)
+    except Exception as err:   # sanctioned: raised on every rank just below
+        problem = (f"fault_mg: the provenance transfer failed to read the level "
+                   f"tables: {type(err).__name__}: {err}")
+    _collective_raise(problem, error=CollectiveBuildError)
     if m4.allreduce(int((owner < 0).sum())):
         raise CollectiveBuildError("fault_mg: a fine node belongs to no cell")
     mine = np.flatnonzero(((l2g_f >= fstart) & (l2g_f < fend)).any(axis=1))
@@ -1074,31 +1104,34 @@ def provenance_transfer_parallel(coarse, fine, pre, degree, continuous,
     sf.bcastEnd(unit, root, got, MPI.REPLACE)
     unit.Free()
     sf.destroy()
-    cols_u = np.rint(got[:, : nb * ncomp]).astype(np.int64).reshape(-1, nb, ncomp)
-    Xn_u = got[:, nb * ncomp: nb * ncomp + nb * dim].reshape(-1, dim)
-    V_u = got[:, nb * ncomp + nb * dim:].reshape(-1, dim)
-    # the fetched parents as a virtual coarse mesh: cell k has nodes
-    # k*nb .. and vertices k*nv ..
-    nu = uniq.shape[0]
-    cn_u = np.arange(nu * nb).reshape(nu, nb)
-    cv_u = np.arange(nu * nv).reshape(nu, nv)
-    Xw = Xf[mine]
-    reference = reference_vertices(pre, coarse)
+    # Everything from the fetched parents to the weights is rank-local, and
+    # every rank enters the guard, a rank with no owned node too: a failure is
+    # raised on every rank just below (#874)
     W = np.zeros((mine.size, nb))
+    gcols = np.zeros((mine.size, nb, ncomp), dtype=np.int64)
     problem = None
-    if mine.size:
-        # rank-local: a failure is raised on every rank just below (#874)
-        try:
+    try:
+        cols_u = np.rint(got[:, : nb * ncomp]).astype(np.int64).reshape(-1, nb, ncomp)
+        Xn_u = got[:, nb * ncomp: nb * ncomp + nb * dim].reshape(-1, dim)
+        V_u = got[:, nb * ncomp + nb * dim:].reshape(-1, dim)
+        # the fetched parents as a virtual coarse mesh: cell k has nodes
+        # k*nb .. and vertices k*nv ..
+        nu = uniq.shape[0]
+        cn_u = np.arange(nu * nb).reshape(nu, nb)
+        cv_u = np.arange(nu * nv).reshape(nu, nv)
+        Xw = Xf[mine]
+        reference = reference_vertices(pre, coarse)
+        if mine.size:
             if reference is not None:
                 at = _barycentric(Xw, vxy_p[cv_p[pcell]])
                 Xw = np.einsum("nv,nvd->nd", at, reference[cv_p[pcell]])
             lam = _barycentric(Xw, V_u[cv_u[inv]])
             W = _node_weights(Xw, inv, lam, Xn_u, cn_u, V_u, cv_u, degree)
-        except Exception as err:   # sanctioned: raised on every rank just below
-            problem = (f"fault_mg: the provenance transfer failed to weight "
-                       f"the fine nodes: {type(err).__name__}: {err}")
+        gcols = cols_u[inv]                                    # (nm, nb, ncomp)
+    except Exception as err:   # sanctioned: raised on every rank just below
+        problem = (f"fault_mg: the provenance transfer failed to weight "
+                   f"the fine nodes: {type(err).__name__}: {err}")
     _collective_raise(problem, error=CollectiveBuildError)
-    gcols = cols_u[inv]                                        # (nm, nb, ncomp)
 
     global last_transfer_stats
     last_transfer_stats = {
@@ -1291,20 +1324,25 @@ def level_pair_rotation(level, solver, field_id, cdm=None, layout=None):
                 if manifold:
                     normal_rows.append(gm[2])
                     normal_rows.append(gp[2])
-    except (RuntimeError, ValueError) as err:
-        problem = str(err)
-    fault_contact._collective_raise(problem)
+        rows = np.concatenate(rows)
+        cols = np.concatenate(cols)
+        vals = np.concatenate(vals)
+        # drop the identity entry of every block row (the first nloc entries)
+        keep = np.ones(len(rows), dtype=bool)
+        keep[:nloc] = ~is_block_row
+        loc = sp.csr_matrix((vals[keep], (rows[keep] - rstart, cols[keep])),
+                            shape=(nloc, N))
+        loc.sum_duplicates()
+        loc.sort_indices()
+    except Exception as err:   # sanctioned: raised on every rank just below
+        # any exception, not only the straddle refusal: an IndexError from an
+        # offset on one rank left the others waiting (#874)
+        problem = (str(err) if isinstance(err, RuntimeError)
+                   else f"fault_mg: the pair rotation failed: "
+                        f"{type(err).__name__}: {err}")
+    from underworld3.utilities.custom_mg import CollectiveBuildError
+    fault_contact._collective_raise(problem, error=CollectiveBuildError)
 
-    rows = np.concatenate(rows)
-    cols = np.concatenate(cols)
-    vals = np.concatenate(vals)
-    # drop the identity entry of every block row (the first nloc entries)
-    keep = np.ones(len(rows), dtype=bool)
-    keep[:nloc] = ~is_block_row
-    loc = sp.csr_matrix((vals[keep], (rows[keep] - rstart, cols[keep])),
-                        shape=(nloc, N))
-    loc.sum_duplicates()
-    loc.sort_indices()
     Q = PETSc.Mat().createAIJ(
         size=((nloc, None), (nloc, None)),
         csr=(loc.indptr.astype(PETSc.IntType), loc.indices.astype(PETSc.IntType),
@@ -1384,39 +1422,52 @@ def level_wall_rotation(level, solver, field_id, cdm=None, layout=None):
     nloc = rend - rstart
     comm = cdm.getComm()
     N = int(comm.tompi4py().allreduce(nloc))
-    rows = [np.arange(rstart, rend)]
-    cols = [np.arange(rstart, rend)]
-    vals = [np.ones(nloc)]
-    is_block_row = np.zeros(nloc, dtype=bool)
     normal_rows = []
-    for q, nrms in node_normals.items():
-        off = lsec_sub.getOffset(q)
-        g = [int(l2g[off + c]) for c in range(dim)]
-        if any(gi < 0 for gi in g):
-            # a component pinned by an essential condition on the level: the
-            # wall meets an essential wall there; left Cartesian, as the
-            # finest's partially constrained nodes are handled separately
-            continue
-        if not (rstart <= g[0] < rend):
-            continue
-        M = np.array(nrms, dtype=float)
-        _u, sv, Vt = np.linalg.svd(M)
-        r = int((sv > 1e-8 * (sv[0] if sv.size else 1.0)).sum())
-        is_block_row[np.array(g) - rstart] = True
-        for i in range(dim):
-            rows.append(np.full(dim, g[i]))
-            cols.append(np.array(g))
-            vals.append(np.asarray(Vt[i], dtype=float))
-        normal_rows.extend(g[:r])
-    rows = np.concatenate(rows)
-    cols = np.concatenate(cols)
-    vals = np.concatenate(vals)
-    keep = np.ones(len(rows), dtype=bool)
-    keep[:nloc] = ~is_block_row
-    loc = sp.csr_matrix((vals[keep], (rows[keep] - rstart, cols[keep])),
-                        shape=(nloc, N))
-    loc.sum_duplicates()
-    loc.sort_indices()
+    # The blocks are built rank-locally (an offset and an SVD per node) before
+    # the collective createAIJ: a failure on one rank is raised on every rank
+    # (#874)
+    from underworld3.utilities.custom_mg import CollectiveBuildError
+    from underworld3.utilities.fault_contact import _collective_raise
+    problem = None
+    loc = None
+    try:
+        rows = [np.arange(rstart, rend)]
+        cols = [np.arange(rstart, rend)]
+        vals = [np.ones(nloc)]
+        is_block_row = np.zeros(nloc, dtype=bool)
+        for q, nrms in node_normals.items():
+            off = lsec_sub.getOffset(q)
+            g = [int(l2g[off + c]) for c in range(dim)]
+            if any(gi < 0 for gi in g):
+                # a component pinned by an essential condition on the level:
+                # the wall meets an essential wall there; left Cartesian, as
+                # the finest's partially constrained nodes are handled
+                # separately
+                continue
+            if not (rstart <= g[0] < rend):
+                continue
+            M = np.array(nrms, dtype=float)
+            _u, sv, Vt = np.linalg.svd(M)
+            r = int((sv > 1e-8 * (sv[0] if sv.size else 1.0)).sum())
+            is_block_row[np.array(g) - rstart] = True
+            for i in range(dim):
+                rows.append(np.full(dim, g[i]))
+                cols.append(np.array(g))
+                vals.append(np.asarray(Vt[i], dtype=float))
+            normal_rows.extend(g[:r])
+        rows = np.concatenate(rows)
+        cols = np.concatenate(cols)
+        vals = np.concatenate(vals)
+        keep = np.ones(len(rows), dtype=bool)
+        keep[:nloc] = ~is_block_row
+        loc = sp.csr_matrix((vals[keep], (rows[keep] - rstart, cols[keep])),
+                            shape=(nloc, N))
+        loc.sum_duplicates()
+        loc.sort_indices()
+    except Exception as err:   # sanctioned: raised on every rank just below
+        problem = (f"fault_mg: the wall rotation failed: "
+                   f"{type(err).__name__}: {err}")
+    _collective_raise(problem, error=CollectiveBuildError)
     Q = PETSc.Mat().createAIJ(
         size=((nloc, None), (nloc, None)),
         csr=(loc.indptr.astype(PETSc.IntType), loc.indices.astype(PETSc.IntType),
