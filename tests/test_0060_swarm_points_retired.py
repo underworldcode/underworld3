@@ -97,9 +97,9 @@ def test_mesh_deform_marks_swarm_for_migration(swarm):
     the swarm for deferred migration so deformed meshes cannot strand
     particles permanently (#379 review round 1)."""
     swarm._needs_migration = False
-    swarm._mesh_version = swarm.mesh._mesh_version - 1  # simulate a deform bump
+    swarm._mesh_geometry_version = swarm.mesh._geometry_version - 1  # simulate a deform
     swarm._sync_before_assembly()
-    assert swarm._mesh_version == swarm.mesh._mesh_version
+    assert swarm._mesh_geometry_version == swarm.mesh._geometry_version
 
 
 def test_deform_mesh_bumps_version_for_swarm_rebinning(swarm):

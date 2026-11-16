@@ -1249,7 +1249,7 @@ class _BaseMeshVariable(Stateful, uw_object):
         return uw.mpi.comm.allreduce(local)
 
     @staticmethod
-    def _saved_cloud_stats(data_file, dim):
+    def _saved_cloud_stats(data_file, cdim):
         """``(rows, duplicated_coordinates)`` of the file's saved cloud.
 
         This is the question that actually decides whether a
@@ -1264,7 +1264,7 @@ class _BaseMeshVariable(Stateful, uw_object):
         if uw.mpi.rank == 0:
             try:
                 with h5py.File(data_file, "r") as h5f:
-                    saved = h5f["fields"]["coordinates"][()].reshape(-1, dim)
+                    saved = h5f["fields"]["coordinates"][()].reshape(-1, cdim)
                 _, counts = np.unique(saved, axis=0, return_counts=True)
                 stats = (int(saved.shape[0]), int((counts > 1).sum()))
             except (OSError, KeyError):
@@ -1316,7 +1316,7 @@ class _BaseMeshVariable(Stateful, uw_object):
             saved_rows, self._n_coincident = 0, self._live_coincident_count()
         else:
             saved_rows, self._n_coincident = self._saved_cloud_stats(
-                data_file, self.mesh.dim)
+                data_file, self.mesh.cdim)
         if self._n_coincident == 0:
             return
 

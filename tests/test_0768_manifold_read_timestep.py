@@ -7,7 +7,10 @@ particles raised "must have shape (n, cdim)". The coordinates are now sized by
 ``mesh.cdim``, which equals ``dim`` on a volume mesh.
 
 A linear field written and read back onto the same mesh must come back
-exactly: every saved node coincides with a live one.
+exactly: every saved node coincides with a live one. The check that a saved
+cloud has no coincident nodes read it the same way; with an odd node count
+that reshape raised, and with an even one it scrambled the rows. Both counts
+are run (164 and 195 nodes).
 """
 
 import numpy as np
@@ -18,8 +21,9 @@ import underworld3 as uw
 pytestmark = [pytest.mark.level_1, pytest.mark.tier_b]
 
 
-def test_a_field_on_a_spherical_manifold_reads_back_exactly(tmp_path):
-    mesh = uw.meshing.SphericalManifold(radius=1.0, cellSize=0.4)
+@pytest.mark.parametrize("cell_size", [0.4, 0.3])
+def test_a_field_on_a_spherical_manifold_reads_back_exactly(tmp_path, cell_size):
+    mesh = uw.meshing.SphericalManifold(radius=1.0, cellSize=cell_size)
     T = uw.discretisation.MeshVariable("T870", mesh, 1, degree=1)
     X = np.asarray(T.coords)
     T.array[:, 0, 0] = X[:, 0] + 2.0 * X[:, 1] + 3.0 * X[:, 2]

@@ -8570,15 +8570,6 @@ class Mesh(Stateful, uw_object):
 
         return centroids
 
-    @property
-    def _coordinate_version(self):
-        """Changes whenever the node coordinates do: ``_mesh_version`` counts
-        deforms and adaptations, ``_move_version`` every committed move
-        (``mesh.deform`` and every mover). A cache built from node positions
-        keys on this. The snapshot check reads ``_mesh_version`` alone, so a
-        mover leaves a snapshot restorable (#966)."""
-        return (self._mesh_version, self._move_version)
-
     def _get_domain_centroids(self):
 
         import numpy as np
@@ -8604,11 +8595,11 @@ class Mesh(Stateful, uw_object):
         if (
             not hasattr(self, "_domain_kdtree")
             or self._domain_kdtree is None
-            or getattr(self, "_domain_kdtree_version", -1) != self._coordinate_version
+            or getattr(self, "_domain_kdtree_geometry_version", -1) != self._geometry_version
         ):
             centroids = self._get_domain_centroids()
             self._domain_kdtree = uw.kdtree.KDTree(centroids)
-            self._domain_kdtree_version = self._coordinate_version
+            self._domain_kdtree_geometry_version = self._geometry_version
         return self._domain_kdtree
 
     @uw.collective_operation
