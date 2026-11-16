@@ -164,7 +164,7 @@ th = sympy.atan2(y + 1.0e-10, x + 1.0e-10)
 
 v_soln = uw.discretisation.MeshVariable("U", mesh, mesh.dim, degree=2)
 p_soln = uw.discretisation.MeshVariable("P", mesh, 1, degree=1)
-t_soln = uw.discretisation.MeshVariable("T", mesh, 1, degree=3)
+t_soln = uw.discretisation.MeshVariable("T3", mesh, 1, degree=3)
 
 swarm = uw.swarm.Swarm(mesh=mesh)
 v_star = uw.swarm.SwarmVariable("Vs", swarm, mesh.dim, proxy_degree=2)

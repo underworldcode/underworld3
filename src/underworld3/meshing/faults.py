@@ -474,8 +474,15 @@ class FaultCollection:
         ... )
     """
 
+    # Collections are numbered in creation order, the same on every rank; the
+    # number names the mesh variables a collection makes by default, so two
+    # collections on one mesh do not share them.
+    _instances = 0
+
     def __init__(self):
         """Create an empty fault collection."""
+        self._number = FaultCollection._instances
+        FaultCollection._instances += 1
         self.faults: Dict[str, FaultSurface] = {}
 
     def add(self, fault: FaultSurface) -> None:
@@ -543,7 +550,7 @@ class FaultCollection:
         self,
         mesh: "Mesh",
         distance_var: "MeshVariable" = None,
-        variable_name: str = "fault_distance",
+        variable_name: str = None,
     ) -> "MeshVariable":
         """Compute minimum distance from mesh points to any fault surface.
 
@@ -559,7 +566,8 @@ class FaultCollection:
             Existing MeshVariable to store results.
             If None, creates a new variable.
         variable_name : str, optional
-            Name for new variable if distance_var is None.
+            Name for new variable if distance_var is None; by default
+            ``fault_distance_<n>``, numbered for this collection.
 
         Returns
         -------
@@ -588,7 +596,8 @@ class FaultCollection:
         # Create or validate output variable
         if distance_var is None:
             distance_var = uw.discretisation.MeshVariable(
-                variable_name, mesh, 1, degree=mesh.degree
+                variable_name or f"fault_distance_{self._number}", mesh, 1,
+                degree=mesh.degree
             )
 
         # Get mesh coordinates and create pyvista point cloud
@@ -620,7 +629,7 @@ class FaultCollection:
         mesh: "Mesh",
         coords: np.ndarray = None,
         normal_var: "MeshVariable" = None,
-        variable_name: str = "fault_normals",
+        variable_name: str = None,
     ) -> "MeshVariable":
         """Transfer fault normals to mesh points via nearest-neighbor lookup.
 
@@ -637,7 +646,8 @@ class FaultCollection:
             Existing MeshVariable to store results.
             If None, creates a new variable.
         variable_name : str, optional
-            Name for new variable if normal_var is None.
+            Name for new variable if normal_var is None; by default
+            ``fault_normals_<n>``, numbered for this collection.
 
         Returns
         -------
@@ -672,7 +682,8 @@ class FaultCollection:
         # Create or validate output variable
         if normal_var is None:
             normal_var = uw.discretisation.MeshVariable(
-                variable_name, mesh, 3, degree=mesh.degree
+                variable_name or f"fault_normals_{self._number}", mesh, 3,
+                degree=mesh.degree
             )
 
         # Build combined arrays of all fault face centers and normals

@@ -845,10 +845,16 @@ class _StressHistoryMixin:
             if getattr(cm, "_stress_history", "stress") == "stress":
                 return self.DFDt.psi_star[0]
             if getattr(self, "_tau_decoded", None) is None:
+                # This solver's own: two viscoelastic solvers on one mesh each
+                # decode their own stress.
+                from underworld3.discretisation.discretisation_mesh_variables import (
+                    _mark_made_by, _owned_name)
                 self._tau_decoded = uw.discretisation.MeshVariable(
-                    "tau_decoded", self.mesh, (self.mesh.cdim, self.mesh.cdim),
+                    _owned_name(self.mesh, "tau_decoded", lambda k: f"tau_decoded_{k}", self),
+                    self.mesh, (self.mesh.cdim, self.mesh.cdim),
                     vtype=uw.VarType.SYM_TENSOR, degree=self.DFDt.psi_star[0].degree,
                     continuous=True, units=uw.units.Pa if uw.get_default_model().has_units() else None)
+                _mark_made_by(self._tau_decoded, self)
                 self._tau_decode = uw.systems.Tensor_Projection(self.mesh, self._tau_decoded)
                 self._tau_decode.smoothing = 0.0
                 # The decoded stress is a return value of the solver: project it

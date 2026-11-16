@@ -24,6 +24,30 @@ from underworld3 import function
 from underworld3.function._function import diff_wrt_field
 from underworld3.coordinates import CoordinateSystemType
 
+
+def _comparable(value, unwrap, rebind):
+    """A parameter's value in the form the derived-solver check compares:
+    unwrapped, and rebound onto a derived solver's unknowns when it is still an
+    expression. A constant (a plain number once unwrapped) is returned as is."""
+    if not hasattr(value, "subs"):
+        return value
+    value = unwrap(value, keep_constants=True, return_self=True)
+    if rebind and hasattr(value, "subs"):
+        value = value.subs(rebind)
+    return value
+
+
+def _model_time(dt):
+    """A step from a solver's ``estimate_dt`` as a plain number in model time.
+
+    In a units model the advection solvers return a dimensional time; ``float`` of
+    it gave seconds, so an advective limit, when it bound, was a step of about
+    1e10 model times too long (#998).
+    """
+    if getattr(dt, "units", None) is not None:
+        return float(uw.non_dimensionalise(dt))
+    return float(dt)
+
 class FreeSurface:
     r"""Evolve a free surface by exponential relaxation toward stress equilibrium.
 
@@ -195,6 +219,11 @@ class FreeSurface:
         Report per-step surface diagnostics through :func:`uw.mpi.rank`-safe output.
     """
 
+    # Free surfaces are numbered in creation order, the same on every rank;
+    # the number names the mesh variables each one makes, so two free
+    # surfaces on one mesh (a top and a base) keep their own fields.
+    _instances = 0
+
     def __init__(
         self,
         stokes,
@@ -219,6 +248,8 @@ class FreeSurface:
         swarm_restore_fn=None,
         verbose=False,
     ):
+        self._number = FreeSurface._instances
+        FreeSurface._instances += 1
         if advection not in (None, "slcn", "supg", "swarm"):
             raise ValueError(
                 f"advection must be None, 'slcn', 'supg' or 'swarm', not {advection!r}."
@@ -403,7 +434,7 @@ class FreeSurface:
 
         # Equilibrium-topography field, filled on the surface nodes by the held solve.
         self._hinf_field = uw.discretisation.MeshVariable(
-            "h_inf", self.mesh, vtype=uw.VarType.SCALAR, degree=1, continuous=True
+            f"h_inf_fs{self._number}", self.mesh, vtype=uw.VarType.SCALAR, degree=1, continuous=True
         )
         self._hinf_rows, _ = self._field_rows(self._hinf_field, self._surf_coords)
 
@@ -444,7 +475,7 @@ class FreeSurface:
         invariant, whereas re-sorting live coordinates by ``x`` could permute neighbours
         near the annulus ``theta = 0, pi`` extremes where ``dx/dtheta -> 0``.
         """
-        return np.ascontiguousarray(self.mesh.X.coords[self._surf_rows])
+        return np.ascontiguousarray(self._mesh_coords_nd()[self._surf_rows])
 
     def _surface_height(self, coords):
         """The coordinate along the topography direction: the last axis on a Cartesian
@@ -503,6 +534,13 @@ class FreeSurface:
             else:
                 solver.add_essential_bc(spec, boundary)
 
+    def _mesh_coords_nd(self):
+        """The mesh's node coordinates in model units: the frame of the DM, of the
+        surface nodes and of ``coords_nd``. ``mesh.X.coords`` is in metres in a
+        units model, and mixing the two frames lost every trace-mass weight in the
+        coordinate-key matching (#998)."""
+        return np.asarray(self.mesh._coords, dtype=np.float64).reshape(-1, self.mesh.cdim)
+
     def _surface_node_coords(self):
         r"""Coordinates of the vertices on ``surface``, from the DMPlex boundary
         stratum (label-based, parallel-correct) — not a radial ``|y-H|`` heuristic.
@@ -558,7 +596,10 @@ class FreeSurface:
         coordinate used to order the ring."""
         if coords.shape[0] == 0:
             return np.empty(0, dtype=int), np.empty(0)
-        tree = uw.kdtree.KDTree(np.ascontiguousarray(field.coords))
+        # Model units throughout (#998); ``mesh.X`` itself stands for the mesh nodes.
+        field_coords = (self._mesh_coords_nd() if field is self.mesh.X
+                        else np.asarray(field.coords_nd))
+        tree = uw.kdtree.KDTree(np.ascontiguousarray(field_coords))
         rows = np.asarray(tree.query(coords, k=1)[1]).flatten()
         order = np.argsort(coords[:, 0])
         return rows[order], coords[order, 0]
@@ -682,10 +723,10 @@ class FreeSurface:
         """A Stokes solve sharing the free solve's mesh, discretisation, physics and
         options — the common construction for the held and consistent lids."""
         v = uw.discretisation.MeshVariable(
-            f"V_{name}", self.mesh, vtype=uw.VarType.VECTOR, degree=2, continuous=True
+            f"V_{name}_fs{self._number}", self.mesh, vtype=uw.VarType.VECTOR, degree=2, continuous=True
         )
         p = uw.discretisation.MeshVariable(
-            f"P_{name}", self.mesh, vtype=uw.VarType.SCALAR, degree=1,
+            f"P_{name}_fs{self._number}", self.mesh, vtype=uw.VarType.SCALAR, degree=1,
             continuous=getattr(self.free, "_p_continuous", True),
         )
         solver = uw.systems.Stokes(self.mesh, velocityField=v, pressureField=p)
@@ -729,7 +770,12 @@ class FreeSurface:
                 if isinstance(attr, ExpressionDescriptor) and name not in copied:
                     value = getattr(free_model.Parameters, name)
                     if hasattr(value, "subs"):
-                        value = unwrap(value, keep_constants=True, return_self=True).subs(rebind)
+                        unwrapped = unwrap(value, keep_constants=True, return_self=True)
+                        # A constant (a quantity, in a units model) unwraps to a
+                        # plain number, which has nothing to rebind and would lose
+                        # its units: copy the parameter's expression as it is.
+                        if hasattr(unwrapped, "subs"):
+                            value = unwrapped.subs(rebind)
                     setattr(solver.constitutive_model.Parameters, name, value)
                     copied.add(name)
 
@@ -807,20 +853,13 @@ class FreeSurface:
                 for attr, descriptor in cls.__dict__.items():
                     if not isinstance(descriptor, ExpressionDescriptor):
                         continue
-                    try:
-                        expected = getattr(free_params, attr)
-                        if hasattr(expected, "subs"):
-                            expected = unwrap(
-                                expected, keep_constants=True, return_self=True
-                            ).subs(rebind)
-                        actual = getattr(their_params, attr)
-                        if hasattr(actual, "subs"):
-                            actual = unwrap(
-                                actual, keep_constants=True, return_self=True
-                            )
-                        note(name, f"Parameters.{attr}", expected, actual)
-                    except Exception:
-                        pass
+                    # No swallow: a check that can fail silently is not a check.
+                    # In a units model a constant unwraps to a plain number,
+                    # which has nothing to rebind, so only an expression is
+                    # rebound (H1's review of #1205).
+                    expected = _comparable(getattr(free_params, attr), unwrap, rebind)
+                    actual = _comparable(getattr(their_params, attr), unwrap, None)
+                    note(name, f"Parameters.{attr}", expected, actual)
             # `held` carries its own body force when driving_buoyancy was given;
             # otherwise both are meant to be the free solve's.
             if not (name == "held" and self._driving_buoyancy_given):
@@ -859,7 +898,7 @@ class FreeSurface:
             self.held_bg.add_rotated_freeslip_bc(0.0, self.surface, normal=self.normal)
             self.held_bg.petsc_use_pressure_nullspace = True
             self._hinf_bg_field = uw.discretisation.MeshVariable(
-                "h_inf_bg", self.mesh, vtype=uw.VarType.SCALAR, degree=1, continuous=True
+                f"h_inf_bg_fs{self._number}", self.mesh, vtype=uw.VarType.SCALAR, degree=1, continuous=True
             )
             self._hinf_bg_rows, _ = self._field_rows(self._hinf_bg_field, self._surf_coords)
 
@@ -890,7 +929,7 @@ class FreeSurface:
         self.consistent.bodyforce = self.free.bodyforce
         self._apply_walls(self.consistent)
         self._un_target = uw.discretisation.MeshVariable(
-            "un_tgt", self.mesh, vtype=uw.VarType.SCALAR, degree=1, continuous=True
+            f"un_tgt_fs{self._number}", self.mesh, vtype=uw.VarType.SCALAR, degree=1, continuous=True
         )
         self._un_target_rows, _ = self._field_rows(self._un_target, self._surf_coords)
         self._un_target.array[...] = 0.0
@@ -937,7 +976,7 @@ class FreeSurface:
         driven from the P1-smoothed velocity, not a point-eval of the P2 field, so it
         is consistent with the P1 mesh geometry."""
         self._v_p1 = uw.discretisation.MeshVariable(
-            "V_p1", self.mesh, vtype=uw.VarType.VECTOR, degree=1, continuous=True
+            f"V_p1_fs{self._number}", self.mesh, vtype=uw.VarType.VECTOR, degree=1, continuous=True
         )
         self._v_p1_proj = uw.systems.Vector_Projection(self.mesh, self._v_p1)
         self._v_p1_proj.uw_function = self.free.u.sym
@@ -950,24 +989,28 @@ class FreeSurface:
         the nodal surface increment and which decays it to zero at the base, giving a
         smooth minimal interior deformation (no full remesh)."""
         self._carry = uw.discretisation.MeshVariable(
-            "carry", self.mesh, vtype=uw.VarType.SCALAR, degree=1, continuous=True
+            f"carry_fs{self._number}", self.mesh, vtype=uw.VarType.SCALAR, degree=1, continuous=True
         )
         self._carry_bc = uw.discretisation.MeshVariable(
-            "carry_bc", self.mesh, vtype=uw.VarType.SCALAR, degree=1, continuous=True
+            f"carry_bc_fs{self._number}", self.mesh, vtype=uw.VarType.SCALAR, degree=1, continuous=True
         )
         self._carry_bc_rows, _ = self._field_rows(self._carry_bc, self._surf_coords)
         self._carry_bc.array[...] = 0.0
         self._diffuser = uw.systems.Poisson(self.mesh, self._carry)
         self._diffuser.constitutive_model = uw.constitutive_models.DiffusionModel
-        self._diffuser.constitutive_model.Parameters.diffusivity = 1.0
+        # A Laplacian smoother's own coefficient, in model units: library work, so
+        # the bare-number refusal of a units model does not apply.
+        from underworld3.function.functions_unit_system import _internal_resampling
+        with _internal_resampling():
+            self._diffuser.constitutive_model.Parameters.diffusivity = 1.0
         self._diffuser.tolerance = 1.0e-3
         # Row map for the deform read: the carrier is P1 and (on our P1-geometry
         # meshes) its nodes coincide with the mesh coordinate nodes, so the
         # displacement is a DIRECT nodal read — never a point evaluation at the
         # field's own nodes (the on-node location class, O(1)-wrong on 3D cell
         # edges, #432). Row identities survive deformation; matched once here.
-        tree = uw.kdtree.KDTree(np.ascontiguousarray(self._carry.coords))
-        dist, rows = tree.query(np.ascontiguousarray(self.mesh.X.coords), k=1)
+        tree = uw.kdtree.KDTree(np.ascontiguousarray(self._carry.coords_nd))
+        dist, rows = tree.query(np.ascontiguousarray(self._mesh_coords_nd()), k=1)
         self._carry_rows_at_mesh_nodes = (
             np.asarray(rows).flatten()
             if float(np.max(dist)) < 1.0e-12 else None)   # exotic geometry: fall back
@@ -1030,9 +1073,9 @@ class FreeSurface:
         mesh hasn't moved yet — the correct initial value.
         """
         self._mesh_disp_p1 = uw.discretisation.MeshVariable(
-            "mesh_disp_p1_fs", self.mesh, vtype=uw.VarType.VECTOR, degree=1, continuous=True)
+            f"mesh_disp_p1_fs{self._number}", self.mesh, vtype=uw.VarType.VECTOR, degree=1, continuous=True)
         self._mesh_velocity = uw.discretisation.MeshVariable(
-            "mesh_vel_fs", self.mesh, vtype=uw.VarType.VECTOR, degree=2, continuous=True)
+            f"mesh_vel_fs{self._number}", self.mesh, vtype=uw.VarType.VECTOR, degree=2, continuous=True)
         self._mesh_vel_proj = uw.systems.Vector_Projection(self.mesh, self._mesh_velocity)
         self._mesh_vel_proj.uw_function = self._mesh_disp_p1.sym
         # Zero on the very first step, since the mesh has not moved yet.
@@ -1046,7 +1089,7 @@ class FreeSurface:
         # (see _build_composition_transport), which stays current
         # automatically — no explicit sync needed there.
         self._adv_velocity_relative = uw.discretisation.MeshVariable(
-            "V_adv_rel_fs", self.mesh, vtype=uw.VarType.VECTOR, degree=2, continuous=True)
+            f"V_adv_rel_fs{self._number}", self.mesh, vtype=uw.VarType.VECTOR, degree=2, continuous=True)
 
     def _build_composition_transport(self):
         """Transport of the material field by the consistent surface velocity.
@@ -1244,7 +1287,10 @@ class FreeSurface:
                 order=1, DuDt=self._comp_ddt,
             )
             self._comp_adv.constitutive_model = uw.constitutive_models.DiffusionModel
-        self._comp_adv.constitutive_model.Parameters.diffusivity = 1.0e-7
+        # A small default the caller may override, in model units (library work).
+        from underworld3.function.functions_unit_system import _internal_resampling
+        with _internal_resampling():
+            self._comp_adv.constitutive_model.Parameters.diffusivity = 1.0e-7
         self._comp_adv.tolerance = 1.0e-4
         if self._conserve_integrand is not None:
             self._conserve_area = uw.maths.Integral(self.mesh, self._conserve_integrand)
@@ -1437,13 +1483,13 @@ class FreeSurface:
         semi-Lagrangian solver's ``estimate_dt()``."""
         if self.composition is not None:
             if self._comp_kind == "cls":
-                dt_advect = float(self.composition.estimate_dt(basis="resolution"))
+                dt_advect = _model_time(self.composition.estimate_dt(basis="resolution"))
             elif self._comp_kind == "swarm":
                 dt_advect = self._velocity_cfl()
             elif self._advection == "supg":
-                dt_advect = float(self._comp_adv.estimate_dt(basis="resolution"))
+                dt_advect = _model_time(self._comp_adv.estimate_dt(basis="resolution"))
             else:
-                dt_advect = float(self._comp_adv.estimate_dt())
+                dt_advect = _model_time(self._comp_adv.estimate_dt())
         else:
             dt_advect = self._velocity_cfl()
         dt_advect *= float(advect_scale)
@@ -1607,7 +1653,7 @@ class FreeSurface:
     def _current_shape(self):
         """The surface height anomaly (topography direction), mean-removed — read from
         the deformed mesh geometry, which IS the surface state."""
-        height = self._surface_height(self.mesh.X.coords[self._surf_rows])
+        height = self._surface_height(self._mesh_coords_nd()[self._surf_rows])
         return self._demean(height)
 
     def _surface_normal_velocity(self):
@@ -1747,8 +1793,12 @@ class FreeSurface:
         # tangent at physical strain rates — a cold start puts it at the
         # regularisation floor, where the Newton line search stalls at O(0.1)
         # relative residual (measured, power-law annulus acceptance run).
-        self.consistent.u.array[...] = self.free.u.array
-        self.consistent.p.array[...] = self.free.p.array
+        # A raw variable-to-variable copy inside the non-dimensional boundary:
+        # .data on both sides. Through .array a velocity with units (cm/yr) went
+        # into a field without them and was stored 100 times too large (H1's
+        # review of #1205); ddt.py copies histories the same way.
+        self.consistent.u.data[...] = self.free.u.data
+        self.consistent.p.data[...] = self.free.p.data
         self.consistent.solve(zero_init_guess=False)
 
     def _conserve_composition(self):
@@ -1822,7 +1872,7 @@ class FreeSurface:
         self._carry_bc.array[...] = 0.0
         self._carry_bc.array[self._carry_bc_rows, 0, 0] = increment
         self._diffuser.solve(zero_init_guess=False)
-        coords = self.mesh.X.coords
+        coords = self._mesh_coords_nd()
         if self._carry_rows_at_mesh_nodes is not None:
             # direct nodal read (see _build_interior_diffuser: the on-node
             # evaluation class is what this avoids)
@@ -1844,4 +1894,7 @@ class FreeSurface:
             target_shape = self._mesh_disp_p1.array.shape
             self._mesh_disp_p1.array[...] = (disp_vec / dt).reshape(target_shape)
             self._mesh_vel_proj.solve()
-        self.mesh.deform(new_coords, dt=dt)
+        # Model coordinates, marked as such: a plain array is refused in a units
+        # model (#1081).
+        from underworld3.utilities.unit_aware_array import UnitAwareArray
+        self.mesh.deform(UnitAwareArray(np.asarray(new_coords), units="dimensionless"), dt=dt)

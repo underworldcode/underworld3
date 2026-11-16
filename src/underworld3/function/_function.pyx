@@ -182,12 +182,14 @@ class UnderworldFunction(sympy.Function):
         else: # other types can manage their own component names
             fname = name
 
-        # Create function class with _uw_id for disambiguation (2025-12)
-        # When meshes have instance_number > 1, include it in _uw_id
-        # This makes f1(x,y) from mesh1 distinct from f1(x,y) from mesh2
-        # even if they have the same display name, solving the "funny whitespace" problem
+        # The function is the variable's: its identity is the mesh and the
+        # variable's own name on it, which is unique there. The display name
+        # alone is not: two variables can show the same symbol (two swarms'
+        # proxies of a variable called "phase", a varsymbol given twice), and
+        # a function identified by it would be one function for both, so an
+        # expression in one would evaluate the other (#1118 review).
         mesh = meshvar.mesh
-        uw_id = mesh.instance_number if mesh.instance_number > 1 else None
+        uw_id = (mesh.instance_number, meshvar.clean_name)
         # A mesh-variable value (and its derivative) is a real, finite number at every
         # point. An undefined function is complex to SymPy by default, so every power
         # with a symbolic exponent made it work out real and imaginary parts before

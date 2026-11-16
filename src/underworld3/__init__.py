@@ -666,9 +666,9 @@ def unwrap(fn, keep_constants=True, return_self=True, apply_scaling=False):
 
     if apply_scaling:
         with _apply_scaling():
-            return _unwrap(fn, keep_constants, return_self)
+            return _unwrap(fn, keep_constants=keep_constants, return_self=return_self)
     else:
-        return _unwrap(fn, keep_constants, return_self)
+        return _unwrap(fn, keep_constants=keep_constants, return_self=return_self)
 
 
 # Enhanced variables with units and mathematical operations (internal use only)

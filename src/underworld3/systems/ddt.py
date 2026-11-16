@@ -3534,7 +3534,7 @@ class SemiLagrangian(_DDtBase):
         layout as ``psi_star[0]``, "evaluate at own nodes" is exactly that
         variable's nodal data, so we copy it directly — no point location.
 
-        Returns an array shaped like ``psi_star[0].array`` for that case, or
+        Returns the non-dimensional values, shaped (N, 1, 1), for that case, or
         ``None`` (caller falls back to ``evaluate``) for non-scalar or
         expression ``psi_fn`` (e.g. a flux with derivatives).
         """
@@ -3547,14 +3547,20 @@ class SemiLagrangian(_DDtBase):
             if hit is None:
                 return None
             var, comp = hit
-            vflat = np.asarray(var.array)
-            vflat = vflat.reshape(vflat.shape[0], -1)
-            out = np.array(np.asarray(self.psi_star[0].array))
-            oflat = out.reshape(out.shape[0], -1)
-            if vflat.shape[0] != oflat.shape[0] or oflat.shape[1] != 1:
+            # The direct copy reads the NON-DIMENSIONAL storage, and returns a
+            # plain array, which _write_evaluated stores as non-dimensional.
+            # Reading the dimensional var.array and stripping its units stored
+            # a 500 K value as 500 where 0.5 is right (#992). Only scalars and
+            # vectors, whose storage column is the component index; any other
+            # layout falls back to evaluate.
+            if var.vtype not in (uw.VarType.SCALAR, uw.VarType.VECTOR):
                 return None
-            oflat[:, 0] = vflat[:, comp]
-            return out
+            vflat = np.asarray(var.data)
+            vflat = vflat.reshape(vflat.shape[0], -1)
+            store = np.asarray(self.psi_star[0].data)
+            if vflat.shape[0] != store.shape[0] or store.reshape(store.shape[0], -1).shape[1] != 1:
+                return None
+            return np.array(vflat[:, comp]).reshape(-1, 1, 1)
         except Exception:
             return None
 
