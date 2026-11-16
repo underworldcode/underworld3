@@ -3,17 +3,17 @@
 ``FreeSurface._build_interior_diffuser`` chose between a direct nodal read of
 the mesh displacement and a fallback by ``np.max`` of each rank's node
 distances. On a rank that holds no nodes the array is empty and ``np.max``
-raised, while the other ranks went on into the collective solve and waited
-(measured at np 3 on a 96-thread Linux workstation, MPICH, by H1, the session
-that reviews pull requests and runs the parallel tests). The choice was also
-made rank by rank. The ranks now agree on it, and a rank with no nodes has
-nothing against the direct read. The verbose report's maxima are reduced over
-the ranks in the same way.
+raised, while the other ranks went on into the collective solve and waited.
+The choice was also made rank by rank. The ranks now agree on it, and a rank
+with no nodes has nothing against the direct read. The verbose report's maxima
+are reduced over the ranks in the same way.
 
 The box's cells go to every rank but the last, in bands, through a shell
-partition, so from np 3 one rank is empty. The free-surface velocity's
-integral of |v|^2 must equal that of the same model on the default partition,
-in the same run.
+partition, so from np 3 one rank is empty; below np 3 the test skips. The free
+surface is built (verbose), solved and advanced one step, which reads the
+displacement through the agreed choice and deforms the mesh. What it produced
+must equal the same model's on the default partition, in the same run: the
+integral of h_inf^2 over the surface, and of |v|^2 over the domain.
 """
 
 import numpy as np
@@ -25,6 +25,10 @@ import underworld3 as uw
 from underworld3.discretisation import discretisation_mesh
 
 pytestmark = [pytest.mark.level_2, pytest.mark.tier_b, pytest.mark.timeout(300)]
+
+# Two partitions of one model solve to the solver tolerance (1e-8) through
+# different preconditioners; the bound is set from the measured difference.
+SAME = 1.0e-6
 
 
 def _box(monkeypatch, empty_last):
@@ -52,7 +56,9 @@ def _box(monkeypatch, empty_last):
     return mesh
 
 
-def _free_surface_energy(mesh):
+def _free_surface_outputs(mesh):
+    """The integral of h_inf^2 over the surface and of |v|^2 over the domain,
+    after one solve and one step."""
     x = mesh.X
     stokes = uw.systems.Stokes(mesh)
     stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
@@ -63,19 +69,24 @@ def _free_surface_energy(mesh):
     stokes.add_rotated_freeslip_bc(0.0, "Left")
     stokes.add_rotated_freeslip_bc(0.0, "Right")
     stokes.tolerance = 1.0e-8
-    fs = uw.systems.FreeSurface(stokes, "Top", buoyancy_scale=50.0)
+    fs = uw.systems.FreeSurface(stokes, "Top", buoyancy_scale=50.0, verbose=True)
     fs.solve()
+    fs.advance(fs.estimate_dt())
+    fs.solve()
+    h = fs._hinf_field.sym[0]
     v = stokes.u.sym
-    return float(uw.maths.Integral(mesh, v.dot(v)).evaluate())
+    return (float(uw.maths.BdIntegral(mesh, h * h, "Top").evaluate()),
+            float(uw.maths.Integral(mesh, v.dot(v)).evaluate()))
 
 
-def test_a_free_surface_solves_with_a_rank_that_holds_no_cells(monkeypatch):
+def test_a_free_surface_steps_with_a_rank_that_holds_no_cells(monkeypatch):
+    if uw.mpi.size < 3:
+        pytest.skip("a rank is left empty from np 3; at np 2 one rank would hold every cell")
     mesh = _box(monkeypatch, empty_last=True)
     cs, ce = mesh.dm.getHeightStratum(0)
-    counts = uw.mpi.comm.allgather(ce - cs)
-    if uw.mpi.size > 2:
-        assert 0 in counts
-    with_empty = _free_surface_energy(mesh)
-    reference = _free_surface_energy(_box(monkeypatch, empty_last=False))
-    assert with_empty > 0.0
-    assert with_empty == pytest.approx(reference, rel=1e-6)
+    assert 0 in uw.mpi.comm.allgather(ce - cs)
+    with_empty = _free_surface_outputs(mesh)
+    reference = _free_surface_outputs(_box(monkeypatch, empty_last=False))
+    assert with_empty[0] > 0.0 and with_empty[1] > 0.0
+    assert with_empty[0] == pytest.approx(reference[0], rel=SAME)
+    assert with_empty[1] == pytest.approx(reference[1], rel=SAME)
