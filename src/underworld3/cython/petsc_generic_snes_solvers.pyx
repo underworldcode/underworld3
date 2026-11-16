@@ -397,7 +397,10 @@ cdef PetscInt _add_boundary(DM cdm, DMBoundaryConditionType bc_type, bytes name,
     condition = name.decode()
     here = cdm.getLabel(label) if cdm.hasLabel(label) else None
     if not comm.allreduce(here is not None, op=uw.MPI.LOR):
-        labels = [cdm.getLabelName(k) for k in range(cdm.getNumLabels())]
+        # Each rank holds its own labels; the message names all of them, so it
+        # is the same text on every rank.
+        held = {cdm.getLabelName(k) for k in range(cdm.getNumLabels())}
+        labels = sorted(set().union(*comm.allgather(held)))
         raise ValueError(
             f"The boundary condition '{condition}' names the label '{label}', which "
             f"this mesh's DM does not hold. Its labels are: {', '.join(labels)}.")

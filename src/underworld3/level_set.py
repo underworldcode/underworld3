@@ -375,7 +375,7 @@ class LevelSetSolver:
             self._adv_solver.constitutive_model = uw.constitutive_models.DiffusionModel
         self._adv_solver.constitutive_model.Parameters.diffusivity = 0.0
         if far_field is not None:
-            for boundary in self.mesh.boundaries:
+            for boundary in self.mesh._boundaries_that_mark_points():
                 self._adv_solver.add_dirichlet_bc(float(far_field), boundary.name)
         self._adv_solver_bc = adv_solver_bc
         for key, value in (adv_solver_opts or {}).items():

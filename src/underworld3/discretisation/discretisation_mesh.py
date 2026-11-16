@@ -4283,6 +4283,29 @@ class Mesh(Stateful, uw_object):
         value = getattr(member, "value", member)
         return value
 
+    def _boundaries_that_mark_points(self):
+        """The members of ``self.boundaries`` whose value marks a point of
+        ``UW_Boundaries`` on some rank, in enum order.
+
+        A solver refuses a condition on a boundary that marks no point (#1211),
+        so library code that puts a condition on every boundary of the mesh
+        loops over these. Many stock meshes list a boundary with no faces
+        behind it, such as ``Centre`` on an ``Annulus``.
+
+        Collective: the counts are summed over every rank, so every rank
+        returns the same list.
+        """
+        import numpy as np
+        import underworld3 as uw
+
+        members = list(self.boundaries)
+        label = self.dm.getLabel("UW_Boundaries") if self.dm.hasLabel("UW_Boundaries") else None
+        local = np.array([label.getStratumSize(b.value) if label is not None else 0
+                          for b in members], dtype=np.int64)
+        total = np.zeros_like(local)
+        self.dm.getComm().tompi4py().Allreduce(local, total, op=uw.MPI.SUM)
+        return [b for b, n in zip(members, total) if n > 0]
+
     def _boundary_is_internal(self, boundary_name):
         """True if boundary ``boundary_name`` is an internal surface — its
         facets have a cell on BOTH sides (support size 2) — rather than part
