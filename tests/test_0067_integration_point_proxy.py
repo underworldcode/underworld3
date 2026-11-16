@@ -338,3 +338,22 @@ def test_cells_proxy_collinear_particles_do_not_blow_up():
     assert pr.n_ill_conditioned > 0
     vals = np.asarray(M._meshVar.data[:, 0])
     assert np.isfinite(vals).all() and vals.min() > 0.5 and vals.max() < 2.5, (vals.min(), vals.max())
+
+
+def test_global_evaluate_of_a_proxy_derivative_uses_the_cell_fit():
+    """An integration-point proxy has no gradient of its own; evaluate fits it per
+    cell first. global_evaluate must too, before it projects derivatives (#999's
+    change in #1221): it refused with the weak-form error where evaluate answered.
+    f = x^2 + y, so df/dx = 2x: 0.62, 1.24 and 1.0 at these points."""
+    mesh = _mesh()
+    x, y = mesh.X
+    swarm = uw.swarm.Swarm(mesh)
+    M = uw.swarm.SwarmVariable("M_ge", swarm, 1, proxy_location="integration_points")
+    swarm.populate(fill_param=3)
+    X = np.asarray(swarm._particle_coordinates.data)
+    M.data[:, 0] = X[:, 0] ** 2 + X[:, 1]
+    pts = np.array([[0.31, 0.4], [0.62, 0.3], [0.5, 0.5]])
+    local = np.asarray(uw.function.evaluate(M.sym[0].diff(x), pts)).reshape(-1)
+    glob = np.asarray(uw.function.global_evaluate(M.sym[0].diff(x), pts)).reshape(-1)
+    assert glob == pytest.approx(local, rel=1e-6, abs=1e-8)
+    assert glob == pytest.approx(2.0 * pts[:, 0], abs=0.02)

@@ -577,6 +577,10 @@ def global_evaluate_nd(   expr,
     # (#999). The decision rests on the expression and the flags, the same on
     # every rank, and the projection is collective, as this function is.
     if mesh is not None and derivfns and not rbf and not evalf:
+        # An integration-point source has no gradient of its own: fit it per cell
+        # first, as evaluate_nd does, then project.
+        expr, derivfns = _integration_point_sources_to_cell_fit(expr, mesh, derivfns)
+    if mesh is not None and derivfns and not rbf and not evalf:
         work_var = _project_to_work_variable(expr, mesh, smoothing)
         expr = work_var.sym
         mesh, varfns, derivfns = uw.function.expressions.mesh_vars_in_expression(expr)
