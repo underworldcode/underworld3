@@ -6,6 +6,26 @@ This log tracks significant development work at a conceptual level, suitable for
 
 ## 2026 Q4 (October – December)
 
+### A units model refuses bare numbers for dimensional parameters, and plain arrays in `mesh.deform` (November 2026, #1182, #1081)
+
+Two API breaks, both following the units ruling of 2026-11-13: in a model with
+reference quantities an ambiguous number is refused rather than guessed at.
+
+- **Parameters.** A finite nonzero bare number assigned to a parameter that declares
+  a dimension (a viscosity, a diffusivity, a stress) is refused at the setter; the
+  message shows the `uw.quantity(value, "<units>")` form. A dimensional parameter
+  left at its bare-number default (the viscosity's 1) is refused when a solve or an
+  `evaluate` first reads it. Zero and infinity, numbers inside expressions, and
+  models without reference quantities are unchanged. Scripts that set
+  `Parameters.shear_viscosity_0 = 1.0` in a units model now give units; a value
+  meant as one model unit is `uw.dimensionalise(1.0, target_dimensionality=...)`
+  (the test suite's `model_units` helper). (#1182)
+- **`mesh.deform`.** A plain array is refused in a units model, whatever its values:
+  it could be metres or model units, and the size-based guess that decided it
+  before failed when the length scale is near 1. Pass coordinates with units
+  (`mesh.X.coords` plus a displacement with units) or model coordinates marked
+  `units="dimensionless"`. (#1081)
+
 ### adapt's node_budget is one budget for the whole mesh (November 2026, #1122)
 
 `Mesh.adapt(..., node_budget=N)` caps the cells marked in each refinement pass at
