@@ -26,9 +26,14 @@ from underworld3.discretisation import discretisation_mesh
 
 pytestmark = [pytest.mark.level_2, pytest.mark.tier_b, pytest.mark.timeout(300)]
 
-# Two partitions of one model solve to the solver tolerance (1e-8) through
-# different preconditioners; the bound is set from the measured difference.
-SAME = 1.0e-6
+# Before the step the two partitions agree to the solver tolerance: measured
+# at 1.6e-10 (np 3, an empty rank). The step widens the difference through the
+# carrier Poisson solve, at its tolerance of 1e-3, and the P1 velocity
+# projection. Measured against serial, repeatable, so partition dependence and
+# not noise: energy 7.0e-7 and surface integral 3.0e-6 at np 2; 4.7e-7 and
+# 1.3e-5 at np 3 with an empty rank; 4.1e-8 and 1.3e-6 at np 3 by default.
+SAME_BEFORE_THE_STEP = 1.0e-8
+SAME_AFTER_THE_STEP = 1.0e-4
 
 
 def _box(monkeypatch, empty_last):
@@ -56,9 +61,16 @@ def _box(monkeypatch, empty_last):
     return mesh
 
 
+def _integrals(mesh, fs, stokes):
+    h = fs._hinf_field.sym[0]
+    v = stokes.u.sym
+    return (float(uw.maths.BdIntegral(mesh, h * h, "Top").evaluate()),
+            float(uw.maths.Integral(mesh, v.dot(v)).evaluate()))
+
+
 def _free_surface_outputs(mesh):
     """The integral of h_inf^2 over the surface and of |v|^2 over the domain,
-    after one solve and one step."""
+    after the first solve and after one step and a second solve."""
     x = mesh.X
     stokes = uw.systems.Stokes(mesh)
     stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
@@ -71,12 +83,10 @@ def _free_surface_outputs(mesh):
     stokes.tolerance = 1.0e-8
     fs = uw.systems.FreeSurface(stokes, "Top", buoyancy_scale=50.0, verbose=True)
     fs.solve()
+    before = _integrals(mesh, fs, stokes)
     fs.advance(fs.estimate_dt())
     fs.solve()
-    h = fs._hinf_field.sym[0]
-    v = stokes.u.sym
-    return (float(uw.maths.BdIntegral(mesh, h * h, "Top").evaluate()),
-            float(uw.maths.Integral(mesh, v.dot(v)).evaluate()))
+    return before, _integrals(mesh, fs, stokes)
 
 
 def test_a_free_surface_steps_with_a_rank_that_holds_no_cells(monkeypatch):
@@ -87,6 +97,8 @@ def test_a_free_surface_steps_with_a_rank_that_holds_no_cells(monkeypatch):
     assert 0 in uw.mpi.comm.allgather(ce - cs)
     with_empty = _free_surface_outputs(mesh)
     reference = _free_surface_outputs(_box(monkeypatch, empty_last=False))
-    assert with_empty[0] > 0.0 and with_empty[1] > 0.0
-    assert with_empty[0] == pytest.approx(reference[0], rel=SAME)
-    assert with_empty[1] == pytest.approx(reference[1], rel=SAME)
+    for (got, want), bound in zip(zip(with_empty, reference),
+                                  (SAME_BEFORE_THE_STEP, SAME_AFTER_THE_STEP)):
+        assert got[0] > 0.0 and got[1] > 0.0
+        assert got[0] == pytest.approx(want[0], rel=bound)
+        assert got[1] == pytest.approx(want[1], rel=bound)
