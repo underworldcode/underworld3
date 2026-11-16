@@ -80,7 +80,11 @@ def _collective_raise(problem, error=RuntimeError, **error_kwargs):
         problems = [p for p in gathered if p is not None]
         problem = problems[0] if problems else None
     if problem is not None:
-        raise error(problem, **error_kwargs)
+        exc = error(problem, **error_kwargs)
+        # every rank raises this one together: an agreed_build context passes
+        # it through rather than agreeing a second time (#874)
+        exc.agreed = True
+        raise exc
 
 
 def warn_unpaired_split_faults(solver):
