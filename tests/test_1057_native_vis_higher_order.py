@@ -249,13 +249,13 @@ def test_high_aspect_and_high_degree_cells_are_drawn_natively(dim, simplex, degr
 @pytest.mark.tier_b
 @pytest.mark.parametrize("dim, degree", [(2, 3), (2, 4), (3, 3)])
 def test_tapered_quads_and_hexahedra_are_drawn_natively(dim, degree):
-    # x -> x (1 + 0.3 z) on the unit square (z = y) or cube: every cell is
-    # bilinear or trilinear, not a parallelogram, and its faces stay planar, so
-    # the sub-cells, whose corners are the variable's nodes, fill the tapered
-    # box exactly. Its volume is 1.15.
-    mesh = uw.meshing.StructuredQuadBox(elementRes=(3,) * dim)
+    # One cell of the unit square (z = y) or cube under x -> x (1 + 0.8 z): it
+    # is bilinear or trilinear, far from a parallelogram, and its faces stay
+    # planar, so the sub-cells, whose corners are the variable's nodes, fill
+    # it exactly. Its volume is 1.4.
+    mesh = uw.meshing.StructuredQuadBox(elementRes=(1,) * dim)
     x = np.asarray(mesh.X.coords).copy()
-    x[:, 0] *= 1.0 + 0.3 * x[:, dim - 1]
+    x[:, 0] *= 1.0 + 0.8 * x[:, dim - 1]
     mesh.deform(x)
     T = uw.discretisation.MeshVariable(f"T_taper{dim}{degree}", mesh, 1, degree=degree)
     grid = vis.meshVariable_to_native_pv_mesh(T)
@@ -264,19 +264,27 @@ def test_tapered_quads_and_hexahedra_are_drawn_natively(dim, degree):
     sizes = grid.compute_cell_sizes(length=False, area=dim == 2, volume=dim == 3)
     size = np.asarray(sizes.cell_data["Area" if dim == 2 else "Volume"])
     assert size.min() > 0.0
-    assert size.sum() == pytest.approx(1.15, rel=1e-10)
+    assert size.sum() == pytest.approx(1.4, rel=1e-10)
 
 
 @pytest.mark.tier_b
 def test_a_cubed_sphere_is_drawn_natively_at_degree_3():
     # Hexahedra whose inner face is smaller than the outer one.
     mesh = uw.meshing.CubedSphere(numElements=2)
+    # The sub-cells fill the mesh's own cells: their volumes sum to the
+    # degree-1 grid's, which they match to 4e-11 (VTK's volume of a hexahedron
+    # with non-planar faces is not exact). A node on the wrong site overlaps
+    # sub-cells by about a sub-cell's volume, 1/27 of a cell.
     T = uw.discretisation.MeshVariable("T_cubed3", mesh, 1, degree=3)
     grid = vis.meshVariable_to_native_pv_mesh(T)
     assert grid is not None
     assert grid.n_cells == _n_cells(mesh) * 27
-    size = np.asarray(grid.compute_cell_sizes(length=False, area=False, volume=True).cell_data["Volume"])
-    assert size.min() > 0.0
+    T1 = uw.discretisation.MeshVariable("T_cubed1", mesh, 1, degree=1)
+    volume = lambda g: np.asarray(g.compute_cell_sizes(length=False, area=False,
+                                                      volume=True).cell_data["Volume"])
+    assert volume(grid).min() > 0.0
+    assert volume(grid).sum() == pytest.approx(volume(vis.meshVariable_to_native_pv_mesh(T1)).sum(),
+                                               rel=1e-8)
 
 
 @pytest.mark.tier_b

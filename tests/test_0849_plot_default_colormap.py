@@ -3,7 +3,10 @@
 Their colormap default was the empty string, which pyvista 0.46 rejects with
 ``ValueError: Invalid colormap ''`` and Matplotlib with "'' is not a valid value
 for cmap", so none of them ran without a colormap. The default is now None,
-which leaves the choice to pyvista's theme or Matplotlib's default.
+which leaves the choice to pyvista's theme or Matplotlib's default. The colour
+range default was the empty string too, which pyvista reads as "not given" yet
+never replaces by the data's range: a field over [0, 1000] was coloured over
+[0, 1]. It is now None, which pyvista replaces by the data's range.
 
 The plots are not rendered: a ``pyvista.Plotter`` on a headless runner can end
 the process (see ``tests/test_0800_optional_modules.py``). The plot tests put a
@@ -55,7 +58,7 @@ def test_plot_scalar_leaves_the_colormap_to_pyvista(recorder):
     mesh = _mesh()
     T = uw.discretisation.MeshVariable("T_cmap", mesh, 1, degree=1)
     vis.plot_scalar(mesh, T.sym[0], scalar_name="T")
-    assert [call["cmap"] for call in recorder] == [None]
+    assert [(call["cmap"], call["clim"]) for call in recorder] == [(None, None)]
 
 
 @pytest.mark.tier_b
@@ -64,7 +67,7 @@ def test_plot_vector_leaves_the_colormap_to_pyvista(recorder):
     V = uw.discretisation.MeshVariable("V_cmap", mesh, 2, degree=1)
     V.array[:, 0, 0] = 1.0
     vis.plot_vector(mesh, V, vector_name="V")
-    assert [call["cmap"] for call in recorder] == [None]
+    assert [(call["cmap"], call["clim"]) for call in recorder] == [(None, None)]
 
 
 @pytest.mark.tier_b

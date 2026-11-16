@@ -698,7 +698,9 @@ def meshVariable_to_native_pv_mesh(meshVar):
     own triangulation.
 
     Returns ``None`` for a layout this does not handle (a discontinuous or
-    degree-0 variable, a mixed-cell mesh), and the caller falls back.
+    degree-0 variable, a mixed-cell mesh), and the caller falls back. On a
+    rank that holds no cells the grid has no cells; pyvista's ``add_mesh``
+    refuses an empty grid unless ``allow_empty_mesh=True``.
 
     Why this exists
     ---------------
@@ -794,14 +796,15 @@ def meshVariable_to_pv_mesh_object(meshVar, alpha=None):
             )
 
     point_cloud = meshVariable_to_pv_cloud(meshVar)
+    if point_cloud.n_points == 0:
+        # A rank that holds no cells has nothing to triangulate.
+        return point_cloud
 
     if alpha is None:
         # Compute alpha from the point cloud coordinates themselves
         # This ensures consistency between coordinate scale and alpha parameter
         # mesh.get_max_radius() returns nondimensional values but coords may be
         # dimensional when units are active - causing Delaunay to fail
-        # TODO(BUG): on a rank that holds no cells the cloud is empty and
-        # points.max() raises; reached by a discontinuous variable in parallel.
         points = point_cloud.points
         coord_range = points.max() - points.min()
         # Use a fraction of the coordinate range as a reasonable alpha
@@ -1307,7 +1310,7 @@ def plot_scalar(
     scalar,
     scalar_name="",
     cmap=None,
-    clim="",
+    clim=None,
     window_size=(750, 750),
     title="",
     fmt="%10.7f",
@@ -1340,7 +1343,7 @@ def plot_scalar(
 
     clim : tuple of float, optional
         The scalar range to be used for coloring the mesh (e.g., `(min_value, max_value)`). If not
-        provided, the range of the scalar values is used. Default is an empty string, which uses
+        provided, the range of the scalar values is used. Default is None, which uses
         the full range of the scalar values.
 
     window_size : tuple of int, optional
@@ -1439,7 +1442,7 @@ def plot_vector(
     vector,
     vector_name="",
     cmap=None,
-    clim="",
+    clim=None,
     vmag="",
     vfreq="",
     save_png=False,
@@ -1477,7 +1480,7 @@ def plot_vector(
 
     clim : tuple of float, optional
         The scalar range to be used for coloring the mesh based on vector magnitudes (e.g., `(min_value, max_value)`).
-        If not provided, the range of the vector magnitudes is used. Default is an empty string.
+        If not provided, the range of the vector magnitudes is used. Default is None.
 
     vmag : float or str, optional
         The scaling factor for the arrow magnitudes when plotting vectors as arrows.
