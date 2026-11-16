@@ -377,6 +377,10 @@ class ExpressionDescriptor:
                 and not _fus._internal_resampling_depth
                 and _uw.get_default_model().has_units()):
             raise ValueError(_bare_number_message(self.public_name, self.units, value))
+        # A function of a dimensional argument (exp(eta1), sin(x)) is refused here
+        # too, not only at evaluate: a solve would otherwise run with it.
+        if hasattr(value, "atoms") or hasattr(value, "sym"):
+            _fus._refuse_dimensional_function_argument(value, where=f"'{self.public_name}'")
         expr._unset_dimensional_default = None
 
         # Import here to avoid circular dependency

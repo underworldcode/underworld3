@@ -1023,13 +1023,18 @@ def _unit_leaves(expr):
     return sorted(unitless), sorted(dimensional)
 
 
-def _reduces_to_a_dimension(e):
+def _reduces_to_a_dimension(e, coordinates_are_lengths=False):
     """True when the leaves of ``e``, reduced together, carry a physical
-    dimension (``eta1/eta0`` does not; ``eta1`` does). Coordinates are left out."""
+    dimension (``eta1/eta0`` does not; ``eta1`` does).
+
+    Coordinates are left out by default (the mixed-units check of a product).
+    With ``coordinates_are_lengths`` they keep their length, as a function's
+    argument needs: ``x/L`` is dimensionless, ``x`` is not."""
     from sympy.vector import BaseScalar
     from underworld3.units import get_units
 
-    e = e.subs({c: 1 for c in e.atoms(BaseScalar)}) if hasattr(e, "atoms") else e
+    if not coordinates_are_lengths and hasattr(e, "atoms"):
+        e = e.subs({c: 1 for c in e.atoms(BaseScalar)})
     try:
         return _has_dimension(get_units(e))
     except Exception:
@@ -1038,20 +1043,48 @@ def _reduces_to_a_dimension(e):
         return False
 
 
+# Applied functions that pass units through, or take a dimensional argument by
+# design; every other applied function needs a dimensionless argument.
+_UNIT_PASSING_FUNCTIONS = ("Abs", "Min", "Max", "Piecewise", "sign", "Heaviside",
+                           "floor", "ceiling", "re", "im", "conjugate", "DiracDelta")
+
+_function_argument_cache = {}
+
+
 def _dimensional_function_argument(expr):
-    """The first transcendental function (exp, log, the trigonometric and
-    hyperbolic functions, erf) whose argument, or power whose exponent, carries
-    a dimension once its leaves are reduced together; ``(name, argument)`` or
-    None. ``exp(eta1)`` has no meaning, ``exp(eta1/eta0)`` and
-    ``exp(-E/(R*T0))`` do. Named expressions are walked into, each once."""
+    """The first applied function whose argument, or power whose exponent,
+    carries a dimension once its leaves are reduced together (coordinates as
+    lengths); ``(name, argument)`` or None.
+
+    By rule, not by list: every applied sympy function (exp, log, the
+    trigonometric, hyperbolic and inverse functions, erf, erfc, …) needs a
+    dimensionless argument, except the few in ``_UNIT_PASSING_FUNCTIONS`` and a
+    mesh or swarm variable's own function. ``exp(eta1)`` and ``sin(x)`` have no
+    meaning; ``exp(eta1/eta0)``, ``exp(-E/(R*T0))`` and ``sin(pi*x/W)`` do.
+    Named expressions are walked into, each once. The verdict is cached per
+    expression, keyed by the expression itself.
+    """
     import sympy
     from .expressions import UWexpression
 
-    functions = (sympy.exp, sympy.log, sympy.sin, sympy.cos, sympy.tan, sympy.sinh,
-                 sympy.cosh, sympy.tanh, sympy.asin, sympy.acos, sympy.atan, sympy.erf)
+    key = None
+    try:
+        key = _as_symbolic(expr)
+        if key in _function_argument_cache:
+            return _function_argument_cache[key]
+    except TypeError:
+        key = None              # unhashable (a mutable Matrix): not cached
+
+    def needs_dimensionless(f):
+        cls = type(f)
+        return (isinstance(f, sympy.Function) and not hasattr(cls, "meshvar")
+                and cls.__name__ not in _UNIT_PASSING_FUNCTIONS
+                and not isinstance(f, sympy.Derivative))
+
+    verdict = None
     seen = set()
     stack = [_as_symbolic(expr)]
-    while stack:
+    while stack and verdict is None:
         e = stack.pop()
         if isinstance(e, UWexpression):
             if id(e) in seen:
@@ -1064,13 +1097,37 @@ def _dimensional_function_argument(expr):
             continue
         if not isinstance(e, sympy.Basic):
             continue
-        if isinstance(e, functions) and e.args and _reduces_to_a_dimension(e.args[0]):
-            return type(e).__name__, e.args[0]
-        if isinstance(e, sympy.Pow) and _reduces_to_a_dimension(e.exp):
-            return "a power with exponent", e.exp
+        if needs_dimensionless(e):
+            for arg in e.args:
+                if _reduces_to_a_dimension(arg, coordinates_are_lengths=True):
+                    verdict = (type(e).__name__, arg)
+                    break
+        elif isinstance(e, sympy.Pow) and _reduces_to_a_dimension(
+                e.exp, coordinates_are_lengths=True):
+            verdict = ("a power with exponent", e.exp)
+        if hasattr(type(e), "meshvar"):
+            continue            # a field's own function: its arguments are coordinates
         stack.extend(e.args)
         stack.extend(a for a in e.atoms(sympy.Symbol) if isinstance(a, UWexpression))
-    return None
+    if key is not None:
+        _function_argument_cache[key] = verdict
+    return verdict
+
+
+def _refuse_dimensional_function_argument(expr, where="evaluate"):
+    """Raise when ``expr`` applies a function to a dimensional argument (see
+    ``_dimensional_function_argument``), in a model with reference quantities,
+    outside library work."""
+    if _internal_resampling_depth or not uw.get_default_model().has_units():
+        return
+    bad = _dimensional_function_argument(expr)
+    if bad is not None:
+        name, argument = bad
+        raise ValueError(
+            f"{where}: {name} of {str(argument)[:120]}, which carries units once its "
+            "leaves are reduced together. A function like exp, log or sin needs a "
+            "dimensionless argument: divide by a reference (eta1/eta0, E/(R*T0), "
+            "x/W), in a model with reference quantities.")
 
 def _mixed_product(expr):
     """The first product (or sum) in ``expr`` that puts a field without units
@@ -1178,18 +1235,9 @@ def _refuse_mixed_unit_leaves(expr):
     if _internal_resampling_depth or not uw.get_default_model().has_units():
         return
     _refuse_unset_dimensional_defaults([_as_symbolic(expr)])
+    _refuse_dimensional_function_argument(expr)
     unitless, dimensional = _unit_leaves(expr)
-    if not dimensional:
-        return
-    bad_argument = _dimensional_function_argument(expr)
-    if bad_argument is not None:
-        name, argument = bad_argument
-        raise ValueError(
-            f"evaluate: {name} of {str(argument)[:120]}, which carries units once "
-            "its leaves are reduced together. A transcendental function needs a "
-            "dimensionless argument: divide by a reference (eta1/eta0, "
-            "E/(R*T0)), in a model with reference quantities.")
-    if not unitless:
+    if not (unitless and dimensional):
         return
     offending = _mixed_product(expr)
     if offending is None:

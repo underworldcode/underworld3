@@ -9566,6 +9566,17 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         ## `degree - 1`), and a passed field of another degree is refused rather
         ## than paired with one that does not match it.
         u_units, p_units = _stokes_default_units()   # refuses a kinematic model
+        ## A degree-1 velocity on simplices: P1/P0 locks and P1/P1 is unstable, so
+        ## it is refused whichever way it was asked for, before any field is
+        ## created. isSimplex is agreed over ranks at mesh construction, so every
+        ## rank refuses together. Q1/P0 on quadrilaterals and hexahedra is the
+        ## classic element and stays allowed.
+        velocity_degree = velocityField.degree if velocityField is not None else degree
+        if self.mesh.isSimplex and velocity_degree == 1:
+            raise ValueError(
+                "Stokes: a velocity of degree 1 on a simplex mesh does not make a "
+                "stable pair (P1/P0 locks, P1/P1 is unstable). Use degree=2 (P2/P1), "
+                "or pass a velocity of degree 2 or more.")
         if (velocityField is None) != (pressureField is None):
             if velocityField is not None and velocityField.degree != degree:
                 raise ValueError(
@@ -9596,16 +9607,6 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
             if self.verbose and uw.mpi.rank == 0:
                 print(f"SNES Saddle Point Solver {self.instance_number}: creating new mesh variables for unknowns")
-
-        ## A degree-1 velocity on simplices: P1/P0 locks and P1/P1 is unstable, so
-        ## it is refused whichever way it was asked for. isSimplex is agreed over
-        ## ranks at mesh construction, so every rank refuses together. Q1/P0 on
-        ## quadrilaterals and hexahedra is the classic element and stays allowed.
-        if self.mesh.isSimplex and self.Unknowns.u.degree == 1:
-            raise ValueError(
-                "Stokes: a velocity of degree 1 on a simplex mesh does not make a "
-                "stable pair (P1/P0 locks, P1/P1 is unstable). Use degree=2 (P2/P1), "
-                "or pass a velocity of degree 2 or more.")
 
         # I expect the following to break for anyone who wants to name their solver _stokes__ etc etc (LM)
 

@@ -204,8 +204,9 @@ def test_a_passed_field_of_the_wrong_degree_is_refused():
     created beside it takes its degree from ``degree``, so a P1 velocity would get
     a P1 pressure, and a P2 pressure a P2 velocity with a continuous pressure."""
     mesh = _box()
+    # A P1 velocity on simplices is refused outright and pointed to P2/P1 (#1197).
     v1 = uw.discretisation.MeshVariable("v1_844", mesh, 2, degree=1)
-    with pytest.raises(ValueError, match="degree=1"):
+    with pytest.raises(ValueError, match="degree=2"):
         uw.systems.Stokes(mesh, velocityField=v1)
     p2 = uw.discretisation.MeshVariable("p2_844", mesh, 1, degree=2)
     with pytest.raises(ValueError, match="degree=3"):
@@ -505,3 +506,38 @@ def test_dimensionless_arguments_are_accepted(units_model):
     r2 = uw.function.evaluate(sympy.exp(-E / (R * T0)), _PTS)
     assert float(np.asarray(r1).ravel()[0]) == pytest.approx(np.exp(1e-3))
     assert float(np.asarray(r2).ravel()[0]) == pytest.approx(np.exp(-3.0e5 / (8.314 * 1600)))
+
+
+@pytest.mark.level_1
+@pytest.mark.tier_b
+def test_coordinates_divided_by_a_length_are_dimensionless_arguments(units_model):
+    """``sin(pi*x/W)`` and ``exp(x/L)``: a coordinate carries length, so divided by
+    a length it is a dimensionless argument (H1's regression on #1197)."""
+    mesh = _box()
+    x, y = mesh.X
+    W = uw.expression("W_c", uw.quantity(30, "km"), "width")
+    r = uw.function.evaluate(sympy.sin(sympy.pi * x / W) + sympy.exp(x / W), _PTS)
+    assert float(np.asarray(r).ravel()[0]) == pytest.approx(1.0 + np.exp(0.5))
+
+
+@pytest.mark.level_1
+@pytest.mark.tier_b
+@pytest.mark.parametrize("func", ["erfc", "asinh", "atanh"])
+def test_every_applied_function_needs_a_dimensionless_argument(units_model, func):
+    """By rule, not a list: functions beyond exp, log and the trigonometric ones."""
+    _box()
+    e1, _e0, _E, _R, _T0 = _arrhenius_constants()
+    with pytest.raises(ValueError, match=func):
+        uw.function.evaluate(getattr(sympy, func)(e1), _PTS)
+
+
+@pytest.mark.level_1
+@pytest.mark.tier_b
+def test_a_dimensional_argument_is_refused_at_the_parameter_setter(units_model):
+    """A viscosity of eta0*exp(eta1) would run a solve; it is refused when set."""
+    st = uw.systems.Stokes(_box())
+    st.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    e1, e0, _E, _R, _T0 = _arrhenius_constants()
+    with pytest.raises(ValueError, match="exp"):
+        st.constitutive_model.Parameters.shear_viscosity_0 = e0 * sympy.exp(e1)
+    st.constitutive_model.Parameters.shear_viscosity_0 = e0 * sympy.exp(-e1 / e0)
