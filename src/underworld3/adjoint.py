@@ -557,8 +557,13 @@ def gradient(solver, misfit, parameters=(), fields=(), scratch=None, boundary=No
     read_vars = [f for f in fields if f is not u] + list(route)
     if u in duals:
         reads = _boundary_reads_of(solver, [f for f in fields if f is not u])
-        if reads:
-            _refuse_boundary_fields(solver, reads, "gradient", "which was asked for")
+        # A field read only in an essential datum has its dual through the
+        # reaction (solver._essential_datum_field_dual, #787); one read in a
+        # natural condition has no assembled facet term on this route yet.
+        natural = [(v, k) for v, k in reads if k != "essential"]
+        if natural:
+            _refuse_boundary_fields(solver, natural, "gradient", "which was asked for")
+        in_datum = [v for v, k in reads if k == "essential"]
         rhs = duals.pop(u)
         # dJ/du on every node, the constrained ones included: the rows the
         # solve leaves out are the misfit reading the prescribed data, and
@@ -580,6 +585,12 @@ def gradient(solver, misfit, parameters=(), fields=(), scratch=None, boundary=No
         # parameter in a velocity datum reads it through the divergence block
         for p in parameters:
             grad[p] += solver.sensitivity(mu, p, lam=lam, misfit_dual=misfit_dual)
+        for field in in_datum:
+            through_datum = solver._essential_datum_field_dual(
+                mu, field, lam=lam, misfit_dual=misfit_dual)
+            if through_datum is not None:
+                out_fields[field] = out_fields[field] + through_datum.reshape(
+                    np.asarray(out_fields[field]).shape)
         if lam is not None:
             scratch.give(lam)
         for var, dual in field_duals(solver, mu, read_vars, scratch).items():
