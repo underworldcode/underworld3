@@ -40,11 +40,16 @@ PetscErrorCode PetscDSAddBoundary_UW(DM dm,
     PetscFunctionBeginUser;
     PetscCall(DMGetLabel(dm, labelname, &label));
     // A label made after distribution can exist only where it has points, so
-    // the ranks agree on it before any of them refuses.
+    // the ranks agree on it before any of them refuses, and a rank without it
+    // gets it empty: DMAddBoundary must be given a label on every rank.
     held = label ? PETSC_TRUE : PETSC_FALSE;
     PetscCallMPI(MPIU_Allreduce(MPI_IN_PLACE, &held, 1, MPIU_BOOL, MPI_LOR, PetscObjectComm((PetscObject)dm)));
     PetscCheck(held, PetscObjectComm((PetscObject)dm), PETSC_ERR_ARG_WRONG,
                "The DM has no label named %s for the boundary condition %s", labelname, name);
+    if (!label) {
+        PetscCall(DMCreateLabel(dm, labelname));
+        PetscCall(DMGetLabel(dm, labelname, &label));
+    }
     PetscCall(DMAddBoundary(dm, type, name, label, ids, id_values, field, num_const_components,
                             components, bcFunc, bcFunc_t, ctx, bd));
     PetscFunctionReturn(PETSC_SUCCESS);

@@ -374,22 +374,46 @@ cdef PetscInt _add_boundary(DM cdm, DMBoundaryConditionType bc_type, bytes name,
                             PetscInt n_ids, const PetscInt *ids) except? -1:
     """Add one boundary condition to ``cdm`` and return its PETSc index.
 
-    A label the DM does not hold is refused here, naming the labels it has: the
-    condition would otherwise be added on a null label, which ends the process
-    at the solve (#1138). Anything else DMAddBoundary refuses, such as a field
-    number the DM does not have, raises rather than dropping the condition
-    (found in the review of PR #1170). The ranks agree on whether the label is
-    held before any of them refuses: a label made after distribution can exist
-    only on the ranks that hold its points.
+    One rule for every condition, essential or natural, whatever label it is
+    keyed on: it is refused here, naming what is wrong, when
+
+    - no rank holds its label (#1138: it would go in on a null label, which
+      ends the process at the solve);
+    - its label values mark no point on any rank (a boundary the mesh lists
+      but has no faces for: the condition would go in on nothing and the solve
+      would run without it, silently);
+    - its field is not one of the solver's DM fields (found in the review of
+      PR #1170: DMAddBoundary refused it and the refusal was discarded).
+
+    Each test is decided over every rank before any rank refuses. A label made
+    after distribution exists only on the ranks that hold its points; the C
+    wrapper gives the other ranks an empty one, so every rank adds the
+    condition.
     """
     cdef PetscInt bd = -1
+    cdef PetscInt i
+    comm = cdm.getComm().tompi4py()
     label = label_name.decode()
-    held = cdm.getComm().tompi4py().allreduce(bool(cdm.hasLabel(label)), op=uw.MPI.LOR)
-    if not held:
-        held = [cdm.getLabelName(i) for i in range(cdm.getNumLabels())]
+    condition = name.decode()
+    here = cdm.getLabel(label) if cdm.hasLabel(label) else None
+    if not comm.allreduce(here is not None, op=uw.MPI.LOR):
+        labels = [cdm.getLabelName(k) for k in range(cdm.getNumLabels())]
         raise ValueError(
-            f"The boundary condition '{name.decode()}' names the label '{label}', which "
-            f"this mesh's DM does not hold. Its labels are: {', '.join(held)}.")
+            f"The boundary condition '{condition}' names the label '{label}', which "
+            f"this mesh's DM does not hold. Its labels are: {', '.join(labels)}.")
+    values = [ids[i] for i in range(n_ids)]
+    marked = sum(here.getStratumSize(v) for v in values) if here is not None else 0
+    if comm.allreduce(int(marked), op=uw.MPI.SUM) == 0:
+        raise ValueError(
+            f"The boundary condition '{condition}' is on label '{label}' with value(s) "
+            f"{values}, which mark no point of this mesh: the mesh lists the boundary "
+            f"but has no faces for it, and the condition would act on nothing.")
+    n_fields = cdm.getNumFields()
+    if not 0 <= field < n_fields:
+        raise ValueError(
+            f"The boundary condition '{condition}' is on field {field}, and the solver's "
+            f"DM has fields 0 to {n_fields - 1}. A solver's field numbers are its own "
+            f"(velocity 0, pressure 1, multipliers from 2), not a variable's field_id.")
     CHKERRQ(PetscDSAddBoundary_UW(cdm.dm, bc_type, name, label_name, field, n_components,
                                   <PetscInt *> components, bc_fn, bc_fn_t, n_ids, ids, NULL, &bd))
     return bd
