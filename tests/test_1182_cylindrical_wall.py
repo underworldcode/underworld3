@@ -95,8 +95,8 @@ def test_wall_iteration_preserves_exact_quiescent_solution(slip):
         add_wall = stokes.add_cylindrical_zero_slip_transfer
         options = {}
         solve = stokes.solve_cylindrical_zero_slip_updates
-    walls = {name: add_wall(boundary=name, radius=radius, sign=sign, quadrature=6, **options)
-             for name, radius, sign in (("Lower", 1.22, -1), ("Upper", 2.22, 1))}
+    walls = {name: add_wall(boundary=name, sign=sign, quadrature=6, **options)
+             for name, sign in (("Lower", -1), ("Upper", 1))}
     history = solve(walls=walls, updates=2)
     assert len(history) == 3
     for step in history:
@@ -120,8 +120,8 @@ def test_general_pressure_split_and_zero_slip_preserve_hydrostatic_balance():
         normals={"Internal": mesh.CoordinateSystem.unit_e_0})
     stokes.bodyforce = split.regular_force.sym
     walls = {name: stokes.add_cylindrical_zero_slip_transfer(
-        boundary=name, radius=radius, sign=sign, quadrature=6)
-        for name, radius, sign in (("Lower", 1.22, -1), ("Upper", 2.22, 1))}
+        boundary=name, sign=sign, quadrature=6)
+        for name, sign in (("Lower", -1), ("Upper", 1))}
     stokes.solve_cylindrical_zero_slip_updates(walls=walls, updates=2)
     velocity_l2 = np.sqrt(abs(uw.maths.Integral(mesh, stokes.u.sym.dot(stokes.u.sym)).evaluate()))
     assert velocity_l2 < 1e-8

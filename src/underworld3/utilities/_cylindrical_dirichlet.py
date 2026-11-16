@@ -37,13 +37,39 @@ from scipy.spatial import cKDTree
 from .boundary_flux import _boundary_stratum_is
 
 
+def _declared_circle_radius(mesh, boundary):
+    """The radius of the origin-centred circle the mesh declares for ``boundary``.
+
+    The circle is the mesh's declaration (``mesh.analytic_surface``), never a
+    radius from the caller and never a measurement. Refused, with the
+    accessor's reason, when the boundary has no declared circle: undeclared,
+    released after the mesh was deformed, or declared as a plane. The
+    registry is the same on every rank, so the verdict is too, and nothing
+    here is collective.
+    """
+    surface = mesh.analytic_surface(boundary)
+    if surface.kind != "radial":
+        raise ValueError(
+            f"boundary {boundary!r} is declared as a {surface.kind}, not a circle; "
+            f"the circular-wall methods need a declared circle")
+    if np.any(surface.centre != 0.0):
+        raise ValueError(
+            f"boundary {boundary!r} is declared as a circle centred at "
+            f"{tuple(surface.centre)}; the circular-wall methods support a circle "
+            f"centred at the origin only")
+    return float(surface.radius)
+
+
 def _edge_key(edge, tolerance):
     """Coordinate key independent of facet orientation and partition numbering."""
     return tuple(sorted(tuple(row) for row in np.rint(edge / tolerance).astype(np.int64)))
 
 
 def _labelled_edge_keys(mesh, boundary, radius, tolerance):
-    """Collect only labelled boundary facets, including ghosts on empty ranks."""
+    """Collect only labelled boundary facets, including ghosts on empty ranks.
+
+    ``radius`` is the declared circle. The facets are not measured against
+    it: the declaration is the contract (``mesh.analytic_surface``)."""
     dm = mesh.dm
     facets = _boundary_stratum_is(dm, mesh, boundary)
     indices = np.empty(0, dtype=int)
@@ -68,9 +94,8 @@ def _labelled_edge_keys(mesh, boundary, radius, tolerance):
     if uw.mpi.comm.allreduce(unsupported, op=MPI.LOR):
         raise ValueError("Circular-wall transfer supports two-vertex affine boundary facets only.")
     edges = np.concatenate(uw.mpi.comm.allgather(np.asarray(local).reshape(-1, 2, 2)))
-    if not len(edges) or not np.allclose(np.linalg.norm(edges, axis=-1), radius,
-                                          rtol=0, atol=tolerance):
-        raise ValueError("The labelled boundary must lie on the requested centered circle.")
+    if not len(edges):
+        raise ValueError(f"Boundary {boundary!r} holds no facets.")
     return {_edge_key(edge, tolerance) for edge in edges}
 
 
@@ -189,8 +214,23 @@ class _CircularWall:
                 or int(quadrature) != quadrature or quadrature < 3):
             raise ValueError("Require finite positive radius, sign +/-1 and integer quadrature >= 3.")
         self.stokes, self.mesh, self.velocity = stokes, mesh, velocity
-        self.name, self.radius, self.sign = boundary, float(radius), sign
+        self.name, self.sign = boundary, sign
         self.quadrature = int(quadrature)
+        self._build_geometry(radius)
+
+    def _build_geometry(self, radius):
+        """Cache the wall's cells, chords, P2 node maps and quadrature rule.
+
+        Everything cached here follows from the mesh coordinates, so it is
+        built again when they change (:meth:`refresh_geometry`). Collective.
+        """
+        mesh, velocity = self.mesh, self.velocity
+        boundary = self.name
+        self.radius = float(radius)
+        self._built_at_geometry_version = mesh._geometry_version
+        # TODO(DESIGN): the wall's cells and P2 nodes are found by matching
+        # coordinates to 1e-10 of the radius; the label's facet closure and
+        # their support cells would identify them topologically (Charter §12).
         tolerance = 1e-10 * radius
         boundary_edges = _labelled_edge_keys(mesh, boundary, radius, tolerance)
         vertex_rows = mesh._cell_node_indices(1, True).reshape(-1, 3)
@@ -252,6 +292,30 @@ class _CircularWall:
             circle_points=radius * points / np.linalg.norm(points, axis=-1)[..., None],
             circle_weight=radius * cross / np.sum(points**2, axis=-1) * weight)
 
+    def refresh_geometry(self):
+        """Build the cached geometry again if the mesh coordinates moved.
+
+        The key is the mesh's geometry generation (``_geometry_version``), never a coordinate
+        comparison; the verdict is reduced so every rank rebuilds or none
+        does. A move that kept the wall declared (a mover that slides the
+        wall and restores it onto its circle) is followed: the circle is read
+        from the declaration again, the geometry rebuilt and the lagged datum
+        restarted from zero. A move that released the declaration
+        (:meth:`~underworld3.discretisation.Mesh.deform`, a direct coordinate
+        write) is refused with the reason. Collective. Returns whether the
+        geometry was rebuilt.
+        """
+        moved = self.mesh._geometry_version != self._built_at_geometry_version
+        if not uw.mpi.comm.allreduce(moved, op=MPI.LOR):
+            return False
+        self._build_geometry(_declared_circle_radius(self.mesh, self.name))
+        self._restart_lagged_datum()
+        return True
+
+    def _restart_lagged_datum(self):
+        """Zero the lagged datum after a geometry rebuild."""
+        raise NotImplementedError
+
     def cell_values(self):
         """Collect only owned wall-cell P2 coefficients, including empty ranks."""
         local = np.take_along_axis(
@@ -267,6 +331,9 @@ class _ZeroSlipWall(_CircularWall):
         self.field = uw.discretisation.MeshVariable(
             f"ZeroSlipShift_{stokes.instance_number}_{boundary}", self.mesh, 2,
             degree=2, continuous=True)
+        self.values = np.zeros_like(self.nodes)
+
+    def _restart_lagged_datum(self):
         self.values = np.zeros_like(self.nodes)
 
     def update(self):
@@ -312,10 +379,11 @@ class _ZeroSlipWall(_CircularWall):
         )
 
 
-def _add_cylindrical_zero_slip_transfer(stokes, *, boundary, radius, sign, quadrature):
+def _add_cylindrical_zero_slip_transfer(stokes, *, boundary, sign, quadrature):
     """Register one auxiliary P2 vector essential datum before the first solve."""
     if getattr(stokes, "_rotated_freeslip_bcs", None):
         raise ValueError("Zero-slip transfer uses standard Stokes, not rotated free slip.")
+    radius = _declared_circle_radius(stokes.mesh, boundary)
     wall = _ZeroSlipWall(stokes, boundary, radius, sign, quadrature)
     stokes.add_dirichlet_bc(wall.field.sym, boundary)
     return wall
@@ -338,6 +406,8 @@ def _solve_cylindrical_zero_slip_updates(stokes, *, walls, updates):
     if (len(walls) != 2 or {wall.sign for wall in walls.values()} != {-1, 1}
             or any(wall.stokes is not stokes for wall in walls.values())):
         raise ValueError("Supply this Stokes system's inner and outer zero-slip handles together.")
+    for _, wall in sorted(walls.items()):
+        wall.refresh_geometry()
     radii = {wall.sign: wall.radius for wall in walls.values()}
     if not radii[-1] < radii[1]:
         raise ValueError("The inner zero-slip radius must be smaller than the outer radius.")

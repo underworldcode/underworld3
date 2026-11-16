@@ -34,7 +34,7 @@ def test_a_refusal_on_one_rank_is_raised_on_every_rank(monkeypatch):
     refused = False
     try:
         stokes.cylindrical_pressure_lifting(
-            interface_radius=2.0, outer_radius=2.22, wavenumber=2, amplitude=1.0,
+            interface="Internal", outer="Upper", wavenumber=2, amplitude=1.0,
             quadrature_points=4)
     except (ValueError, RuntimeError) as err:
         refused = "Circular cap leaves" in str(err)

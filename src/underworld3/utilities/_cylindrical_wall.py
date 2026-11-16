@@ -22,7 +22,8 @@ from scipy.sparse import coo_matrix
 from scipy.sparse.linalg import spsolve
 from scipy.spatial import cKDTree
 
-from ._cylindrical_dirichlet import _CircularWall, _p2_velocity, _facet_normals
+from ._cylindrical_dirichlet import (_CircularWall, _declared_circle_radius, _p2_velocity,
+                                     _facet_normals)
 
 
 def _tangent_load_density(edges: np.ndarray, traction: np.ndarray, sign: int, quadrature: int):
@@ -180,7 +181,6 @@ class _FreeSlipWall(_CircularWall):
         if isinstance(lift, uw.discretisation.MeshVariable):
             if lift.mesh is not self.mesh or lift.degree != 1 or lift.num_components != 1:
                 raise ValueError("Pressure-lift fields must be scalar P1 fields on the Stokes mesh.")
-            self.lift_rows = self.mesh._cell_node_indices(1, lift.continuous).reshape(-1, 3)[self.cells]
         prefix = f"{stokes.instance_number}_{boundary}"
         self.normal_field = uw.discretisation.MeshVariable(
             "CircularNormalShift_" + prefix, self.mesh, 1, degree=2, continuous=True)
@@ -188,9 +188,18 @@ class _FreeSlipWall(_CircularWall):
             "CircularTangentShift_" + prefix, self.mesh, 2, degree=2, continuous=True)
         self.normal_values = np.zeros(len(self.nodes))
         self.density = np.zeros_like(self.nodes)
-        self.rule["normal"] = _facet_normals(self.edges, sign)
-        _, weights = np.polynomial.legendre.leggauss(quadrature)
+
+    def _build_geometry(self, radius):
+        super()._build_geometry(radius)
+        self.rule["normal"] = _facet_normals(self.edges, self.sign)
+        _, weights = np.polynomial.legendre.leggauss(self.quadrature)
         self.rule["weight"] = np.linalg.norm(self.edges[:, 1]-self.edges[:, 0], axis=1)[:, None]*weights/2
+
+    def _restart_lagged_datum(self):
+        self.normal_values = np.zeros(len(self.nodes))
+        self.density = np.zeros_like(self.nodes)
+        self.normal_field.array[...] = 0.0
+        self.traction_field.array[...] = 0.0
 
     def pressure_values(self):
         """Gather regular pressure and one-sided prescribed lift at wall points."""
@@ -198,7 +207,8 @@ class _FreeSlipWall(_CircularWall):
             np.asarray(self.stokes.p.array)[self.p_rows, 0, 0]))
         points = self.rule["points"][self.local_edge_slice]
         if isinstance(self.pressure_jump, uw.discretisation.MeshVariable):
-            field, rows = self.pressure_jump, self.lift_rows
+            field = self.pressure_jump
+            rows = self.mesh._cell_node_indices(1, field.continuous).reshape(-1, 3)[self.cells]
             lift = _p1_values(np.asarray(field.coords)[rows], np.asarray(field.array)[rows, 0, 0], points)
         else:
             # Coordinate-only evaluation is rank-local; every rank also enters
@@ -264,8 +274,9 @@ class _FreeSlipWall(_CircularWall):
                     true_circle_shear_stress_rms=float(np.sqrt(np.sum(weight*trace["rt"]**2)/weight.sum())))
 
 
-def _add_cylindrical_wall_transfer(stokes, *, boundary, radius, sign, viscosity,
+def _add_cylindrical_wall_transfer(stokes, *, boundary, sign, viscosity,
                                    pressure_jump, quadrature):
+    radius = _declared_circle_radius(stokes.mesh, boundary)
     wall = _FreeSlipWall(stokes, boundary, radius, sign, viscosity, pressure_jump, quadrature)
     stokes.add_rotated_freeslip_bc(wall.normal_field.sym[0], boundary,
                                   normal=sign*stokes.mesh.CoordinateSystem.unit_e_0)
@@ -282,6 +293,8 @@ def _solve_with_wall_updates(stokes, walls, updates):
     if (len(walls) != 2 or {wall.sign for wall in walls.values()} != {-1, 1}
             or any(wall.stokes is not stokes for wall in walls.values())):
         raise ValueError("Supply this Stokes system's inner and outer free-slip handles together.")
+    for _, wall in sorted(walls.items()):
+        wall.refresh_geometry()
     radii = {wall.sign: wall.radius for wall in walls.values()}
     if not radii[-1] < radii[1]:
         raise ValueError("The inner free-slip radius must be smaller than the outer radius.")

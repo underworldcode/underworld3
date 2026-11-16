@@ -233,7 +233,8 @@ def test_boundary_adapter_collects_owned_coefficients_and_preserves_velocity(lay
     # it geometrically while excluding every ghost cell from the gather.
     rows = rows[:, [3, 1, 5, 2, 0, 4]]
     p1_coordinates, p1_inverse = np.unique(local_vertices.reshape(-1, 2), axis=0, return_inverse=True)
-    mesh = SimpleNamespace(dim=2, cdim=2, isSimplex=True, boundaries=[SimpleNamespace(name="Outer")],
+    mesh = SimpleNamespace(dim=2, cdim=2, isSimplex=True, _geometry_version=0,
+        boundaries=[SimpleNamespace(name="Outer")],
         _cell_node_indices=lambda degree, continuous: p1_inverse.reshape(-1, 3) if degree == 1 else rows,
         _get_coords_for_basis=lambda degree, continuous: p1_coordinates,
         _get_owned_cells_mask=lambda: owned)

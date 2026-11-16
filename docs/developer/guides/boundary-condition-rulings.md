@@ -99,8 +99,17 @@ given as `None` (or `sympy.oo`) are left free. Three things to know:
 constraint and tangential natural load for free slip on the true circle.
 `Stokes.add_cylindrical_zero_slip_transfer` registers a full-vector shifted
 Dirichlet condition. These replace the ordinary wall registration on each
-boundary. Both require fixed, nondimensional affine triangles, continuous
+boundary. Both require nondimensional affine triangles, continuous
 P2 velocity/P1 regular pressure, and a complete inner/outer circle pair.
+
+Each wall's circle is the one the mesh declares for it
+(`mesh.analytic_surface(label)`), never a radius from the caller, and the
+same holds for the sheet and outer wall of `cylindrical_pressure_lifting`. A
+boundary the mesh does not declare as an origin-centred circle is refused:
+undeclared (a mesh read from a file declares nothing), released (after
+`mesh.deform` or a direct coordinate write), or declared as a plane. If a
+mover slides the walls and keeps them on their circles, the next lagged solve
+builds the wall geometry again and restarts the lagged datum from zero.
 
 Call `solve_cylindrical_wall_updates(walls=walls, updates=...)` for free slip,
 or `solve_cylindrical_zero_slip_updates` for zero slip, with the pressure

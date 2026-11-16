@@ -25,7 +25,7 @@ def test_native_pressure_lift_reproduces_positive_prescribed_jump():
     pressure = uw.discretisation.MeshVariable("LiftPressure", mesh, 1, degree=1)
     stokes = uw.systems.Stokes(mesh, velocityField=velocity, pressureField=pressure)
     lift = stokes.cylindrical_pressure_lifting(
-        interface_radius=2.0, outer_radius=2.22, wavenumber=2,
+        interface="Internal", outer="Upper", wavenumber=2,
         amplitude=-1.0, quadrature_points=8,
     )
     points = np.array([[2.0 + 1e-7, 0], [1.9, 0], [2.22, 0]])

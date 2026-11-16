@@ -9848,7 +9848,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         from underworld3.utilities._pressure_split import _create_pressure_split
         return _create_pressure_split(self, jumps, normals, tolerance)
 
-    def cylindrical_pressure_lifting(self, *, interface_radius, outer_radius,
+    def cylindrical_pressure_lifting(self, *, interface, outer,
                                      wavenumber, amplitude, quadrature_points):
         r"""Construct an exact-circle pressure lift and moment-equivalent force.
 
@@ -9859,8 +9859,12 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         Parameters
         ----------
-        interface_radius, outer_radius : float
-            Prescribed circular sheet and outer wall radii, with outer > sheet.
+        interface, outer : str
+            Boundary names of the fitted circular sheet and the outer wall.
+            Their circles are the ones the mesh declares
+            (:meth:`~underworld3.discretisation.Mesh.analytic_surface`), centred
+            at the origin, with the outer radius larger. A boundary the mesh
+            does not declare as such a circle is refused.
         wavenumber : int
             Azimuthal cosine mode of the prescribed radial sheet load.
         amplitude : float
@@ -9898,12 +9902,15 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         not the paper's harmonic-extension/CR scheme.
         """
         from underworld3.utilities._cylindrical_pressure import _create_circular_pressure_lift
+        from underworld3.utilities._cylindrical_dirichlet import _declared_circle_radius
         if self.u.degree != 2 or not self.u.continuous or self.p.degree != 1 or not self.p.continuous:
             raise ValueError("Circular pressure lifting requires continuous P2/P1 fields.")
+        interface_radius = _declared_circle_radius(self.mesh, interface)
+        outer_radius = _declared_circle_radius(self.mesh, outer)
         return _create_circular_pressure_lift(self.mesh, interface_radius, outer_radius,
                                              wavenumber, amplitude, quadrature_points)
 
-    def add_cylindrical_wall_transfer(self, *, boundary, radius, sign,
+    def add_cylindrical_wall_transfer(self, *, boundary, sign,
                                       viscosity, pressure_jump, quadrature):
         r"""Register lagged free-slip transfer to a physical circular wall.
 
@@ -9915,9 +9922,11 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         Parameters
         ----------
         boundary : str
-            Complete exterior circular boundary label on a fixed affine mesh.
-        radius : float
-            Physical circle radius, centered at the coordinate origin.
+            Complete exterior circular boundary label. Its circle is the one
+            the mesh declares
+            (:meth:`~underworld3.discretisation.Mesh.analytic_surface`),
+            centred at the origin; a boundary the mesh does not declare as
+            such a circle is refused.
         sign : int
             Domain-outward normal orientation: -1 inner, +1 outer.
         viscosity : float
@@ -9955,7 +9964,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         claimed. Check physical-circle residuals in the solve history.
         """
         from underworld3.utilities._cylindrical_wall import _add_cylindrical_wall_transfer
-        return _add_cylindrical_wall_transfer(self, boundary=boundary, radius=radius,
+        return _add_cylindrical_wall_transfer(self, boundary=boundary,
             sign=sign, viscosity=viscosity, pressure_jump=pressure_jump,
             quadrature=quadrature)
 
@@ -9985,12 +9994,17 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         -----
         Enable ``petsc_use_pressure_nullspace`` before solving. Existing rotated
         solver settings are retained. No analytical solution enters the updates.
+
+        If the mesh coordinates moved since the walls were registered, each
+        wall's geometry is built again from the circle the mesh declares and
+        its lagged datum restarts from zero; if the move released the
+        declaration (:meth:`~underworld3.discretisation.Mesh.deform`, a direct
+        coordinate write), the solve is refused with the reason.
         """
         from underworld3.utilities._cylindrical_wall import _solve_with_wall_updates
         return _solve_with_wall_updates(self, walls, updates)
 
-    def add_cylindrical_zero_slip_transfer(self, *, boundary, radius, sign,
-                                           quadrature):
+    def add_cylindrical_zero_slip_transfer(self, *, boundary, sign, quadrature):
         r"""Register a full-vector zero-slip datum shifted to a physical circle.
 
         .. note::
@@ -10001,9 +10015,11 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         Parameters
         ----------
         boundary : str
-            Complete exterior circular boundary label on a fixed affine mesh.
-        radius : float
-            Positive physical radius, centered at the origin.
+            Complete exterior circular boundary label. Its circle is the one
+            the mesh declares
+            (:meth:`~underworld3.discretisation.Mesh.analytic_surface`),
+            centred at the origin; a boundary the mesh does not declare as
+            such a circle is refused.
         sign : int
             Domain-outward orientation: -1 inner, +1 outer.
         quadrature : int
@@ -10034,7 +10050,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         """
         from underworld3.utilities._cylindrical_dirichlet import _add_cylindrical_zero_slip_transfer
         return _add_cylindrical_zero_slip_transfer(self, boundary=boundary,
-            radius=radius, sign=sign, quadrature=quadrature)
+            sign=sign, quadrature=quadrature)
 
     def solve_cylindrical_zero_slip_updates(self, *, walls, updates):
         """Solve with jointly flux-compatible shifted zero-slip data.
@@ -10061,6 +10077,12 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         -----
         Enable ``petsc_use_pressure_nullspace`` before solving. No rotated
         constraints, torque correction, pressure or traction recovery is added.
+
+        If the mesh coordinates moved since the walls were registered, each
+        wall's geometry is built again from the circle the mesh declares and
+        its lagged datum restarts from zero; if the move released the
+        declaration (:meth:`~underworld3.discretisation.Mesh.deform`, a direct
+        coordinate write), the solve is refused with the reason.
         """
         from underworld3.utilities._cylindrical_dirichlet import _solve_cylindrical_zero_slip_updates
         return _solve_cylindrical_zero_slip_updates(self, walls=walls, updates=updates)
