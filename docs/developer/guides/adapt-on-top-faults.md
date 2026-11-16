@@ -99,8 +99,9 @@ transform as NVB, so it inherits star-forest propagation, co-partitioning, label
 and coordinates. Verified at np=1/2/3/4 up to 56k cells. The choice of
 multigrid levels follows the mesh and not its partition: a generation is kept as
 a level on the 5th percentile of its cell diameters over the whole mesh (#865).
-With `repair=True` or a `node_budget` the generations themselves depend on the
-partition, and so do the levels.
+With `repair=True` the generations themselves depend on the partition, and so
+do the levels. A `node_budget` is one cut over the whole mesh (#1122), so it
+does not.
 
 ```python
 child = base.adapt(metric, max_levels=3, engine="edge_split")

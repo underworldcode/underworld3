@@ -173,6 +173,8 @@ def top_over_ranks(metric, centroids, count):
     """
     comm = uw.mpi.comm
     metric = np.asarray(metric, dtype=float).ravel()
+    if count <= 0:          # every rank holds the same count, so all leave here
+        return np.empty(0, dtype=np.int64)
     centroids = np.asarray(centroids, dtype=float)
     centroids = centroids.reshape(metric.size, centroids.shape[-1])
     # columns of the key, most significant first: -metric, then x, y(, z)

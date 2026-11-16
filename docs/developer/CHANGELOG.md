@@ -6,6 +6,20 @@ This log tracks significant development work at a conceptual level, suitable for
 
 ## 2026 Q4 (October – December)
 
+### adapt's node_budget is one budget for the whole mesh (November 2026, #1122)
+
+`Mesh.adapt(..., node_budget=N)` caps the cells marked in each refinement pass at
+N, highest metric first. Each rank applied the cap to its own cells, so P ranks
+marked up to N x P cells per pass, and which cells they were depended on the
+partition: the refined mesh, and the multigrid levels built from it, changed with
+the rank count. The cap is now taken over the whole mesh, and cells of equal
+metric are ordered by centroid (smallest x, then y, then z), so the adapted mesh
+is the same at any rank count. In serial only the choice among cells of equal
+metric changes, which argsort made before: on a guide-surface fixture with
+`node_budget=50` the last edge_split level goes from 2956 to 2690 cells, and nvb
+and sbr are unchanged. Iteration counts recorded on such a budgeted mesh may
+move. Without a budget nothing changes.
+
 ### The monotone clamp bounds a value by the cell it was interpolated in (November 2026, #682, #994)
 
 `evaluate` and `global_evaluate` with `monotone="clamp"` (or `True`) used to clip each

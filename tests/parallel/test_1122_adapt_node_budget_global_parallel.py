@@ -77,3 +77,18 @@ def test_the_cut_does_not_depend_on_the_deal():
         kept = mine[top_over_ranks(metric[mine], centroids[mine], 15)]
         pooled = set(np.concatenate(uw.mpi.comm.allgather(kept)).tolist())
         assert pooled == truth
+
+
+@pytest.mark.parametrize("engine", ["nvb", "edge_split", "sbr"])
+def test_a_budget_of_zero_refines_nothing(engine):
+    """node_budget=0 marks nothing and returns the mesh unrefined, as before the
+    global cut (which first raised IndexError here)."""
+    if engine == "nvb":
+        pytest.importorskip("underworld3.utilities._nvb_transform",
+                            reason="native uwnvb transform not built")
+    base = uw.meshing.UnstructuredSimplexBox(minCoords=(0, 0), maxCoords=(1, 1),
+                                             cellSize=0.1, refinement=1, qdegree=2)
+    child = base.adapt(lambda X: np.full(len(X), 1.0e4), max_levels=1, engine=engine,
+                       node_budget=0)
+    counts = [uw.mpi.comm.allreduce(_owned_cells(m.dm)) for m in child.multigrid_levels]
+    assert counts[-1] == 968, f"np {uw.mpi.size}: {counts}"

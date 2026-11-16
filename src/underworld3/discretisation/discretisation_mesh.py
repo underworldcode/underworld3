@@ -10165,9 +10165,10 @@ class Mesh(Stateful, uw_object):
             the on-rank imbalance). Each level re-marks against the metric.
         node_budget : int or None
             Optional cap on the number of *seed* cells marked per level (highest-
-            metric first). The cap is for the whole mesh, not per rank, and ties
-            go to the cell with the smaller centroid, so the cells marked do not
-            depend on the partition. **Caveat:** this caps the marked seeds, *not* the
+            metric first). The cap is for the whole mesh, not per rank, so the
+            cells marked do not depend on the partition. Ties, including a flat metric, go to the
+            smallest x, then y, then z, so on a plateau the budget is spent from
+            the low-x end of the feature first. ``0`` marks nothing. **Caveat:** this caps the marked seeds, *not* the
             resulting DOFs — SBR's conforming closure re-refines the whole
             connected patch from any seed in it, so a seed cap does not bound the
             added DOFs and cannot, on its own, concentrate the finest level near a
