@@ -24,7 +24,10 @@ import sympy
 import underworld3 as uw
 from underworld3.utilities import custom_mg
 
-pytestmark = [pytest.mark.level_2, pytest.mark.tier_b]
+# the fault is left a traction-free crack on purpose: the test is about the
+# custom multigrid, and a law would change its baselines
+pytestmark = [pytest.mark.level_2, pytest.mark.tier_b,
+              pytest.mark.filterwarnings("ignore:split fault")]
 
 
 def _velocity_pc(stokes):

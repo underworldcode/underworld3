@@ -101,7 +101,7 @@ Audit-informed inventory:
 | Binding `DDt instance ↔ psi_star MV(s)` | implicit in `__init__` | high |
 | Simulation time, step counter | not in any object today | high |
 | Parameter mutation history | `parameters.py:145` (`_history`) | medium |
-| `Swarm._mesh_version` | `swarm.py:2421` | medium |
+| `Swarm._mesh_geometry_version` | `swarm.py` (`Swarm._sync_before_assembly`) | medium |
 | Solver iteration counts / convergence history | scattered | low |
 
 **The DDt example is representative, not exceptional.** Algorithm-internal

@@ -34,6 +34,7 @@ import underworld3 as uw
 # A fine cell's centroid lies inside its parent for nested refinement; the
 # tolerance is the cell locator's own, so a point it accepts is accepted here.
 from underworld3.utilities.fault_mg import _INSIDE_TOL
+from underworld3.utilities.fault_contact import _collective_raise
 
 __all__ = ["partition_addon", "mark_labels", "mark_polylines", "mark_sheets",
            "mark_band"]
@@ -162,15 +163,19 @@ def mark_sheets(sheets, clearance):
 
 
 def mark_band(paths, width, clearance):
-    """The marking rule for a placed fault band (``place_thin_volume``): a
-    superset of the placement's own mask, so its gather finds the region
-    rank-interior. The placement marks every vertex within
-    ``max(clearance h, 0.6 width) + h`` of the band's skin (``h`` the
-    smallest incident cell diameter); the skin lies within a mitred half
-    width of the band's path, so a vertex within that reach plus one band
-    width of the path is marked here. ``paths`` are the paths the band is
-    built along: ``(n, 2)`` polylines in 2-D, planar convex ``(n, 3)``
-    polygons in 3-D (the patches)."""
+    """The marking rule for a placed fault band (``place_thin_volume``) whose
+    skin stays within a mitred half width of its path: a superset of the
+    placement's own mask, so its gather finds the region rank-interior. The
+    placement marks every vertex within ``max(clearance h, 0.6 width) + h``
+    of the band's skin (``h`` the smallest incident cell diameter), so a
+    vertex within that reach plus one band width of the path is marked here.
+    ``paths`` are the paths the band is built along: ``(n, 2)`` polylines in
+    2-D, planar convex ``(n, 3)`` polygons in 3-D (the patches).
+
+    The condition on the skin holds for the 3-D band, which does not outcrop.
+    It does not hold for a 2-D ladder band that outcrops, whose cap runs
+    along the wall past the path's end; the ribbon marks from the skin itself
+    (``place_surface._ribbon_region_marks``)."""
     paths = [np.asarray(P, dtype=float) for P in paths]
 
     def marks(dm):
@@ -236,6 +241,16 @@ def _embedded_surface_marks(mesh, names, first_id):
     return ids
 
 
+def _located_problem(what, err):
+    """The message for a rank-local location failure, raised on every rank
+    through ``fault_contact._collective_raise`` (#874): a rank that raised
+    alone left the others waiting in the next allreduce. A plain
+    ``RuntimeError``, as the unlocated-count checks beside each call raise:
+    these run while a mesh is made or partitioned, not inside a hierarchy
+    build, so there is nothing to retry or degrade."""
+    return f"addon_partition: locating {what} failed: {type(err).__name__}: {err}"
+
+
 def inherit_provenance(child, host):
     """Record on ``child`` — a mesh made from ``host`` by a cut, a placement or
     a split — the parent of each of its cells on the level ``host`` records
@@ -276,31 +291,72 @@ def inherit_provenance(child, host):
     if not recorded and reference is None:
         return
     comm = child.dm.getComm().tompi4py()
-    fcent, vxy_child, cvf = _cell_centroids(child)
-    _c, vxy_h, cv_h = _cell_centroids(host)
+    # Everything above reads attributes every rank holds alike, so it cannot
+    # fail on one rank alone. The cell tables are read from each rank's own
+    # cells, so a failure there is raised on every rank, before any location:
+    # an exception on one rank alone would leave the others in the verdicts
+    # below, where an enclosing verdict (split_tail_levels) could pair with
+    # them on the same communicator (#874).
+    problem = None
+    try:
+        fcent, vxy_child, cvf = _cell_centroids(child)
+        _c, vxy_h, cv_h = _cell_centroids(host)
+    except Exception as err:   # sanctioned: raised on every rank just below
+        problem = (f"addon_partition: reading the cells of a surgery's result "
+                   f"or its host failed: {type(err).__name__}: {err}")
+    _collective_raise(problem)
     if recorded:
         cell = np.zeros(cvf.shape[0], dtype=np.int64)
         n_bad = 0
+        problem = None
         if cvf.shape[0]:
             if cv_h.shape[0] == 0:
                 n_bad = cvf.shape[0]
             else:
-                cell, lam = locate_in_cells_exhaustive(fcent, vxy_h, cv_h)
-                n_bad = int((lam.min(axis=1) < -_INSIDE_TOL).sum())
+                try:
+                    cell, lam = locate_in_cells_exhaustive(fcent, vxy_h, cv_h)
+                    n_bad = int((lam.min(axis=1) < -_INSIDE_TOL).sum())
+                except Exception as err:   # sanctioned: raised on every rank just below
+                    problem = _located_problem("a surgery's result in the mesh it "
+                                               "was made from", err)
+        # the host's record is read under the same guard: one entry per host
+        # cell, or it does not describe the host (#874)
+        inherited = None
+        if problem is None:
+            try:
+                record = np.asarray(parent, dtype=np.int64)
+                if record.ndim != 2 or record.shape != (cv_h.shape[0], 2):
+                    problem = (f"addon_partition: the host's record holds "
+                               f"{tuple(record.shape)} entries for "
+                               f"{cv_h.shape[0]} cells")
+                elif not n_bad:
+                    inherited = record[cell]
+            except Exception as err:   # sanctioned: raised on every rank just below
+                problem = (f"addon_partition: reading the host's record failed: "
+                           f"{type(err).__name__}: {err}")
+        _collective_raise(problem)
         n_bad = int(comm.allreduce(n_bad))
         if n_bad:
             raise RuntimeError(
                 f"addon_partition: {n_bad} cell(s) of a surgery's result lie "
                 f"in no local cell of the mesh it was made from; the surgery "
                 f"was not rank-local.")
-        child._addon_parent = np.asarray(parent, dtype=np.int64)[cell]
+        child._addon_parent = inherited
         child._addon_below = below
     child._addon_reference = None
     if reference is not None:
         taken_back = np.zeros_like(vxy_child)
+        problem = None
         if vxy_child.shape[0] and cv_h.shape[0]:
-            at_cell, at = locate_in_cells_exhaustive(vxy_child, vxy_h, cv_h)
-            taken_back = np.einsum("nv,nvd->nd", at, reference[cv_h[at_cell]])
+            try:
+                at_cell, at = locate_in_cells_exhaustive(vxy_child, vxy_h, cv_h)
+                taken_back = np.einsum("nv,nvd->nd", at, reference[cv_h[at_cell]])
+            except Exception as err:   # sanctioned: raised on every rank just below
+                problem = _located_problem("a surgery's vertices in the moved mesh "
+                                           "it was made from", err)
+        # every rank reaches this: ``reference`` is set from the meshes' own
+        # records, the same on every rank
+        _collective_raise(problem)
         child._addon_reference = (below, taken_back)
 
 
@@ -327,16 +383,26 @@ def _parent_cells_local(coarse, fine):
     from underworld3.utilities.fault_mg import (locate_in_cells_exhaustive,
                                                 reference_vertices)
     comm = fine.dm.getComm().tompi4py()
-    fcent, _vf, cvf = _cell_centroids(fine)
     reference = reference_vertices(fine, coarse)
-    if reference is not None:
-        fcent = reference[cvf].mean(axis=1)
-    _cc, vxy_c, cv_c = _cell_centroids(coarse)
-    n_f, n_c = cvf.shape[0], cv_c.shape[0]
-    cell = np.full(n_f, -1, dtype=np.int64)
-    if n_f and n_c:
-        cell, lam = locate_in_cells_exhaustive(fcent, vxy_c, cv_c)
-        cell = np.where(lam.min(axis=1) < -_INSIDE_TOL, -1, cell).astype(np.int64)
+    n_f = n_c = 0
+    cell = np.zeros(0, dtype=np.int64)
+    # Every rank-local step, the cell tables included, is under the guard, and
+    # a failure is raised on every rank together (#874).
+    problem = None
+    try:
+        fcent, _vf, cvf = _cell_centroids(fine)
+        _cc, vxy_c, cv_c = _cell_centroids(coarse)
+        n_f, n_c = cvf.shape[0], cv_c.shape[0]
+        cell = np.full(n_f, -1, dtype=np.int64)
+        if reference is not None:
+            fcent = reference[cvf].mean(axis=1)
+        if n_f and n_c:
+            cell, lam = locate_in_cells_exhaustive(fcent, vxy_c, cv_c)
+            cell = np.where(lam.min(axis=1) < -_INSIDE_TOL, -1,
+                            cell).astype(np.int64)
+    except Exception as err:   # sanctioned: raised on every rank just below
+        problem = _located_problem("the fine cells in the level below", err)
+    _collective_raise(problem)
     n_bad = int(comm.allreduce(int((cell < 0).sum()) + (n_f > 0 and n_c == 0)))
     if n_bad:
         raise RuntimeError(
@@ -366,23 +432,39 @@ def _base_parent_addresses(base, lev, comm):
                                         dtype=np.int64), local])
     if pre is lev:
         return np.asarray(lev._addon_parent, dtype=np.int64).copy()
-    fcent, _v, cvf = _cell_centroids(lev)
-    _c, vxy_p, cv_p = _cell_centroids(pre)
-    cell = np.zeros(cvf.shape[0], dtype=np.int64)
+    # Every rank-local step (the cell tables, the location, the read of the
+    # record) is under the guard, raised on every rank (#874)
     n_bad = 0
-    if cvf.shape[0]:
-        if cv_p.shape[0] == 0:
-            n_bad = cvf.shape[0]
-        else:
-            cell, lam = locate_in_cells_exhaustive(fcent, vxy_p, cv_p)
-            n_bad = int((lam.min(axis=1) < -_INSIDE_TOL).sum())
+    addresses = None
+    problem = None
+    try:
+        fcent, _v, cvf = _cell_centroids(lev)
+        _c, vxy_p, cv_p = _cell_centroids(pre)
+        cell = np.zeros(cvf.shape[0], dtype=np.int64)
+        if cvf.shape[0]:
+            if cv_p.shape[0] == 0:
+                n_bad = cvf.shape[0]
+            else:
+                cell, lam = locate_in_cells_exhaustive(fcent, vxy_p, cv_p)
+                n_bad = int((lam.min(axis=1) < -_INSIDE_TOL).sum())
+        record = np.asarray(pre._addon_parent, dtype=np.int64)
+        if record.ndim != 2 or record.shape != (cv_p.shape[0], 2):
+            problem = (f"addon_partition: the record of the level the provenance "
+                       f"is on holds {tuple(record.shape)} entries for "
+                       f"{cv_p.shape[0]} cells")
+        elif not n_bad:
+            addresses = record[cell]
+    except Exception as err:   # sanctioned: raised on every rank just below
+        problem = _located_problem("the cells in the level their "
+                                   "provenance is recorded on", err)
+    _collective_raise(problem)
     n_bad = int(comm.allreduce(n_bad))
     if n_bad:
         raise RuntimeError(
             f"addon_partition: {n_bad} cell(s) lie in no local cell of the "
             f"level their provenance is recorded on; the surgery since the "
             f"last partition was not rank-local.")
-    return np.asarray(pre._addon_parent, dtype=np.int64)[cell]
+    return addresses
 
 
 def _levels_of(mesh):
@@ -571,6 +653,34 @@ def _resolve_parents(below, lev):
         return
     n_old = int(below._addon_n_cells_old)
     cS, cE = below.dm.getHeightStratum(0)
+    # Both star forests below are built on recorded addresses. Each must be a
+    # (rank, old local cell) that exists, checked on every rank before either
+    # is built: a damaged entry gave a PETSc error or an MPI abort on its rank
+    # while the others waited (#874)
+    olds = np.asarray(m4.allgather(n_old), dtype=np.int64)
+    fS, fE = lev.dm.getHeightStratum(0)
+    problem = None
+    try:
+        for what, record, rows in (("cells of the level below", self_old, cE - cS),
+                                   ("parents", parent_old, fE - fS)):
+            record = np.asarray(record)
+            if record.ndim != 2 or record.shape[1] != 2 or (
+                    rows is not None and record.shape[0] != rows):
+                problem = (f"addon_partition: the recorded old addresses of the "
+                           f"{what} have shape {tuple(record.shape)}")
+                break
+            rank_ok = (record[:, 0] >= 0) & (record[:, 0] < m4.size)
+            cell_ok = rank_ok & (record[:, 1] >= 0) & (
+                record[:, 1] < olds[np.where(rank_ok, record[:, 0], 0)])
+            if not cell_ok.all():
+                problem = (f"addon_partition: {int((~cell_ok).sum())} recorded old "
+                           f"address(es) of the {what} name a rank or a cell "
+                           f"that does not exist")
+                break
+    except Exception as err:   # sanctioned: raised on every rank just below
+        problem = (f"addon_partition: checking the recorded old addresses failed: "
+                   f"{type(err).__name__}: {err}")
+    _collective_raise(problem)
     unit = MPI.INT64_T.Create_contiguous(2)
     unit.Commit()
     # directory: old cell -> (new rank, new local)
@@ -637,15 +747,24 @@ def _carried_reference(moved, carried, comm):
     be compared with the ones the moved mesh holds, so a reference in another
     vertex order cannot be taken silently. Collective."""
     from underworld3.utilities.fault_mg import _cell_vertex_table
-    was, reference = carried
-    vxy, _cv = _cell_vertex_table(moved)
-    wrong = int(vxy.shape != was.shape)
-    if not wrong and vxy.size:
-        wrong = int(np.abs(vxy - was).max() > 1e-10 * (1.0 + np.abs(vxy).max()))
+    # rank-local, so a failure on one rank counts as a mismatch there and the
+    # refusal below is reached by every rank (#874)
+    detail = ""
+    try:
+        was, reference = carried
+        vxy, _cv = _cell_vertex_table(moved)
+        wrong = int(vxy.shape != was.shape)
+        if not wrong and vxy.size:
+            wrong = int(np.abs(vxy - was).max() > 1e-10 * (1.0 + np.abs(vxy).max()))
+    except Exception as err:   # sanctioned: refused on every rank just below
+        wrong, reference = 1, None
+        detail = f" ({type(err).__name__}: {err})"
     if comm.allreduce(wrong):
+        details = [d for d in comm.allgather(detail) if d]
         raise RuntimeError(
             "addon_partition internal: the vertices of a moved level are not "
-            "in the order its reference coordinates travelled in.")
+            "in the order its reference coordinates travelled in"
+            + (details[0] if details else "") + ".")
     return reference
 
 
@@ -812,6 +931,22 @@ def partition_addon(mesh, region_marks, layers=1, tolerance=0.1,
         raise RuntimeError(
             "addon_partition: the whole add-on would sit on one rank (its "
             "fault regions cover it); run on fewer ranks or refine the base.")
+
+    # A fault split through a partition seam (fault_split, across_seams)
+    # keeps a normal per seam node, by point number. The move renumbers the
+    # points and carries the pairing only: refuse, collectively, rather than
+    # hand on normals that name other points. A second add_fault reaches here
+    # with the earlier faults' record (#1099).
+    through_seams = sorted(set().union(*comm.allgather(
+        {name for lev in levels
+         for name, by_point in (getattr(lev, "_fault_seam_normals", None)
+                                or {}).items() if by_point})))
+    if through_seams:
+        raise RuntimeError(
+            f"addon_partition: the fault(s) {through_seams} were split "
+            f"through the partition seams (across_seams=True), and their seam "
+            f"normals cannot follow the repartition another fault needs. Give "
+            f"the whole network to one add_fault call.")
 
     # apply the one assignment to every level, provenance riding along
     moved, references = [], []

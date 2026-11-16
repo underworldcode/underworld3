@@ -47,6 +47,7 @@ mesh and every platform.
 import numpy as np
 import pytest
 import underworld3 as uw
+from mpi4py import MPI
 
 pytestmark = [pytest.mark.level_1, pytest.mark.tier_a]
 
@@ -109,10 +110,24 @@ class _CountedContainment:
             return self._wrapped(points, cells, **kwargs)
 
         self.mesh._test_if_points_in_cells_internal = counted
+        # On a straight-sided simplex mesh the exact locator's barycentric
+        # tests are the containment tests (the locator rework, #1123).
+        self._locator = self.mesh._simplex_locator()
+        if self._locator is not None:
+            self._bary = self._locator.barycentric
+
+            def counted_bary(points, cells):
+                self.calls += 1
+                self.points += len(points)
+                return self._bary(points, cells)
+
+            self._locator.barycentric = counted_bary
         return self
 
     def __exit__(self, *exc):
         self.mesh._test_if_points_in_cells_internal = self._wrapped
+        if self._locator is not None:
+            self._locator.barycentric = self._bary
         return False
 
 
@@ -530,8 +545,8 @@ def test_evaluate_fills_a_point_no_cell_owns_instead_of_returning_nan():
     located = mesh._robust_owning_cells
     mesh._dminterpolation_cache.invalidate_all("fault injection")
 
-    def loses_the_victims(points):
-        cells = np.asarray(located(points), dtype=np.int64).copy()
+    def loses_the_victims(points, **kwargs):
+        cells = np.asarray(located(points, **kwargs), dtype=np.int64).copy()
         for victim in victim_coords:
             cells[np.all(points == victim, axis=1)] = -1
         return cells
@@ -655,6 +670,23 @@ def test_the_classifier_hands_over_the_cells_it_located(located_box):
     # — measured 0 hints for 1465 interior points in serial against 462 of 462
     # at np4, so the guarded version asserted nothing in the default test run.
     offered = in_or_not & (cells >= 0)
+    # Decided on every rank alike (a rank-local test before the collective
+    # classifier call below would hang an empty rank).
+    exact = uw.mpi.comm.allreduce(mesh._simplex_locator() is not None, op=MPI.LOR)
+    if exact:
+        # For evaluation the exact locator classifies by locating, at any rank
+        # count, so every interior point comes with a cell that contains it
+        # (#1123). points_in_domain (above) keeps the boundary-sign test.
+        in_or_not, cells = mesh._classify_points_in_domain(
+            query, strict_validation=False, exact_location=True)
+        assert (cells[~in_or_not] == -1).all()
+        offered = in_or_not & (cells >= 0)
+        assert offered.sum() == in_or_not.sum()
+        located = np.flatnonzero(offered)
+        lam = mesh._simplex_locator().barycentric(
+            query[located], cells[located] - mesh.dm.getHeightStratum(0)[0])
+        assert lam.min(initial=0.0) >= -1.0e-12, lam.min(initial=0.0)
+        return
     if uw.mpi.size == 1:
         assert not mesh._eval_use_robust_location()
         assert not offered.any(), (

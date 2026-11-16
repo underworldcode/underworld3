@@ -129,8 +129,16 @@ def _gmsh_to_h5(
     markVertices=False,
     useRegions=True,
     useMultipleTags=True,
+    comm=None,
 ):
-    """Convert a Gmsh file to PETSc HDF5 without loading the resulting DM."""
+    """Convert a Gmsh file to PETSc HDF5 without loading the resulting DM.
+
+    ``comm`` is the communicator the caller will build the mesh on. A caller on
+    a one-rank communicator is converting on one rank alone, inside its own
+    rank-0 block, so the closing barrier on the world communicator is skipped:
+    no other rank would reach it. Such a caller orders its own write before the
+    collective read that follows.
+    """
 
     h5_filename = filename + ".h5"
     options = PETSc.Options()
@@ -193,7 +201,8 @@ def _gmsh_to_h5(
         _clear_gmsh_import_options()
 
     # The barrier ensures every rank sees the complete atomically-renamed file.
-    uw.mpi.barrier()
+    if comm is None or comm.getSize() > 1:
+        uw.mpi.barrier()
 
     return filename + ".h5"
 
@@ -222,6 +231,7 @@ def _from_gmsh(
         markVertices=markVertices,
         useRegions=useRegions,
         useMultipleTags=useMultipleTags,
+        comm=comm,
     )
 
     return _from_plexh5(h5_filename, comm, return_sf=True)
@@ -587,6 +597,19 @@ def _mesh_coords_update_callback(array, change_context):
         # would mask the original exception (round-2 review).
         raise
 
+    # This write reached the mesh without mesh.deform (which a mesh that carries no
+    # variables yet allows). It may have moved a boundary off the surface declared
+    # for it, so it releases the declarations as deform does.
+    if not (getattr(mesh, "_in_remesh_transfer", False)
+            or getattr(mesh, "_coord_mutation_depth", 0) > 0):
+        mesh._release_bounding_surfaces(
+            "the mesh coordinates were written directly since it was declared, so the "
+            "boundary may no longer lie on it")
+        # As in deform: points are returned to the boundary the mesh now has,
+        # not to the constructor's circles or faces.
+        mesh._geometry_deformed = True
+        mesh._bnd_restore_cache = None
+
     # Increment mesh version to notify registered swarms of coordinate changes
     with mesh._mesh_update_lock:
         mesh._mesh_version += 1
@@ -670,8 +693,9 @@ def _apply_refinement_callback(dm, refinement_callback):
     the cells between them inside out: on a concave wall, a snapped midpoint can overtake
     an interior vertex that is not snapped (#946). Of each cell the callback inverted,
     the vertex it moved furthest goes back where refinement placed it, until no cell is
-    inverted. Returns the number put back, over all ranks: those vertices are not where
-    the callback meant them to be.
+    inverted. Returns the number put back, over all ranks, and this rank's mask of them
+    (indexed like the DM's vertices): those vertices are not where the callback meant
+    them to be.
 
     In parallel the copies of one vertex can disagree after the callback. A callback
     finds the vertices it moves through the labels a rank holds, and a rank can hold a
@@ -703,8 +727,9 @@ def _apply_refinement_callback(dm, refinement_callback):
                            f"{broken} vertices.")
 
     total = 0
+    vs, ve = dm.getDepthStratum(0)
+    put_back = numpy.zeros(ve - vs, dtype=bool)
     if dim == cdim:
-        vs, ve = dm.getDepthStratum(0)
         cs, ce = dm.getHeightStratum(0)
         rows = section_offsets(dm.getCoordinateSection(), numpy.arange(vs, ve)) // cdim
         cells = closure_points(dm, numpy.arange(cs, ce), 0)
@@ -731,10 +756,137 @@ def _apply_refinement_callback(dm, refinement_callback):
             held |= culprits
         _, total = _flag_on_every_sharer(dm, held)
         moved_to = numpy.where(held[:, None], refined, moved_to)
+        put_back = held[rows]
 
     coordinates.array[...] = moved_to.ravel()
     dm.setCoordinatesLocal(coordinates)
-    return total
+    return total, put_back
+
+
+def _labels_holding_vertices(dm, vertices, names):
+    """Those of the boundary labels ``names`` that hold, on any rank, one of the
+    flagged ``vertices`` (a mask indexed like the DM's vertices). A label holds a
+    vertex if it tags the vertex or a facet the vertex belongs to. ``names`` is the
+    same sequence on every rank. Collective: every rank gets the same answer."""
+    from mpi4py import MPI
+    from underworld3.meshing.smoothing.graph import _pinned_mask
+
+    local = numpy.array(
+        [dm.hasLabel(name) and numpy.any(_pinned_mask(dm, (name,)) & vertices)
+         for name in names], dtype=numpy.int32)
+    anywhere = numpy.zeros_like(local)
+    uw.mpi.comm.Allreduce(local, anywhere, op=MPI.MAX)
+    return {name for name, held in zip(names, anywhere) if held}
+
+
+def _facets_that_can_hold_the_nearest_point(pts, fpts, centroids, tree):
+    """For each point, the facets (indices in ascending order) on which its nearest
+    point over all facets ``fpts`` can lie. ``tree`` holds the facet ``centroids``.
+
+    A facet's centroid lies on the facet, so the nearest point is no farther than
+    the nearest centroid, at distance ``d1``. A facet holding a point that near has
+    its centroid within ``d1 + reach``, where ``reach`` is the largest distance from
+    a centroid to its facet's vertices. Exact: the nearest point taken over these
+    facets, in ascending order, is the one taken over all of them, ties included."""
+    reach = float(numpy.sqrt(((fpts - centroids[:, None, :]) ** 2).sum(axis=2).max()))
+    candidates = [None] * len(pts)
+    todo = numpy.arange(len(pts))
+    k = min(16, len(fpts))
+    while len(todo):
+        d, idx = tree.query(pts[todo], k, sqr_dists=False)
+        d = numpy.asarray(d, dtype=float).reshape(len(todo), k)
+        idx = numpy.asarray(idx).reshape(len(todo), k)
+        bound = d[:, :1] + reach
+        complete = (d[:, -1] > bound[:, 0]) | (k == len(fpts))
+        for row in numpy.flatnonzero(complete):
+            candidates[todo[row]] = numpy.sort(idx[row][d[row] <= bound[row, 0]])
+        todo = todo[~complete]
+        k = min(2 * k, len(fpts))
+    return candidates
+
+
+def _corner_normals(fpts, normals, vertex_ids):
+    """The outward normals of the boundary at its vertices and (in 3-D) its edges,
+    from the facets ``fpts`` with outward unit ``normals`` and the global numbers
+    ``vertex_ids`` of their vertices. Where several facets meet no one facet's
+    normal decides the side of a point: beyond a corner, the vector from the corner
+    to the point can lie along one wall, square to the other's normal. The normal
+    at a vertex is the angle-weighted sum of the normals of the facets meeting
+    there, and at an edge the sum of the two facets sharing it; the sign of a
+    point's offset from its nearest boundary point along it is the side of the
+    boundary the point is on, at a convex corner and at a reentrant one alike
+    (Baerentzen and Aanaes, IEEE TVCG 11, 2005). Facets meet where they share a
+    vertex's global number.
+
+    Returns ``(vid, verts, vertex_normal, edge_key, edge_normal)``: each facet's
+    vertices as indices into ``verts``, the vertices, their unit normals, the
+    sorted keys of the edges and the edges' unit normals (empty in 2-D). Built
+    with the gathered facets and cached with them."""
+    nf, nv, cdim = fpts.shape
+    numbers, vid = numpy.unique(vertex_ids.ravel(), return_inverse=True)
+    vid = vid.reshape(nf, nv)
+    verts = numpy.empty((len(numbers), cdim))
+    verts[vid.ravel()] = fpts.reshape(-1, cdim)
+
+    # the facets meeting at a vertex, each weighted by its angle there (in 2-D
+    # every angle is the same)
+    vertex_normal = numpy.zeros((len(verts), cdim))
+    for k in range(nv):
+        if cdim == 2:
+            weight = numpy.ones(nf)
+        else:
+            e1 = fpts[:, (k + 1) % 3] - fpts[:, k]
+            e2 = fpts[:, (k + 2) % 3] - fpts[:, k]
+            cos = (numpy.einsum("ij,ij->i", e1, e2)
+                   / (numpy.linalg.norm(e1, axis=1) * numpy.linalg.norm(e2, axis=1)))
+            weight = numpy.arccos(numpy.clip(cos, -1.0, 1.0))
+        numpy.add.at(vertex_normal, vid[:, k], weight[:, None] * normals)
+    vertex_normal /= numpy.linalg.norm(vertex_normal, axis=1)[:, None]
+
+    if cdim == 3:
+        # the two facets that share each edge
+        pairs = numpy.sort(numpy.concatenate(
+            [vid[:, [0, 1]], vid[:, [1, 2]], vid[:, [0, 2]]]), axis=1)
+        edges, eid = numpy.unique(pairs, axis=0, return_inverse=True)
+        edge_normal = numpy.zeros((len(edges), 3))
+        numpy.add.at(edge_normal, eid.ravel(), numpy.tile(normals, (3, 1)))
+        edge_normal /= numpy.linalg.norm(edge_normal, axis=1)[:, None]
+        edge_key = edges[:, 0] * len(verts) + edges[:, 1]
+    else:
+        edge_key = numpy.empty(0, dtype=numpy.int64)
+        edge_normal = numpy.empty((0, cdim))
+    return vid, verts, vertex_normal, edge_key, edge_normal
+
+
+def _outward_normals_at_nearest_points(closest, normals, corners, found, span):
+    """The outward normals for the side test of points against their nearest
+    boundary points ``closest``. Each lies on facet ``found``, in the span of the
+    facet's vertices marked in ``span``, as the nearest-point search decides it
+    from the region of the facet that holds the point: all of them inside the
+    facet, two on an edge, one at a vertex. ``normals`` are the facets' outward
+    unit normals and ``corners`` what :func:`_corner_normals` built from them.
+    Returns the nearest points and the normals.
+
+    Inside a facet the normal is that facet's; on an edge or at a vertex it is the
+    edge's or the vertex's (:func:`_corner_normals`). The vertex itself is
+    returned as the nearest point there, so the restore moves the point off every
+    wall meeting at it."""
+    vid, verts, vertex_normal, edge_key, edge_normal = corners
+    closest = closest.copy()
+    nvec = normals[found].copy()
+    held_by = span.sum(axis=1)
+
+    rows = numpy.flatnonzero(held_by == 1)
+    which = vid[found[rows], numpy.argmax(span[rows], axis=1)]
+    closest[rows] = verts[which]
+    nvec[rows] = vertex_normal[which]
+
+    rows = numpy.flatnonzero(held_by == 2) if len(edge_key) else numpy.empty(0, dtype=int)
+    if len(rows):
+        ends = numpy.sort(vid[found[rows]][span[rows]].reshape(-1, 2), axis=1)
+        nvec[rows] = edge_normal[numpy.searchsorted(
+            edge_key, ends[:, 0] * len(verts) + ends[:, 1])]
+    return closest, nvec
 
 
 def _sum_over_sharers(dm, values):
@@ -901,14 +1053,18 @@ class Mesh(Stateful, uw_object):
         # the move applies again.
         self._move_version = 0
         # The vertex coordinates the mesh was made with, and whether
-        # _deform_mesh has run since: the geometry its cells' parents and its
-        # transfer to the level below are read on (fault_mg.reference_vertices,
-        # #1091). Taken by _record_as_built when the mesh is built. The flag
-        # is set by a call that restores or repeats the coordinates too (a
-        # reload's stamp, ephemeral_coords); the record then equals the
-        # coordinates and reading it costs a search and changes no answer.
+        # _deform_mesh has run since: the geometry its cells' parents on the
+        # level below are read on (fault_mg.reference_vertices, #1091). Taken
+        # by _record_as_built when the mesh is built. The flag is set by a
+        # call that restores or repeats the coordinates too (a reload's stamp,
+        # ephemeral_coords).
         self._as_built_vertices = None
         self._moved_since_built = False
+        # The vertex coordinates the transfers to the level below are built
+        # on once the mesh has moved (fault_mg.as_built_nodes): the as-built
+        # ones, or those a relax of the mesh where it was made left
+        # (_record_transfer_geometry).
+        self._transfer_vertices = None
         # For a mesh made on a moved one: the pair (level, vertices), its
         # vertices in the geometry of that level (addon_partition.inherit_provenance).
         self._addon_reference = None
@@ -955,6 +1111,9 @@ class Mesh(Stateful, uw_object):
         self._analytic_return_coords_to_bounds = return_coords_to_bounds
         self._geometry_deformed = False
         self._bnd_restore_cache = None
+        # Boundary labels whose vertices refinement had to leave off the surface
+        # its callback moves them to (set by _build_refined_hierarchy).
+        self._refinement_left_off_surface = frozenset()
 
         ## This is where we can refine the dm if required, and rebuild / redistribute
 
@@ -983,7 +1142,7 @@ class Mesh(Stateful, uw_object):
             pass  # hierarchy restored; otherwise reload the fine mesh flat below
 
         elif not refinement is None and refinement > 0:
-            self._build_refined_hierarchy(refinement, refinement_callback)
+            self._build_refined_hierarchy(refinement, refinement_callback, boundaries)
 
         elif not coarsening is None and coarsening > 0:
             self._build_coarsened_hierarchy(coarsening)
@@ -1630,7 +1789,7 @@ class Mesh(Stateful, uw_object):
         self._pending_hierarchy_stamp = (_vertex_coordinates(self.dm), saved, cdim)
         return True
 
-    def _build_refined_hierarchy(self, refinement, refinement_callback):
+    def _build_refined_hierarchy(self, refinement, refinement_callback, boundaries):
         """Distribute the DM and build a uniformly refined FMG hierarchy.
 
         Each level is a plain ``refine()`` of the previous one (never
@@ -1666,8 +1825,21 @@ class Mesh(Stateful, uw_object):
         # first left, so it holds back again every vertex that needs it: its sum is
         # the number left off the callback's surface, over the hierarchy.
         if callable(refinement_callback):
-            held = sum(_apply_refinement_callback(dm, refinement_callback)
-                       for dm in self.dm_hierarchy)
+            held = 0
+            # The boundaries those vertices belong to are not on the surface the
+            # callback moves them to: a constructor that registers such a
+            # boundary's surface afterwards has it released (bounding_surface).
+            left_off_surface = set()
+            # The pressure-pin point labels (Centre) are not walls.
+            boundary_names = sorted(
+                member.name for member in (boundaries or ())
+                if member.name not in ("All_Boundaries", "Null_Boundary", "Centre"))
+            for dm in self.dm_hierarchy:
+                count, put_back = _apply_refinement_callback(dm, refinement_callback)
+                held += count
+                if count:
+                    left_off_surface |= _labels_holding_vertices(dm, put_back, boundary_names)
+            self._refinement_left_off_surface = frozenset(left_off_surface)
             if held:
                 with uw.selective_ranks(0) as selected:
                     if selected:
@@ -3210,25 +3382,6 @@ class Mesh(Stateful, uw_object):
     #  (FE-exact, the quality path); parallel (np>1) falls back to the
     #  partition-agnostic ``global_evaluate`` REMAP (swarm-migration based).
     # ------------------------------------------------------------------ #
-    @staticmethod
-    def _refuse_parallel_refinement_with_units(*variables):
-        """The parallel refinement route reads the coordinates as non-dimensional, so
-        it gets every shape wrong when the model has reference quantities
-        (``uw.get_default_model().has_units()``), whatever the variables carry and
-        whether or not non-dimensional scaling is switched on, and when either
-        variable carries units (#991). Refuse rather than give a wrong value. These
-        facts and the rank count are the same on every rank, so every rank raises
-        together."""
-        if uw.mpi.size == 1:
-            return
-        referenced = uw.get_default_model().has_units()
-        with_units = [v.clean_name for v in variables if getattr(v, "units", None) is not None]
-        if referenced or with_units:
-            reason = ("the model has reference quantities" if referenced
-                      else f"{', '.join(repr(n) for n in with_units)} carry units")
-            raise NotImplementedError(
-                f"Transfers between a parent and its refinement child are not yet "
-                f"right in parallel when {reason}; see #991.")
 
     def _refine_prolongate(self, parent_var, child_var, mode="replace"):
         """Coarse parent -> fine child interpolation (this mesh is the child)."""
@@ -3237,15 +3390,15 @@ class Mesh(Stateful, uw_object):
         pv = getattr(parent_var, "_base_var", parent_var)
         cv = getattr(child_var, "_base_var", child_var)
 
-        self._refuse_parallel_refinement_with_units(pv, cv)
-
         if uw.mpi.size > 1:
             from underworld3.discretisation.discretisation_mesh_variables import _evaluated_in_storage_layout
             # Evaluated at the non-dimensional coordinates the DM holds, and laid out
             # by _data_layout, which a flat reshape is not for a MATRIX or a
             # symmetric tensor.
-            out = _evaluated_in_storage_layout(
-                cv, uw.function.global_evaluate(pv.sym, numpy.asarray(cv.coords_nd)))
+            from underworld3.function.functions_unit_system import _internal_resampling
+            with _internal_resampling():
+                out = _evaluated_in_storage_layout(
+                    cv, uw.function.global_evaluate(pv.sym, numpy.asarray(cv.coords_nd)))
         else:
             from underworld3.utilities import custom_mg
             cc = numpy.asarray(self.parent._get_coords_for_basis(pv.degree, pv.continuous))
@@ -3272,15 +3425,15 @@ class Mesh(Stateful, uw_object):
         pv = getattr(parent_var, "_base_var", parent_var)
         cv = getattr(child_var, "_base_var", child_var)
 
-        self._refuse_parallel_refinement_with_units(pv, cv)
-
         if uw.mpi.size > 1:
             from underworld3.discretisation.discretisation_mesh_variables import _evaluated_in_storage_layout
             # Evaluated at the non-dimensional coordinates the DM holds, and laid out
             # by _data_layout, which a flat reshape is not for a MATRIX or a
             # symmetric tensor.
-            out = _evaluated_in_storage_layout(
-                pv, uw.function.global_evaluate(cv.sym, numpy.asarray(pv.coords_nd)))
+            from underworld3.function.functions_unit_system import _internal_resampling
+            with _internal_resampling():
+                out = _evaluated_in_storage_layout(
+                    pv, uw.function.global_evaluate(cv.sym, numpy.asarray(pv.coords_nd)))
         else:
             from underworld3.utilities import custom_mg
             cc = numpy.asarray(self.parent._get_coords_for_basis(pv.degree, pv.continuous))
@@ -3791,6 +3944,10 @@ class Mesh(Stateful, uw_object):
         # spherical shell in SERIAL — see :meth:`boundary_normal`. It also cannot
         # be made to agree across ranks, because each rank's tree is built from
         # its own local coordinates.)
+        # A facet on a partition seam lies between two ranks' cells: interior,
+        # even where this rank holds only one of them. Read on every rank,
+        # before the rank-local walk, since it is collective (#1135).
+        seam = self._seam_points()
         indexset, subdm = dm.createSubDM(var.field_id)
         try:
             try:
@@ -3804,6 +3961,14 @@ class Mesh(Stateful, uw_object):
                     # requested for an INTERNAL boundary comes back zero.
                     # (rotated_bc keeps the raw PETSc normal there instead;
                     # neither is a supported use of this routine today.)
+                    # In parallel an internal boundary's facet on a seam has one
+                    # LOCAL cell, so ``exterior`` alone took it for an outer
+                    # facet: an Internal surface then claimed the vertices where
+                    # it meets the walls on that rank, and the slip normal there
+                    # was refused (#1135). The seam test is topological, from
+                    # the point star forest.
+                    if int(f) in seam:
+                        continue
                     measure, nrm, exterior = facet_measure_and_normal(dm, f)
                     if not exterior:
                         continue
@@ -4223,6 +4388,11 @@ class Mesh(Stateful, uw_object):
 
         Assigning to this attribute overrides both (the setter replaces the analytic
         closure and is honoured until the geometry deforms).
+
+        The general facet restore is collective: it tests every point against the
+        boundary facets gathered from all ranks, so a point gets the same answer
+        whichever rank asks (#1176), and every rank must call it, including a rank
+        with no points to restore. The analytic closures are local.
         """
         if (getattr(self, "_geometry_deformed", False)
                 or self._analytic_return_coords_to_bounds is None):
@@ -4239,16 +4409,24 @@ class Mesh(Stateful, uw_object):
     def return_coords_to_bounds(self, fn):
         self._analytic_return_coords_to_bounds = fn
 
-    def _boundary_facet_geometry(self):
-        """Boundary facets of the CURRENT geometry as ``(facet_pts, outward_normals)``,
-        cached against the coordinate-array version so it refreshes after a deform."""
+    def _boundary_facet_geometry(self, with_corner_normals=False):
+        """Boundary facets of the CURRENT geometry of the whole mesh, gathered from
+        every rank, as ``(facet_pts, outward_normals)``: the same arrays, in the same
+        order, on every rank (#1176), each facet once. With ``with_corner_normals``,
+        also the normals at the boundary's vertices and edges
+        (:func:`_corner_normals`). Cached against the coordinates, so it refreshes
+        after a deform. Collective."""
+        from mpi4py import MPI
         from underworld3.meshing.smoothing.graph import _boundary_facets
 
         coords = numpy.ascontiguousarray(self.data)
         stamp = (coords.shape, float(coords.sum()))
-        cache = getattr(self, "_bnd_restore_cache", None)
-        if cache is not None and cache[0] == stamp:
-            return cache[1], cache[2]
+        cache = self._bnd_restore_cache
+        # A rank whose own coordinates did not change rebuilds with the others:
+        # the gather below is collective.
+        stale = cache is None or cache[0] != stamp
+        if not uw.mpi.comm.allreduce(stale, op=MPI.LOR):
+            return cache[1:] if with_corner_normals else cache[1:3]
 
         cdim = self.cdim
         # The DM's boundary label separates domain faces from partition faces;
@@ -4257,11 +4435,18 @@ class Mesh(Stateful, uw_object):
         # that seam. Only a mesh without the label falls back to the search.
         facets, opp = self._labelled_boundary_facets()
         if facets is None:
+            # TODO(BUG): on a distributed mesh without the All_Boundaries label the
+            # topological search also returns partition faces, and gathering them
+            # restores interior points to a seam (#1176).
             facets, opp = _boundary_facets(self, cdim)
-        if facets is None:                      # non-simplicial: no general restore
-            self._bnd_restore_cache = (stamp, None, None)
-            return None, None
+        # Non-simplicial: no general restore. Agreed over ranks, so that every rank
+        # takes the same path (a rank with no cells finds no facets, not None).
+        if uw.mpi.comm.allreduce(facets is None, op=MPI.LOR):
+            self._bnd_restore_cache = (stamp, None, None, None)
+            return self._bnd_restore_cache[1:] if with_corner_normals else (None, None)
         fpts = coords[facets]                   # (nf, k, cdim)
+        numbering = numpy.asarray(self.dm.getVertexNumbering().getIndices(), dtype=numpy.int64)
+        gid = numpy.where(numbering < 0, -numbering - 1, numbering)[facets]
         if cdim == 2:
             e = fpts[:, 1] - fpts[:, 0]
             n = numpy.column_stack([e[:, 1], -e[:, 0]])
@@ -4272,8 +4457,26 @@ class Mesh(Stateful, uw_object):
         inward = coords[opp] - fpts[:, 0]
         flip = numpy.einsum("ij,ij->i", n, inward) > 0.0
         n[flip] *= -1.0
-        self._bnd_restore_cache = (stamp, fpts, n)
-        return fpts, n
+        # Which side of the boundary a point is on, and the wall it goes back to, are
+        # properties of the point and the whole mesh. A rank's own facets are part of
+        # the boundary only: with them alone, a point whose nearest wall lies on
+        # another rank is tested against some other facet's plane, and an interior
+        # point can be moved onto a wall (#1176). In rank order, so that every rank
+        # holds the same arrays and takes the same nearest facet on a tie.
+        k = fpts.shape[1]
+        fpts = numpy.concatenate(uw.mpi.comm.allgather(fpts.reshape(-1, k, cdim)))
+        n = numpy.concatenate(uw.mpi.comm.allgather(n.reshape(-1, cdim)))
+        gid = numpy.concatenate(uw.mpi.comm.allgather(gid.reshape(-1, k)))
+        # A facet two ranks both hold is gathered twice: keep its first copy, so
+        # that the facets meeting at a corner each count once in its normal.
+        _, first = numpy.unique(numpy.sort(gid, axis=1), axis=0, return_index=True)
+        keep = numpy.sort(first)
+        fpts, n, gid = fpts[keep], n[keep], gid[keep]
+        # The normals at the boundary's vertices and edges are built here, once per
+        # geometry, not on every call.
+        corners = _corner_normals(fpts, n, gid)
+        self._bnd_restore_cache = (stamp, fpts, n, corners)
+        return (fpts, n, corners) if with_corner_normals else (fpts, n)
 
     def _labelled_boundary_facets(self):
         """Boundary facets and the opposite cell vertex from the DM's own
@@ -4303,25 +4506,35 @@ class Mesh(Stateful, uw_object):
     def _facet_return_coords_to_bounds(self, coords):
         """General restore: snap points lying OUTSIDE the current boundary to just inside
         the nearest boundary facet. Interior points are returned untouched (the
-        outward-normal side test), so this is safe to apply to every trace-back foot."""
+        outward-normal side test), so this is safe to apply to every trace-back foot.
+
+        The facets are those of the whole mesh, so a point gets the same answer on
+        every rank that asks about it. Collective: every rank calls it, with or
+        without points of its own."""
         from underworld3.meshing.smoothing.graph import (
             _nearest_on_facets_2d, _nearest_on_facets_3d)
 
-        fpts, nrm = self._boundary_facet_geometry()
+        fpts, nrm, corners = self._boundary_facet_geometry(with_corner_normals=True)
         if fpts is None:                        # fall back to the analytic closure
             fn = self._analytic_return_coords_to_bounds
             return fn(coords) if fn is not None else coords
 
         pts = numpy.ascontiguousarray(numpy.asarray(coords, dtype=float))
         cdim = self.cdim
-        if cdim == 2:
-            closest = _nearest_on_facets_2d(pts, fpts)
-        else:
-            closest = _nearest_on_facets_3d(pts, fpts)
-        # side test against the normal of the facet owning `closest` (nearest centroid)
-        tree = uw.kdtree.KDTree(numpy.ascontiguousarray(fpts.mean(axis=1)))
-        owner = numpy.asarray(tree.query(numpy.ascontiguousarray(closest), 1)[1]).flatten()
-        nvec = nrm[owner]
+        nearest_on = _nearest_on_facets_2d if cdim == 2 else _nearest_on_facets_3d
+        centroids = numpy.ascontiguousarray(fpts.mean(axis=1))
+        tree = uw.kdtree.KDTree(centroids)
+        closest = numpy.empty_like(pts)
+        found = numpy.empty(len(pts), dtype=int)
+        span = numpy.empty((len(pts), fpts.shape[1]), dtype=bool)
+        for i, candidates in enumerate(_facets_that_can_hold_the_nearest_point(
+                pts, fpts, centroids, tree)):
+            near, which, held = nearest_on(pts[i:i + 1], fpts[candidates], with_facet=True)
+            closest[i], found[i], span[i] = near[0], candidates[which[0]], held[0]
+        # side test against the outward normal where the nearest point lies: the
+        # facet's, or the corner's where facets meet
+        closest, nvec = _outward_normals_at_nearest_points(
+            closest, nrm, corners, found, span)
         outside = numpy.einsum("ij,ij->i", pts - closest, nvec) > 0.0
         # get_min_radius is collective: read it on every rank, not only on the
         # ranks that have a point to restore
@@ -4344,6 +4557,70 @@ class Mesh(Stateful, uw_object):
         if not hasattr(self, "_bounding_surfaces") or self._bounding_surfaces is None:
             self._bounding_surfaces = {}
         return self._bounding_surfaces
+
+    def analytic_surface(self, label):
+        """The exact circle, sphere or plane this mesh declares for boundary ``label``.
+
+        A method that uses an analytic shortcut on a wall (its exact radius and
+        centre, or the plane it lies in) reads it here, and must not take the
+        geometry from its caller. The registration is the declaration: the
+        constructors of the annulus, shell and box meshes register their walls,
+        and :meth:`register_tangent_slip_provider` registers others. Nothing is
+        measured. An operation that writes coordinates either keeps a wall on
+        its declared surface by construction (a mover holds a pinned wall, and
+        restores a sliding one onto the surface) or releases the declaration:
+        :meth:`deform` and a direct write to the coordinates release every
+        surface; a mover releases each wall it neither pins nor restores;
+        :meth:`boundary_slip` releases a label passed as free; refinement
+        releases a wall where it had to leave a vertex off the surface. A
+        released surface is refused, with the reason.
+
+        Parameters
+        ----------
+        label : str or Enum
+            A boundary name in :attr:`boundaries`, or the member itself.
+
+        Returns
+        -------
+        BoundingSurface
+            The registered surface, of kind ``"radial"`` (``centre``,
+            ``radius``) or ``"plane"`` (``point``, ``normal``), in the mesh's
+            coordinate units.
+
+        Raises
+        ------
+        ValueError
+            If no surface is registered for ``label``, if the registered
+            surface is not analytic, or if it was released (the message
+            gives the reason). The verdict is the same on every rank.
+        """
+        name = label.name if isinstance(label, Enum) else label
+        surface = self.bounding_surfaces.get(name)
+        if surface is None:
+            raise ValueError(
+                f"no analytic surface is registered for boundary {name!r} of this "
+                f"mesh; registered: {sorted(self.bounding_surfaces)}")
+        if surface.kind in ("radial", "plane") and not surface.is_free:
+            return surface
+        if surface._prev_kind in ("radial", "plane"):
+            reason = surface.release_reason or "the boundary may no longer lie on it"
+            raise ValueError(
+                f"the {surface._prev_kind} surface of boundary {name!r} was released: "
+                f"{reason}")
+        raise ValueError(
+            f"boundary {name!r} is registered as {surface.kind!r}, which is not an "
+            f"analytic surface (radial or plane)")
+
+    def _release_bounding_surfaces(self, reason, labels=None):
+        """Release the analytic (``radial`` / ``plane``) surfaces registered for
+        ``labels``, or all of them: an operation is about to write, or has
+        written, coordinates without keeping those boundaries on their declared
+        surfaces. Called with the same arguments on every rank."""
+        for label, surface in self.bounding_surfaces.items():
+            if labels is not None and label not in labels:
+                continue
+            if surface.kind in ("radial", "plane"):
+                surface.release(reason)
 
     def register_tangent_slip_provider(self, label, surface):
         """Install a :class:`BoundingSurface` object for a boundary ``label``
@@ -4398,6 +4675,47 @@ class Mesh(Stateful, uw_object):
             numpy.asarray(coords, dtype=float),
             numpy.asarray(reference, dtype=float))
 
+    def _seam_points(self):
+        """The mesh points this rank shares with another through the point star
+        forest: a leaf here, or a root with leaves elsewhere. A facet among them
+        lies between two ranks' cells, so it is interior to the mesh even when
+        this rank holds only one of its cells. Empty in serial. Collective (the
+        root degrees are an SF reduction)."""
+        dm = self.dm
+        if dm.getComm().getSize() == 1:
+            return set()
+        sf = dm.getPointSF()
+        _nroots, leaves, _remote = sf.getGraph()
+        degree = numpy.asarray(sf.computeDegree())               # collective
+        shared = set(int(p) for p in (leaves if leaves is not None else []))
+        shared.update(int(p) for p in numpy.flatnonzero(degree > 0))
+        return shared
+
+    def _drop_seam_facets(self, facets):
+        """``facets`` without those on a partition seam. Collective.
+
+        ``smoothing._boundary_facets`` finds a rank's boundary facets as those
+        in one local cell, so a facet between two ranks' cells counted on both,
+        and an internal surface along the seam (``BoxInternalBoundary``'s
+        ``Internal``) gained facets serial lacks: its vertices then slid where
+        serial pins them (2.0e-2 off serial at np 4, #1103 review). A facet on
+        a seam is shared through the point star forest (a leaf here, or a root
+        with leaves elsewhere); a true boundary facet is not. The identity is
+        the mesh point, not coordinates: a split fault's Plus and Minus
+        replicas coincide by design, and a coordinate key dropped both."""
+        dm = self.dm
+        shared = self._seam_points()                             # collective
+        if facets is None or not len(facets):
+            return facets
+        vS = dm.getDepthStratum(0)[0]
+        # the FULL join: getJoin walks one level up, so the three vertices of
+        # a tet facet have no common edge and joined to nothing (3-D seam
+        # facets were never dropped)
+        keep = numpy.array([not shared.intersection(int(q) for q in dm.getFullJoin(
+                             [int(v) + vS for v in facet]))
+                         for facet in facets], dtype=bool)
+        return facets[keep]
+
     def boundary_slip(self, slip_spec=True, reference_coords=None,
                       boundary_labels=None):
         """Build ``(is_pinned, project)`` for tangent slip on this mesh's
@@ -4429,9 +4747,37 @@ class Mesh(Stateful, uw_object):
             ``is_pinned`` is the per-vertex pinned mask (local-chart order);
             ``project(Y)`` slides+restores the slip vertices of ``Y`` in place
             and returns it.
+
+        Notes
+        -----
+        .. note::
+
+           Building the projector for a label passed as free (``{label:
+           False}``) releases that label's declared surface, whether or not
+           ``project`` is then applied: :meth:`analytic_surface` refuses it
+           from here on, and ``adapt`` no longer snaps new vertices onto it.
+           The label has no circle, sphere or plane any more, so its
+           tangent-slide normals come from the mesh (a collective projection
+           of the boundary normal: building the projector takes about 0.03 s
+           on a 2-D annulus of cell size 0.1, against 0.001 s with the
+           analytic normal), and a mover run differs from one made with the
+           analytic normal at the 1e-5 level in the vertex positions. A later call asking for the label
+           to be restored restores nothing, and warns.
+
+        .. note::
+
+           A boundary whose declared surface was released (by a free slip, by
+           :meth:`deform`, by a direct write to ``mesh.X.coords``, or by a
+           refinement that could not put its vertices on it) is not restored
+           onto that surface when a later call asks for it to be: its vertices
+           slide along the wall as it is. The call warns, once per surface for
+           the life of the mesh, so a later call on the same surface is silent.
+           Interior surfaces are not named: their vertices are pinned. A user
+           who knows the wall is still the circle, sphere or plane declares it
+           again with :meth:`register_tangent_slip_provider`.
         """
-        from underworld3.meshing.smoothing import (
-            _pinned_mask, _auto_pinned_labels, _owned_vertex_mask)
+        from underworld3.meshing.smoothing import _pinned_mask, _owned_vertex_mask
+        from underworld3.meshing.smoothing.graph import _pinned_labels_or_default
         from underworld3.meshing.smoothing import _boundary_facets
         from underworld3.meshing.bounding_surface import BoundingSurface
 
@@ -4443,8 +4789,7 @@ class Mesh(Stateful, uw_object):
             reference_coords = numpy.asarray(self.X.coords, dtype=float)
         ref = numpy.asarray(reference_coords, dtype=float)
 
-        all_labels = (tuple(boundary_labels) if boundary_labels is not None
-                      else _auto_pinned_labels(self))
+        all_labels = _pinned_labels_or_default(self, boundary_labels)
         # _pinned_mask closes every tagged point (edge in 2D, face in 3D)
         # down to its vertices, so face-only 3D labels classify correctly.
         # Which boundaries a vertex lies on is read from the labelled facets in
@@ -4462,6 +4807,35 @@ class Mesh(Stateful, uw_object):
         is_bnd = shared_mask(_pinned_mask(dm, all_labels))
 
         slip_labels, free_labels = self._resolve_slip_spec(slip_spec)
+        # A free label is slid and not restored, so it is no longer declared to
+        # lie on its analytic surface. Released here, where the projector is
+        # built: the request is the same on every rank, while which rank slides a
+        # vertex of the label, and whether a mover keeps a trial step, is not.
+        self._release_bounding_surfaces(
+            "it was slid as a free surface, without restoring its vertices onto it",
+            labels=free_labels)
+        # A label asked to be restored whose surface has been released has
+        # nothing to be restored onto. The surfaces' state is the same on every
+        # rank, so the ranks agree on what to say, and rank 0 says it once. An
+        # interior surface is left out: its vertices are pinned, never slid.
+        for label in slip_labels:
+            surface = self.bounding_surfaces.get(label)
+            if (label in free_labels or surface is None or surface.interior
+                    or surface._prev_kind is None or surface._restore_warning_given):
+                continue
+            surface._restore_warning_given = True
+            with uw.selective_ranks(0) as selected:
+                if selected:
+                    import warnings
+
+                    warnings.warn(
+                        f"slip with restore was asked for boundary {label!r}, whose "
+                        f"declared {surface._prev_kind} surface was released "
+                        f"({surface.release_reason}). Its vertices slide along the "
+                        f"wall as it is and are not restored onto that surface. If "
+                        f"the wall is still that surface, declare it again with "
+                        f"mesh.register_tangent_slip_provider.", UserWarning,
+                        stacklevel=2)
         # Per-label vertex masks (closure of each label's tagged facets). The
         # rank's own masks pick its reference facets below; the shared ones
         # classify the vertices.
@@ -4485,27 +4859,28 @@ class Mesh(Stateful, uw_object):
         # exists for adapt()'s refinement snapping.
         surf = {lab: s for lab, s in dict(self.bounding_surfaces).items()
                 if not getattr(s, "interior", False)}
-        # Which labels are usable is decided on all ranks together (#1082): the
-        # normals below are a collective projection, so every rank must make the
-        # same calls. A rank holding none of a label's facets gets an empty facet
-        # surface. That is enough when such a rank also holds none of the
-        # label's vertices (every cell on one rank), but not in general: a rank
-        # can own slip vertices of a label without any of its facets, and its
-        # restore then fails alone. Each rank also restores onto its own facets
-        # only, so facet slip is partition-dependent. Both are #1103.
+        # A facet surface is the label's boundary facets over ALL ranks (#1103):
+        # restored onto its own rank's facets only, a vertex that slid past
+        # their end was clamped there (3e-2 to 5e-2 off serial), and a rank
+        # owning slip vertices of a label without any of its facets raised
+        # alone. Gathering also makes the usable labels the same on every rank
+        # (#1082), which the collective normal projection below needs.
         unreg = [lab for lab in slip_labels if lab not in surf]
         if unreg:
-            from mpi4py import MPI
-
             facets, _opp = _boundary_facets(self, cdim)
+            if uw.mpi.size > 1:
+                # every rank, a rank with no cells (facets None) included: it is
+                # a collective
+                facets = self._drop_seam_facets(facets)
             for lab in unreg:
                 if facets is not None and facets.size:
                     local = ref[facets[local_masks[lab][facets].all(axis=1)]]
                 else:
                     local = numpy.zeros((0, cdim, cdim))
-                if uw.mpi.comm.allreduce(len(local) > 0, op=MPI.LOR):
+                gathered = numpy.concatenate(uw.mpi.comm.allgather(local))
+                if len(gathered):
                     surf[lab] = BoundingSurface(self, lab, "facet",
-                                                reference_facets=local)
+                                                reference_facets=gathered)
         usable = [lab for lab in slip_labels if lab in surf]
         masks = {lab: masks[lab] for lab in usable}
         count = numpy.zeros(n_verts, dtype=int)
@@ -4571,12 +4946,38 @@ class Mesh(Stateful, uw_object):
                                 reference_coords=None, boundary_labels=None):
         """In-place convenience over :meth:`boundary_slip`: slide+restore the
         slip vertices of ``coords`` (a full local-chart vertex array) and return
-        it. For callers that just want coordinates snapped back (a checkpoint
-        reload, a diagnostic, the free-surface module)."""
+        it. For callers that just want coordinates snapped back (a diagnostic,
+        the free-surface module).
+
+        It restores onto a declared surface only. A mesh reloaded from a file
+        declares none, and writing saved coordinates into ``mesh.X.coords``
+        releases the surfaces a constructor declared, so after a checkpoint
+        reload the slip vertices slide along the wall as it was saved and are
+        not put back on the constructor's circle or sphere. After the write the
+        call warns; on a reloaded mesh, which never declared a surface, it does
+        not.
+
+        The projector of :meth:`boundary_slip` moves the vertices a rank owns.
+        This method then copies each owner's value to the other ranks holding
+        the vertex, as the movers do after projecting, so the array returned
+        is the same for every copy of a vertex. Collective.
+
+        As in :meth:`boundary_slip`, a label passed as free (``{label: False}``)
+        has its declared surface released by this call."""
         _is_pinned, project = self.boundary_slip(
             slip_spec, reference_coords=reference_coords,
             boundary_labels=boundary_labels)
-        return project(numpy.asarray(coords, dtype=float))
+        projected = project(numpy.asarray(coords, dtype=float))
+        if uw.mpi.size > 1:
+            coord_dm = self.dm.getCoordinateDM()
+            local, owned = coord_dm.createLocalVec(), coord_dm.createGlobalVec()
+            local.array[:] = projected.ravel()
+            coord_dm.localToGlobal(local, owned, addv=False)
+            coord_dm.globalToLocal(owned, local)
+            projected[...] = local.array.reshape(projected.shape)
+            local.destroy()
+            owned.destroy()
+        return projected
 
     @timing.routine_timer_decorator
     def update_lvec(self, swarm_sync=True):
@@ -4792,9 +5193,8 @@ class Mesh(Stateful, uw_object):
         length unit; a unit that is not a length is refused. A plain array is model
         coordinates, as evaluate reads one, and so are dimensionless coordinates. They
         are read in this model's frame: values scaled by another model cannot be told
-        apart. In a units model a plain array the size of
-        the physical domain is refused rather than read as model coordinates and
-        scaled up.
+        apart. In a units model a plain array is refused: it could be metres or model
+        units (#1081).
         """
         from underworld3.utilities.unit_aware_array import UnitAwareArray
 
@@ -4802,11 +5202,10 @@ class Mesh(Stateful, uw_object):
                  if getattr(self.CoordinateSystem, "_scaled", False) else 1.0)
         units = getattr(coords, "units", None)
         if units is not None and not (1.0 * uw.units(str(units))).dimensionality:
-            # Dimensionless coordinates are model coordinates, as a plain array is,
-            # and take the same physical-size check below.
+            # Coordinates marked dimensionless are model coordinates, by the
+            # caller's statement (#1081).
             coords = coords.to("dimensionless")
-            coords = numpy.asarray(getattr(coords, "magnitude", coords), dtype=float)
-            units = None
+            return numpy.asarray(getattr(coords, "magnitude", coords), dtype=float)
         if units is not None:
             if (1.0 * uw.units(str(units))).dimensionality != (1.0 * uw.units("m")).dimensionality:
                 raise ValueError(f"mesh coordinates must be a length, not {units}")
@@ -4815,18 +5214,16 @@ class Mesh(Stateful, uw_object):
             model = uw.non_dimensionalise(coords)
             return numpy.asarray(getattr(model, "magnitude", model), dtype=float)
         model = numpy.asarray(coords, dtype=float)
-        # Collective: a rank with no vertices still enters both reductions.
-        if scale != 1.0:
-            current = numpy.asarray(self._coords).reshape(-1, self.cdim)
-            extent = uw.mpi.comm.allreduce(float(numpy.abs(current).max()) if current.size else 0.0,
-                                           op=uw.MPI.MAX)
-            size = uw.mpi.comm.allreduce(float(numpy.abs(model).max()) if model.size else 0.0,
-                                         op=uw.MPI.MAX)
-            if (extent > 0.0 and size > 0.0
-                    and abs(numpy.log(size / (extent * scale))) < abs(numpy.log(size / extent))):
-                raise ValueError(
-                    "mesh.deform was given a plain array the size of the physical domain. "
-                    "Pass coordinates with units, such as mesh.X.coords, or model coordinates.")
+        # In a model with reference quantities a plain array is ambiguous (metres,
+        # or model units?) and is refused, as a bare number for a dimensional
+        # parameter is (#1081; units ruling, 2026-11-13). The rule depends only on
+        # the model, so every rank decides the same.
+        if uw.get_default_model().has_units():
+            raise ValueError(
+                "mesh.deform: a plain array is ambiguous in a model with reference "
+                "quantities. Pass coordinates with units, e.g. mesh.X.coords plus a "
+                "displacement with units, or model coordinates marked as such, e.g. "
+                "UnitAwareArray(model_coords, units=\"dimensionless\") (#1081).")
         return model
 
     def deform(self, new_coords, *, dt=None, zero=None, verbose=False):
@@ -4844,7 +5241,9 @@ class Mesh(Stateful, uw_object):
         new_coords : ndarray
             Target vertex coordinates, in the shape of ``mesh.X.coords``. Coordinates
             with units, such as ``mesh.X.coords`` itself in a model with reference
-            quantities, are converted; a plain array is read as model coordinates.
+            quantities, are converted. Without reference quantities a plain array is
+            model coordinates; with them it is refused, and model coordinates are
+            passed marked ``units="dimensionless"`` (#1081).
         dt : float, optional
             Timestep for the ALE ``v_mesh = Δx/dt`` correction. Required when
             SemiLagrangian history is present and the move is advective (a
@@ -4869,9 +5268,9 @@ class Mesh(Stateful, uw_object):
         # reason — a rigid `radial`/`plane` surface would keep restoring to the old shape.
         self._geometry_deformed = True
         self._bnd_restore_cache = None
-        for _surf in getattr(self, "_bounding_surfaces", {}).values():
-            if getattr(_surf, "kind", None) in ("radial", "plane") and hasattr(_surf, "release"):
-                _surf.release()
+        self._release_bounding_surfaces(
+            "the mesh has been deformed since it was declared, so the boundary may no "
+            "longer lie on it")
 
         def _do_move():
             self._deform_mesh(_nc)
@@ -4959,8 +5358,10 @@ class Mesh(Stateful, uw_object):
         The coarse levels keep their geometry. For PETSc's geometric
         multigrid that costs nothing: the nested interpolation is topological
         and the coarse operators are Galerkin products. Custom-P transfers are
-        built from coordinates, so after a large move the unmoved coarse
-        levels cost it iterations, though not accuracy.
+        built from coordinates. A moved simplex level is read where it was
+        made (``fault_mg.as_built_nodes``), so its transfers are those of the
+        unmoved mesh as well; a quadrilateral, hexahedral or periodic level is
+        read on the moved coordinates.
 
         The level gets a copy of the global coordinates; its local vector is
         regenerated from them. Its coordinate field (cell geometry, quadrature
@@ -5009,10 +5410,34 @@ class Mesh(Stateful, uw_object):
         coordinates it was given, and reaches the level below through
         ``_addon_reference``. A periodic mesh holds its coordinates cell by
         cell and keeps no record."""
-        self._as_built_vertices = (None if _holds_cell_coordinates(self.dm)
-                                   else _vertex_coordinates(self.dm))
+        self._record_transfer_geometry()
+        self._as_built_vertices = self._transfer_vertices
         self._moved_since_built = False
         self._addon_reference = None
+
+    def _record_transfer_geometry(self):
+        """Keep the vertex coordinates the mesh stands on as the ones its
+        transfers to the level below are built on (``fault_mg.as_built_nodes``).
+
+        For a new DM, and for :meth:`relax` on a mesh that stands where its
+        transfers are built: the relax repairs the shapes the refinement left
+        and is part of making the mesh, so the transfers are built on the
+        relaxed coordinates. A move after it is taken back to this geometry.
+        The parent of a cell is still read on the as-built record
+        (``fault_mg.reference_vertices``), which a relax leaves alone."""
+        self._transfer_vertices = (None if _holds_cell_coordinates(self.dm)
+                                   else _vertex_coordinates(self.dm))
+
+    def _moved_off_transfer_geometry(self):
+        """Do the vertices stand anywhere but on the coordinates the transfers
+        are built on? Collective. The comparison is exact, so coordinates that
+        were written and put back (``ephemeral_coords``, a restore, a deform
+        back to rest) are not a move, and any other change is one."""
+        if self._transfer_vertices is None:
+            return False
+        moved = not numpy.array_equal(_vertex_coordinates(self.dm),
+                                      self._transfer_vertices)
+        return bool(self.dm.comm.tompi4py().allreduce(int(moved)))
 
     def _deform_mesh(self, new_coords: numpy.ndarray, verbose=False,
                      active_vars=None):
@@ -6628,7 +7053,7 @@ class Mesh(Stateful, uw_object):
         self._cell_node_array[key] = rows.reshape(cEnd - cStart, expected)
         return self._cell_node_array[key]
 
-    def _get_coords_for_basis(self, degree, continuous):
+    def _get_coords_for_basis(self, degree, continuous, vertices=None):
         """The coordinates of the nodes of a degree-``degree`` Lagrange field, an
         ``(n, cdim)`` array in the local layout of :meth:`_basis_coordinate_dm`
         (ghost nodes included).
@@ -6636,6 +7061,13 @@ class Mesh(Stateful, uw_object):
         The interpolation matrix comes from UW3's copy of PETSc's nested
         interpolator, which assembles also on a rank that holds cells but owns
         none of their nodes (#902; ``petsc_dm_create_interpolation_within_plex``).
+
+        ``vertices`` reads the nodes on other vertex coordinates than those the
+        mesh stands on: one row per local vertex in point order, as
+        ``_vertex_coordinates`` gives them, each rank's owned rows being the
+        ones read. The matrix holds the place of every node in its cell and no
+        coordinate, so vertices recorded earlier give the nodes of that time
+        bit for bit.
         """
         from underworld3.cython.petsc_discretisation import (
             petsc_dm_create_interpolation_within_plex,
@@ -6645,7 +7077,10 @@ class Mesh(Stateful, uw_object):
         dmnew = self._basis_coordinate_dm(degree, continuous)
 
         matInterp = petsc_dm_create_interpolation_within_plex(dmold, dmnew)
-        coordsOld = self.dm.getCoordinates()
+        if vertices is None:
+            coordsOld = self.dm.getCoordinates()
+        else:
+            coordsOld = self._coordinate_vector_of(vertices)
         coordsNewL = dmnew.getLocalVec()
         coordsNewG = dmnew.getGlobalVec()
         matInterp.mult(coordsOld, coordsNewG)
@@ -6653,6 +7088,8 @@ class Mesh(Stateful, uw_object):
 
         arrcopy = coordsNewL.array.reshape(-1, self.cdim).copy()
 
+        if vertices is not None:
+            coordsOld.destroy()
         dmnew.restoreGlobalVec(coordsNewG)
         dmnew.restoreLocalVec(coordsNewL)
         # Clean up the PETSc interpolation objects built above. Without this
@@ -6662,6 +7099,22 @@ class Mesh(Stateful, uw_object):
         dmnew.destroy()
 
         return arrcopy
+
+    def _coordinate_vector_of(self, vertices):
+        """A global coordinate vector holding ``vertices``, one row per local
+        vertex in point order (``_vertex_coordinates``). Each rank's owned rows
+        are the ones kept. The caller destroys it."""
+        from underworld3.utilities._plex_topology import section_offsets
+
+        dm = self.dm
+        vs, ve = dm.getDepthStratum(0)
+        offsets = section_offsets(dm.getCoordinateSection(), numpy.arange(vs, ve))
+        local = dm.getCoordinatesLocal().duplicate()
+        local.array[offsets[:, None] + numpy.arange(self.cdim)] = vertices
+        held = dm.getCoordinates().duplicate()
+        dm.getCoordinateDM().localToGlobal(local, held)
+        local.destroy()
+        return held
 
     def _coord_rows_for_points(self, nav_dm, points):
         """Row indices into the navigation coordinate array (``_nav_coords``)
@@ -7216,10 +7669,12 @@ class Mesh(Stateful, uw_object):
 
     def points_in_domain(self, points, strict_validation=True):
         """
-        Determine if the given points lie in this domain.
-        Uses a mesh-boundary skeletonization array to determine whether the point is
-        inside the boundary or outside. If close to the boundary, it checks if points
-        are in a cell.
+        Determine if the given points lie in this rank's part of the domain.
+        On a straight-sided simplex mesh, a point is in it when a local cell
+        contains it (the exact locator), or lies within the evaluation face
+        tolerance of a local cell. Other meshes use a mesh-boundary
+        skeletonization array to decide inside from outside, and check the
+        points close to the boundary against the cells.
 
         Parameters
         ----------
@@ -7227,12 +7682,14 @@ class Mesh(Stateful, uw_object):
             Coordinate array in any physical unit system (will be auto-converted).
             Plain numbers are assumed to be in model coordinates.
         strict_validation : bool
-            Whether to perform strict validation near boundaries
+            Whether to perform strict validation near boundaries. Only other
+            meshes read it: on a straight-sided simplex mesh the claim is
+            containment (or the face tolerance near the boundary) either way.
 
         """
         return self._classify_points_in_domain(points, strict_validation)[0]
 
-    def _classify_points_in_domain(self, points, strict_validation=True):
+    def _classify_points_in_domain(self, points, strict_validation=True, exact_location=False):
         """In/out classification, keeping the owning cells it had to locate.
 
         ``points_in_domain`` located the near-boundary points and threw the
@@ -7246,21 +7703,29 @@ class Mesh(Stateful, uw_object):
             Coordinate array in any physical unit system (will be
             auto-converted).
         strict_validation : bool
-            Whether to perform strict validation near boundaries.
+            Whether to perform strict validation near boundaries. Ignored on a
+            straight-sided simplex mesh, where the claim is containment either
+            way.
+        exact_location : bool
+            Evaluation's classification (passed by ``evaluate_nd``): on a
+            simplex mesh in serial, the face tolerance is tested against the
+            cell the walk left the mesh through.
 
         Returns
         -------
         in_or_not : numpy.ndarray of bool
             Exactly what :meth:`points_in_domain` returns.
         cells : numpy.ndarray of int
-            Owning cell for the points the classification actually located,
-            at the evaluation face tolerance (:meth:`_robust_owning_cells`).
-            ``-1`` everywhere else — for an EXTERIOR point that means "not in
-            the local mesh"; for an INTERIOR point it means "not looked up",
-            because the boundary-sign test settled it without a search. A
-            caller that needs a cell for every interior point locates the
-            ``-1`` entries itself, and only when it needs them: nothing here
-            searches on the classifier's behalf.
+            On a straight-sided simplex mesh, every point is located, so this
+            holds the owning cell of every claimed point (the containing cell,
+            or the one the face tolerance claimed it for) and ``-1`` exactly
+            where ``in_or_not`` is False; a caller need not locate those points
+            again. On other meshes, the owning cell for the points the
+            classification actually located, at the evaluation face tolerance
+            (:meth:`_robust_owning_cells`), and ``-1`` everywhere else: for an
+            EXTERIOR point that means "not in the local mesh"; for an INTERIOR
+            point it means "not looked up", because the boundary-sign test
+            settled it without a search.
         """
         # Convert points to model coordinates using the unified conversion function
         # This handles all coordinate formats: plain numbers, unit-aware coordinates, lists, tuples, arrays
@@ -7297,6 +7762,50 @@ class Mesh(Stateful, uw_object):
         # surface-mesh contract, query points are assumed to lie on
         # the manifold; the closest-local-cell test is the right
         # filter, not an inside/outside split.
+        if self._simplex_locator() is not None:
+            # On a simplex mesh the exact locator decides, for evaluation and for
+            # points_in_domain alike: a point is interior when a local cell
+            # contains it, or the face tolerance of _robust_owning_cells claims
+            # it. The boundary-face sign test below stood in for containment far
+            # from the local boundary, and on a strongly sheared mesh it called a
+            # contained point exterior (#1123): a swarm's migration then put that
+            # particle on no rank, while global_evaluate's ownership had it.
+            # Style Charter section 12: containment, not a sign test.
+            if exact_location:
+                # evaluation: the serial exit-cell tolerance test (#1175)
+                cells = numpy.asarray(
+                    self._robust_owning_cells(model_points, for_evaluation=True),
+                    dtype=numpy.int64)
+                return cells >= 0, cells
+            # Claims: exact containment first. A point no local cell contains
+            # takes the face tolerance development applied near the boundary,
+            # so claims change only by contained points: in parallel the
+            # evaluation tolerance (_robust_owning_cells), in serial the
+            # cell-wall test's own (_get_closest_local_cells_internal).
+            locator = self._simplex_locator()
+            cells, _, _ = self._walk_to_owning_cells(locator, model_points)
+            lost = numpy.flatnonzero(cells < 0)
+            # Only near the local boundary, as development applied it: the face
+            # tolerance cannot claim a point farther away, and testing every
+            # point outside the domain cost 7.6 of 11 s on 1e6 points.
+            if lost.shape[0] > 0 and self.boundary_face_control_points_kdtree is not None:
+                dist2, _ = self.boundary_face_control_points_kdtree.query(
+                    model_points[lost], k=1, sqr_dists=True)
+                lost = lost[numpy.asarray(dist2).ravel() < 2 * max_radius ** 2]
+            if lost.shape[0] > 0:
+                if self._eval_use_robust_location():
+                    # _robust_owning_cells' own tolerance search, without walking
+                    # these points a second time
+                    cells[lost] = numpy.asarray(
+                        self._get_closest_local_cells_internal(
+                            model_points[lost], tol=self._EVAL_FACE_TOL),
+                        dtype=numpy.int64)
+                else:
+                    near = numpy.asarray(
+                        self._get_closest_local_cells_internal(model_points[lost]),
+                        dtype=numpy.int64)
+                    cells[lost] = near
+            return cells >= 0, cells
         if self.boundary_face_control_points_kdtree is None:
             in_or_not = self._get_closest_local_cells_internal(model_points) != -1
             return in_or_not, cells
@@ -7722,15 +8231,21 @@ class Mesh(Stateful, uw_object):
         )
 
     # Face tolerance for the parallel evaluation locator (relative to the
-    # control-point separation). Tight: it admits points genuinely on a
-    # cell face/edge (containment value ~0) but rejects points sitting inside
-    # a *different* cell (value strongly negative), so a rank never claims a
-    # point another rank owns. A point in the (closed) domain is then found by
-    # exactly one rank (verified: 360/360, owners==1), and the migration routes
-    # it to that owner.
+    # control-point separation): a point within a thin slab outside a local
+    # cell's face (about 1e-2 of the separation, an absolute 1e-5 in model
+    # units) counts as in that cell. It admits points genuinely on a face or
+    # edge, and rejects points well inside a different cell. It does NOT make
+    # ownership unique: a point within the slab of a partition seam is claimed
+    # by the ranks on both sides (measured by H1 on #1175: 30 to 2,690 points
+    # per run claimed twice), and the rank that does not contain it evaluates
+    # it in a cell that does not (up to 2.8e-4 off, 1e-5 typical). Claiming by
+    # exact containment first is the follow-up named on #1175.
     _EVAL_FACE_TOL = 1.0e-2
+    # Containment to rounding, relative like _EVAL_FACE_TOL. A point some local
+    # cell contains to this tolerance is evaluated in that cell (#1115).
+    _EVAL_CONTAIN_TOL = 1.0e-10
 
-    def _robust_owning_cells(self, coords: numpy.ndarray) -> numpy.ndarray:
+    def _robust_owning_cells(self, coords: numpy.ndarray, for_evaluation=False) -> numpy.ndarray:
         """Per-point owning cell for parallel evaluation (coords in model units).
 
         This is the strict barycentric/cell-wall locator
@@ -7753,14 +8268,148 @@ class Mesh(Stateful, uw_object):
         one with the nearest centroid — see the tie-break note on
         :meth:`_get_closest_local_cells_internal` for what that changed and
         why it is visible only to discontinuous fields.
+
+        Two passes (#1115). A point that a local cell contains to rounding
+        (``_EVAL_CONTAIN_TOL``) gets that cell. Only a point no local cell
+        contains is given the face tolerance. With the face tolerance alone, a
+        point just inside one cell, within 1e-2 of a face it shares, could come
+        back in the neighbour: the evaluator then clamped it onto the shared
+        face, an error of about |grad f| times its distance from the face,
+        even for a field the element represents exactly. The set of points a
+        rank claims is unchanged; only which of its cells evaluates them.
         """
         coords = numpy.asarray(coords)
         if coords.shape[0] == 0:
             return numpy.array([], dtype=numpy.int64)
-        return numpy.asarray(
-            self._get_closest_local_cells_internal(coords, tol=self._EVAL_FACE_TOL),
-            dtype=numpy.int64,
-        )
+        locator = self._simplex_locator()
+        beyond_reach = None
+        if locator is not None:
+            cells, beyond_reach, exit_cell = self._walk_to_owning_cells(locator, coords)
+            if for_evaluation and uw.mpi.size == 1:
+                # Evaluation in serial only: a point the walk could not place in
+                # a local cell is given the face tolerance against the cell it
+                # left the mesh through, not the 50-centroid search, which costs
+                # a point outside the domain 51 containment tests. In serial the
+                # local boundary is the domain boundary, and the two agree on
+                # every point measured (1.02e6, including points 1e-6 and 1e-8
+                # off boundary vertices). In parallel a point within the
+                # tolerance of a partition seam can be met by another cell than
+                # the exit cell, so there the full pass below decides, as for
+                # claims. The rank count is the same on every rank: no
+                # collective depends on this branch.
+                lost = numpy.flatnonzero((cells < 0) & (exit_cell >= 0))
+                if lost.shape[0] > 0:
+                    near = self._test_if_points_in_cells_internal(
+                        coords[lost], exit_cell[lost], tol=self._EVAL_FACE_TOL)
+                    cells[lost[near]] = exit_cell[lost[near]]
+                return cells
+        else:
+            cells = numpy.asarray(
+                self._get_closest_local_cells_internal(coords, tol=self._EVAL_CONTAIN_TOL),
+                dtype=numpy.int64,
+            )
+        # A point no local cell contains keeps today's claim: the face
+        # tolerance below decides whether this rank answers for it. The set of
+        # points a rank claims is unchanged; only which cell holds a contained
+        # point is decided exactly (the locator rework, register row 14).
+        # A point beyond every local cell's reach is not handed to the face
+        # tolerance either: that pass rejects it by the same reach test, after
+        # a kd-tree query and a containment test it does not need.
+        if beyond_reach is None:
+            lost = numpy.flatnonzero(cells < 0)
+        else:
+            # The face tolerance can only claim a point within its slab of a
+            # local face, which is within that face's size of its control
+            # point. A lost point farther than twice the local cell reach from
+            # every local boundary face control point is not handed to it.
+            # Rank-local on purpose: this runs only where points are lost, so
+            # nothing here may be collective (get_max_radius is).
+            candidate = (cells < 0) & ~beyond_reach
+            tree = getattr(self, "boundary_face_control_points_kdtree", None)
+            reach = getattr(self, "_local_cell_reach", None)
+            if tree is not None and reach and candidate.any():
+                which = numpy.flatnonzero(candidate)
+                dist2, _ = tree.query(coords[which], k=1, sqr_dists=True)
+                far = numpy.asarray(dist2).ravel() >= (2.0 * reach) ** 2
+                candidate[which[far]] = False
+            lost = numpy.flatnonzero(candidate)
+        if lost.shape[0] > 0:
+            cells[lost] = numpy.asarray(
+                self._get_closest_local_cells_internal(coords[lost], tol=self._EVAL_FACE_TOL),
+                dtype=numpy.int64,
+            )
+        return cells
+
+    def _simplex_locator(self):
+        """The exact barycentric locator for this mesh's local cells, or None
+        where it does not apply (quadrilaterals, hexahedra, curved cells,
+        2-manifolds: they keep the cell-wall test). Rebuilt with the kd-tree,
+        i.e. whenever the coordinates change."""
+        self._build_kd_tree_index()
+        cached = getattr(self, "_simplex_locator_cache", None)
+        if cached is not None and cached[0] is self._index:
+            return cached[1]
+        locator = None
+        # Decided from mesh-wide facts only (isSimplex is agreed over ranks at
+        # construction), so every rank, an empty one included, takes the same
+        # path: a rank with no cells gets a locator that locates nothing.
+        if (self._nav_dm is None and self.dm.getDimension() == self.cdim
+                and self.degree == 1 and self.isSimplex):
+            from underworld3.discretisation._simplex_locator import SimplexLocator
+            try:
+                locator = SimplexLocator(
+                    self.dm,
+                    lambda v: self._nav_coords[self._coord_rows_for_points(self.dm, v)])
+            except ValueError:
+                # not simplices, or not straight-sided: the cell-wall test
+                locator = None
+        self._simplex_locator_cache = (self._index, locator)
+        return locator
+
+    def _walk_to_owning_cells(self, locator, coords):
+        """Containing cell per point by the face-crossing walk, from the cell of
+        the nearest control point; a point still lost is walked again from its
+        few nearest centroids (a non-convex local mesh can wall it off). -1 where
+        no local cell contains the point. A point several cells contain gets the
+        lowest-numbered cell in the star of the entity it lies on. Also returns
+        which points are beyond every local cell's reach (not walked)."""
+        if locator.n_cells == 0:
+            return (numpy.full(coords.shape[0], -1, dtype=numpy.int64),
+                    numpy.ones(coords.shape[0], dtype=bool),
+                    numpy.full(coords.shape[0], -1, dtype=numpy.int64))
+        distance, nearest = self._index.query(coords, k=1, sqr_dists=False)
+        distance = numpy.asarray(distance).reshape(-1)
+        start = numpy.asarray(self._indexMap[numpy.asarray(nearest).reshape(-1)],
+                              dtype=numpy.int64) - locator.cStart
+        cells = numpy.full(coords.shape[0], -1, dtype=numpy.int64)
+        # A point farther from every control point than any local cell reaches
+        # is in no local cell: it is not walked (the same rejection as the
+        # cell-wall path's, _LOCATOR_REACH_MARGIN).
+        reach = getattr(self, "_local_cell_reach", None)
+        near = (numpy.ones(coords.shape[0], dtype=bool) if not reach
+                else distance <= self._LOCATOR_REACH_MARGIN * reach)
+        exit_cell = numpy.full(coords.shape[0], -1, dtype=numpy.int64)
+        cells[near], exit_cell[near] = locator.locate(coords[near], start[near], return_exit=True)
+        lost = numpy.flatnonzero((cells < 0) & near)
+        if lost.shape[0] > 0:
+            k = min(4, locator.n_cells)
+            _, cc = self._centroid_index.query(coords[lost], k=k, sqr_dists=False)
+            cc = numpy.asarray(cc, dtype=numpy.int64).reshape(lost.shape[0], -1)
+            cells[lost] = locator.locate(coords[lost], cc[:, 0],
+                                         restarts=[cc[:, j] for j in range(1, cc.shape[1])])
+            # The walk and its restarts can still miss a contained point (on a
+            # strongly sheared mesh a partition seam or the wall can wall it off:
+            # #1183). The exact fallback tests every cell whose bounding box
+            # holds the point, so a point some local cell contains is found.
+            still = lost[cells[lost] < 0]
+            if still.shape[0] > 0:
+                cells[still] = locator.cells_containing(coords[still])
+        found = cells >= 0
+        cells[found] += locator.cStart
+        exit_cell[cells >= 0] = -1
+        has_exit = exit_cell >= 0
+        exit_cell[has_exit] += locator.cStart
+        return cells, ~near, exit_cell
 
     def _audit_cell_face_geometry(self):
         """Measure the two quantities that bound the cell-wall estimator's
@@ -7856,7 +8505,7 @@ class Mesh(Stateful, uw_object):
         if cached is not None and cached[0] == key:
             return cached[1]
 
-        if bool(self.dm.isSimplex()) or (self.dim != self.cdim):
+        if bool(self.isSimplex) or (self.dim != self.cdim):
             cap = "exact"
         else:
             sag_rel, viol_rel = self._audit_cell_face_geometry()
@@ -7989,12 +8638,39 @@ class Mesh(Stateful, uw_object):
         if (
             not hasattr(self, "_domain_kdtree")
             or self._domain_kdtree is None
-            or getattr(self, "_domain_kdtree_version", -1) != self._mesh_version
+            or getattr(self, "_domain_kdtree_geometry_version", -1) != self._geometry_version
         ):
             centroids = self._get_domain_centroids()
             self._domain_kdtree = uw.kdtree.KDTree(centroids)
-            self._domain_kdtree_version = self._mesh_version
+            self._domain_kdtree_geometry_version = self._geometry_version
         return self._domain_kdtree
+
+    @uw.collective_operation
+    def _get_domain_boxes(self):
+        """Every rank's vertex bounding box, padded: ``(lo, hi)``, each
+        ``(size, cdim)``, the same on every rank. A point a rank's domain holds
+        is inside its unpadded box; the pad covers a point just outside the
+        mesh that the locator still gives a cell. That slab has a relative part
+        (the face tolerance, ``_EVAL_FACE_TOL``, of a cell) and an absolute
+        one, from the locator's 1e-3 control-point offset: about 1e-5 model
+        units outside a wall, 3e-5 at a corner. So the pad is the larger of
+        four face tolerances of the largest cell radius and an absolute floor
+        of ten face tolerances of that offset (1e-4); without the floor, on
+        cells finer than about 7.5e-4 a point some rank claims fell outside
+        every box and a migrate that deletes lost points deleted it. A point
+        outside all of them is in no rank's domain. A rank with no cells has
+        an empty box (``lo = +inf``). Collective: one small allgather."""
+        import underworld3 as uw
+
+        coords = numpy.asarray(self.dm.getCoordinatesLocal().array).reshape(-1, self.cdim)
+        if coords.size:
+            lo, hi = coords.min(axis=0), coords.max(axis=0)
+        else:
+            lo, hi = numpy.full(self.cdim, numpy.inf), numpy.full(self.cdim, -numpy.inf)
+        pad = max(4.0 * self._EVAL_FACE_TOL * self.get_max_radius(),
+                  10.0 * self._EVAL_FACE_TOL * 1.0e-3)
+        boxes = uw.mpi.comm.allgather((lo - pad, hi + pad))
+        return (numpy.array([b[0] for b in boxes]), numpy.array([b[1] for b in boxes]))
 
     def get_min_radius_old(self) -> float:
         """
@@ -8140,6 +8816,8 @@ class Mesh(Stateful, uw_object):
     def meshVariable_mask_from_label(self, label_name, label_value):
         """Extract single label value and make a point mask - note: this produces a mask on the mesh points and
         assumes a 1st order mesh. Cell labels are not respected in this function."""
+
+        from underworld3.discretisation import MeshVariable
 
         meshVar = MeshVariable(
             f"Mask_{label_name}_{label_value}",
@@ -8673,9 +9351,16 @@ class Mesh(Stateful, uw_object):
                 f"method_kwargs['reference']={ref!r} contradicts it. For "
                 "the mesh-reference frame call "
                 "mesh.redistribute_nodes(metric).")
-        return self.redistribute_nodes(
+        # A relax of a mesh that stands where its transfers are built is part
+        # of making it, in the adapt that refined it or in a call of its own.
+        # On a mesh that has moved it is one more move.
+        where_made = not self._moved_off_transfer_geometry()
+        result = self.redistribute_nodes(
             sympy.sympify(1) if metric is None else metric,
             verbose=verbose, method_kwargs=method_kwargs, **kwargs)
+        if where_made:
+            self._record_transfer_geometry()
+        return result
 
     def _boundaries_with(self, name):
         """This mesh's boundary enum, extended with one more named boundary.
@@ -8764,11 +9449,13 @@ class Mesh(Stateful, uw_object):
         zone = numpy.zeros(cE - cS, dtype=bool)
 
         value = self.boundaries[name].value
-        label = dm.getLabel(name)
-        # An empty stratum hands back a null IS that segfaults in getIndices().
-        # A rank owning no part of the surface is the normal case at np>2.
-        if label is None or label.getStratumSize(value) == 0:
+        # A boundary the DM holds no label for supports no cell; getLabel does
+        # not return None for it (#1163). An empty stratum hands back a null IS
+        # that segfaults in getIndices(), and a rank owning no part of the
+        # surface is the normal case at np>2.
+        if not dm.hasLabel(name) or dm.getLabel(name).getStratumSize(value) == 0:
             return zone
+        label = dm.getLabel(name)
 
         fS, fE = dm.getHeightStratum(1)
         for f in label.getStratumIS(value).getIndices():
@@ -9162,20 +9849,31 @@ class Mesh(Stateful, uw_object):
         lines = [numpy.array([segs[0][0]] + [b for _a, b in segs])
                  for segs in _fault_collect_polylines(surface)]
 
-        cut_dm, info = _cut(self.dm, lines, snap_frac=snap_frac,
+        # the faults already split into this mesh keep their record through
+        # the cut, or the cut is refused (fault_split.add_fault, #1099)
+        from underworld3.utilities.fault_split import (
+            _carried_fault_records, _hand_on_fault_records,
+            _track_fault_records)
+        dm, tracked = _track_fault_records(self)
+        cut_dm, info = _cut(dm, lines, snap_frac=snap_frac,
                             label=name, label_value=value,
                             snap_quality=snap_quality, snap_dist=snap_dist)
         if repair:
             cut_dm, info = self._repair_cut(cut_dm, lines, info, repair_reach,
                                             verbose)
+        earlier = (None if tracked is None
+                   else _carried_fault_records(cut_dm, tracked, [name]))
         if verbose:
             uw.pprint(f"[surface {name!r}] split {info['n_split']} edges, "
                       f"{info['n_on_surface']} vertices on the surface; "
                       f"{info['n_cut_edges']} surface facets, "
                       f"min angle {info['min_angle']:.2f} deg")
 
-        return self._adopt_cut_child(cut_dm, boundaries, info,
-                                     mg_coarsening_ratio, verbose)
+        child = self._adopt_cut_child(cut_dm, boundaries, info,
+                                      mg_coarsening_ratio, verbose)
+        if earlier is not None:
+            _hand_on_fault_records(child, self, *earlier)
+        return child
 
     def add_conforming_sheet(self, points, triangles, name, *,
                              clearance=0.6, setback=0.0, size=None,
@@ -9257,12 +9955,23 @@ class Mesh(Stateful, uw_object):
                 self, mark_sheets([(points, triangles)], clearance), layers=2,
                 verbose=verbose)
         boundaries = host._boundaries_with(name)
+        # the faults already split into this mesh keep their record through
+        # the placement, or it is refused (fault_split.add_fault, #1099)
+        from underworld3.utilities.fault_split import (
+            _carried_fault_records, _hand_on_fault_records,
+            _track_fault_records)
+        dm, tracked = _track_fault_records(host)
         cut_dm, info = place_sheet(
-            host.dm, points, triangles, label=name,
+            dm, points, triangles, label=name,
             label_value=boundaries[name].value, clearance=clearance,
-            verbose=verbose, setback=setback, size=size)
+            verbose=verbose, setback=setback, size=size,
+            split_faults_are_interior=tracked is not None)
+        earlier = (None if tracked is None
+                   else _carried_fault_records(cut_dm, tracked, [name]))
         child = host._adopt_cut_child(cut_dm, boundaries, info,
                                       mg_coarsening_ratio, verbose)
+        if earlier is not None:
+            _hand_on_fault_records(child, host, *earlier)
         # a placed sheet is a fault surface to be: every later partition
         # keeps it whole (addon_partition.embedded_surface_names)
         child._embedded_surfaces = (
@@ -9310,6 +10019,14 @@ class Mesh(Stateful, uw_object):
         add-on is partitioned once for the faults before the cut
         (``utilities.addon_partition``), so nothing moves afterwards.
 
+        A mesh that already carries split faults keeps them: the result
+        holds the earlier faults with their pairing beside the new ones,
+        and its add-on levels are cut for the new faults only. A new fault
+        must keep clear of the earlier ones. One that crosses or touches an
+        earlier fault is refused, and a 3-D sheet needs the clearance from
+        an earlier fault that it needs from a domain wall. A solve warns
+        about a split fault it gives no law and leaves free on a side.
+
         ``cut=False`` labels the mesh edges already on each polyline (the
         embedded spines of a placed band); ``across_seams=True`` then
         splits a spine THROUGH the partition seams it crosses (the band
@@ -9337,6 +10054,7 @@ class Mesh(Stateful, uw_object):
         ``docs/developer/design/FAULT_MULTIGRID_HIERARCHIES.md``.
         """
         from underworld3.utilities.fault_split import add_fault
+        earlier = {spec[1] for spec in getattr(self, "_fault_specs", None) or []}
         child = add_fault(self, faults, verbose=verbose, cut=cut,
                           exclude=exclude, blind=blind,
                           across_seams=across_seams, **place_kwargs)
@@ -9358,8 +10076,11 @@ class Mesh(Stateful, uw_object):
             tail = list(tail)
             idx = addon_level_indices(tail)
             if idx:
+                # only the faults this call added: a level already carries the
+                # earlier ones, and keeps them through the replay (#1099)
                 split = split_tail_levels([tail[k] for k in idx],
-                                          child._fault_specs,
+                                          [spec for spec in child._fault_specs
+                                           if spec[1] not in earlier],
                                           verbose=verbose)
                 for k, m in zip(idx, split):
                     # the split level stands where the level it replaces stood
@@ -9443,8 +10164,12 @@ class Mesh(Stateful, uw_object):
             the on-rank imbalance). Each level re-marks against the metric.
         node_budget : int or None
             Optional cap on the number of *seed* cells marked per level (highest-
-            metric first). **Caveat:** this caps the marked seeds, *not* the
-            resulting DOFs — SBR's conforming closure re-refines the whole
+            metric first). The cap is for the whole mesh, not per rank, so the
+            cells marked do not depend on the partition. Ties, including a flat
+            metric, go to the smallest x, then y, then z, so on a plateau the
+            budget is spent from the low-x end of the feature first. ``0`` marks
+            nothing. **Caveat:** this caps the marked seeds, *not* the resulting
+            DOFs — SBR's conforming closure re-refines the whole
             connected patch from any seed in it, so a seed cap does not bound the
             added DOFs and cannot, on its own, concentrate the finest level near a
             feature. To make the **finest level hug a feature** (a funnel) with
@@ -9484,7 +10209,10 @@ class Mesh(Stateful, uw_object):
             per doubling at the same iteration count. ``2.0`` (halve `h` each
             level) is the standard choice and the measured default; raise it for
             fewer, cheaper levels or lower it if a problem needs a gentler
-            sequence.
+            sequence. The cell size of a generation is the 5th percentile of
+            its cell diameters over the whole mesh, so the choice of levels
+            does not depend on the partition: where the refinement gives the
+            same generations at any rank count, the same levels are kept.
         repair : bool, default False
             Run a reconnection (Lawson flip) pass after each ``edge_split``
             generation, repairing the element shapes the split leaves behind. 2-D
@@ -9629,7 +10357,7 @@ class Mesh(Stateful, uw_object):
         # (adaptivity capstone stage 1c).
         _nvbx = None
         if engine == "nvb":
-            if not bool(self.dm.isSimplex()) or self.dim not in (2, 3):
+            if not bool(self.isSimplex) or self.dim not in (2, 3):
                 raise NotImplementedError(
                     "adapt(engine='nvb') supports 2D triangle and 3D "
                     "tetrahedral meshes."
@@ -9738,6 +10466,19 @@ class Mesh(Stateful, uw_object):
                 return None
 
             return numpy.clip(eval_metric(centroids), 1e-30, None)
+
+        def budget_cut(sel, M, centroids):
+            """The ``node_budget`` cells of highest metric among the candidates
+            ``sel``, over the whole mesh. Collective when a budget is set.
+
+            One budget for the mesh, not one per rank: cut per rank, P ranks
+            marked up to P budgets, and which cells depended on the seams
+            (#1122). Ties go to the smaller centroid, which no partition moves.
+            """
+            if node_budget is None:
+                return sel
+            from underworld3.utilities import edge_split
+            return sel[edge_split.top_over_ranks(M[sel], centroids[sel], node_budget)]
 
         def cell_geometry(dm):
             """Per-cell centroid and size for every cell of a simplicial DM.
@@ -9960,11 +10701,10 @@ class Mesh(Stateful, uw_object):
                 if M is not None and cur_h.size:
                     h_target = 1.0 / numpy.sqrt(M)
                     sel = numpy.where(cur_h > h_target)[0]
-                    if node_budget is not None and sel.size > node_budget:
-                        order = numpy.argsort(M[sel])[::-1]
-                        sel = sel[order[:node_budget]]
                 else:
                     sel = numpy.empty(0, dtype=int)   # rank owns no cells this level
+                if M is not None:
+                    sel = budget_cut(sel, M, centroids)
 
                 # Collective stop: refine while ANY rank still has cells to split
                 # (a rank with none may still bisect via the cross-rank closure).
@@ -10039,7 +10779,7 @@ class Mesh(Stateful, uw_object):
             # so fewer edges are independent per pass.
             n_pass = 8 * dim * max_levels
             current_dm = base_finest
-            _pct5_of_dm = {}
+            _size_of_dm = {}
             for level in range(n_pass):
                 centroids, _proxy_h, cs = cell_geometry(current_dm)
                 # The topology tables are read ONCE per pass and shared
@@ -10049,24 +10789,24 @@ class Mesh(Stateful, uw_object):
                 # cells" verdict is COLLECTIVE (rank-local branching on
                 # the raw metric is the np>1 deadlock class).
                 _edge_tables = None
+                diameter = numpy.empty(0)
                 M = marking_metric(centroids)
                 if M is not None and centroids.shape[0]:
                     h_target = 1.0 / numpy.sqrt(M)
                     diameter, _edge_tables = edge_split.cell_diameters(
                         current_dm, return_tables=True)
-                    # The marking pass has just measured this dm; the MG
-                    # level selection re-derives the same 5th percentile
-                    # per retained generation, so it is cached here
-                    # rather than re-walking every level's topology.
-                    _pct5_of_dm[id(current_dm)] = (
-                        float(numpy.percentile(diameter, 5))
-                        if diameter.size else float("inf"))
                     sel = numpy.where(diameter > h_target)[0]
-                    if node_budget is not None and sel.size > node_budget:
-                        order = numpy.argsort(M[sel])[::-1]
-                        sel = sel[order[:node_budget]]
                 else:
                     sel = numpy.empty(0, dtype=int)   # rank owns no cells
+                if M is not None:
+                    sel = budget_cut(sel, M, centroids)
+                    # The marking pass has just measured this dm, and the MG
+                    # level selection sizes each generation from the same
+                    # diameters, so the size is taken here rather than by
+                    # re-walking every level's topology. Collective: a rank
+                    # with no cells joins with none.
+                    _size_of_dm[id(current_dm)] = edge_split.resolved_cell_size(
+                        current_dm, diameters=diameter)
 
                 marked = [int(cs + j) for j in sel]
                 _coarse_for_P = current_dm
@@ -10175,9 +10915,7 @@ class Mesh(Stateful, uw_object):
                     if verbose:
                         uw.pprint(0, f"[adapt] nvb gen {level}: nothing to refine")
                     break
-                if node_budget is not None and sel.size > node_budget:
-                    order = numpy.argsort(M[sel])[::-1]
-                    sel = sel[order[:node_budget]]
+                sel = budget_cut(sel, M, centroids)   # serial path (see above)
                 marked = [int(cids[j]) for j in sel]
                 markers_per_level.append(marked)
                 _n_coarse_verts = len(nvb.coords)   # before this generation
@@ -10252,10 +10990,7 @@ class Mesh(Stateful, uw_object):
                         uw.pprint(0, f"[adapt] level {level}: no cells need refinement")
                     break
 
-                if node_budget is not None and refine.size > node_budget:
-                    # keep the highest-metric (finest-demand) cells first
-                    order = numpy.argsort(M[refine])[::-1]
-                    refine = refine[order[:node_budget]]
+                refine = budget_cut(refine, M, centroids)
 
                 cell_ids = [int(cs + j) for j in refine]
                 markers_per_level.append(cell_ids)
@@ -10307,7 +11042,7 @@ class Mesh(Stateful, uw_object):
             level_dms, _nested_Ps, _nested_parent_cells = self._subsample_mg_levels(
                 base_finest, level_dms, _nested_Ps, _nested_parent_cells,
                 ratio=mg_coarsening_ratio, verbose=verbose,
-                resolution_hint=(_pct5_of_dm if engine == "edge_split"
+                resolution_hint=(_size_of_dm if engine == "edge_split"
                                  else None),
                 repaired=_repaired_passes)
 
@@ -10365,6 +11100,11 @@ class Mesh(Stateful, uw_object):
         the hierarchy; the whole-mesh median `h` is likewise flat and useless. So
         the resolution of the refined region is what decides a level.
 
+        **The measure belongs to the mesh, not to its partition.** It is one
+        percentile over every rank's cells together
+        (:func:`edge_split.resolved_cell_size`), so the generations kept do
+        not depend on how the cells are dealt out.
+
         The exact per-generation prolongations are COMPOSED across the generations
         a level skips, so the recorded transfer stays exact rather than falling
         back to the geometric builder.
@@ -10382,19 +11122,13 @@ class Mesh(Stateful, uw_object):
         def resolution(dm):
             """The size of the cells this level actually resolves with.
 
-            A low percentile rather than the strict minimum, so one thin cell
-            cannot declare a level; reduced with MIN so the finest region counts
-            wherever it happens to live. A caller that already measured a
-            dm during its own pass loop supplies the value through
-            ``resolution_hint`` instead of paying a second topology walk.
+            A caller that already measured a dm during its own pass loop
+            supplies the size through ``resolution_hint`` instead of paying a
+            second topology walk. Every rank holds the same keys.
             """
             if resolution_hint is not None and id(dm) in resolution_hint:
-                local = resolution_hint[id(dm)]
-            else:
-                d = edge_split.cell_diameters(dm)
-                local = (float(numpy.percentile(d, 5)) if d.size
-                         else float("inf"))
-            return uw.mpi.comm.allreduce(local, op=min)
+                return resolution_hint[id(dm)]
+            return edge_split.resolved_cell_size(dm)
 
         # An engine lands near the target, not on it (1.92, 1.97, 2.19 measured),
         # so the test is against a slightly slack ratio; without it a 1.99 step is
@@ -10670,9 +11404,12 @@ class Mesh(Stateful, uw_object):
                 # worst on the wall x = 0 at 2 to 8 cells per rank (5 of 138 nodes,
                 # error 3.6e-2 on a field with values up to 3), and at interior
                 # points up to 50 cells per rank (error 1.1e-2). See issue #976.
-                transferred_data[var_name] = uw.function.global_evaluate(
-                    old_var.sym, target_coords
-                )
+                # A library resampling at the new mesh's nodes: no far-point refusal.
+                from underworld3.function.functions_unit_system import _internal_resampling
+                with _internal_resampling():
+                    transferred_data[var_name] = uw.function.global_evaluate(
+                        old_var.sym, target_coords
+                    )
             except Exception as e:
                 # Sanctioned swallow (verbose-only report): a variable that
                 # cannot be transferred comes back zeroed, which the reset path

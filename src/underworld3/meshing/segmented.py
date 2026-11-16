@@ -219,6 +219,11 @@ def SegmentedSphericalSurface2D(
 
         viewer = PETSc.ViewerHDF5().create(uw_filename + ".h5", "w", comm=PETSc.COMM_SELF)
         viewer(plex_0[1])
+        viewer.destroy()
+
+    # Every rank reads this file next, collectively. Wait until rank 0 has
+    # written and closed it.
+    uw.mpi.barrier()
 
     # Now do this collectively
 
@@ -618,6 +623,11 @@ def SegmentedSphericalShell(
         viewer = PETSc.ViewerHDF5().create(uw_filename + ".h5", "w", comm=PETSc.COMM_SELF)
 
         viewer(plex_0[1])
+        viewer.destroy()
+
+    # Every rank reads this file next, collectively. Wait until rank 0 has
+    # written and closed it.
+    uw.mpi.barrier()
 
     ## Are these needed for native coordinates ?
     def sphere_return_coords_to_bounds(coords):
@@ -1048,6 +1058,11 @@ def SegmentedSphericalBall(
         viewer = PETSc.ViewerHDF5().create(uw_filename + ".h5", "w", comm=PETSc.COMM_SELF)
 
         viewer(plex_0[1])
+        viewer.destroy()
+
+    # Every rank reads this file next, collectively. Wait until rank 0 has
+    # written and closed it.
+    uw.mpi.barrier()
 
     ## Are these needed for native coordinates ?
     def sphere_return_coords_to_bounds(coords):

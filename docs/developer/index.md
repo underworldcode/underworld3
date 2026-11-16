@@ -47,6 +47,7 @@ same topic are reference or historical material subordinate to the governing doc
 | Branching & releases | [guides/branching-strategy.md](guides/branching-strategy.md) |
 | Planning (GitHub Project, issues, discussions, wiki) | [guides/planning-on-github.md](guides/planning-on-github.md) |
 | Docstring format | NumPy/Sphinx with RST `:math:` — Charter §6 and the [Style Guide docstring section](UW3_Style_and_Patterns_Guide.md) |
+| Identity, geometric search & tolerances | [UW3 Style Charter](UW3_STYLE_CHARTER.md) §12 |
 | Documentation file format | MyST Markdown (`.md`) for Sphinx — CLAUDE.md "Documentation Requests" section |
 
 ## Capability guides

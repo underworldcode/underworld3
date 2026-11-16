@@ -381,6 +381,15 @@ continues; a genuine stall ends the loop with an explicit warning). An
 unconverged exit warns and leaves the last iterate in the fields, except for the
 one case that raises, below.
 
+A cold start whose only forcing is the prescribed datum has a zero residual at
+`u = 0`, before the lift. Its reference is then taken from the lifted iterate:
+`rnorm0`, and so `ref`, is the residual measured after the first increment, and
+a zero residual at iteration 0 is not accepted as convergence until the lift
+has been applied. For a linear model such a solve takes two increments where
+the lift alone would do (#883). The result dictionary reports the pieces: `rnorm0`, `ref`,
+`fnorm_rest` (the rest-state residual, measured only for a warm start of a
+stationary equation) and `rnorm_history` (one entry per pass of the loop).
+
 A **cold start whose first linear solve fails** raises on every rank (#907). The
 outer KSP of an increment (fieldsplit-Schur, vector or direct LU) can fail hard:
 a preconditioner that failed (reason −11), a breakdown, a NaN, or a residual that
@@ -489,6 +498,13 @@ above $10 s^2$ of the convergence reference. On #906's shell that component was
 cell sizes 0.5 and 0.25). A torque of 1 %
 of the forcing gave 1.7e-2 under either normal. For an exact mode $s = 0$, and
 the guard is unchanged.
+
+The size of the projected-out component is kept on the solver after every
+rotated solve as `solver._rotated_rotation_gauge_residual` (zero when no mode
+was admitted). It is the number the guard compares with the converged
+residual. Its counterpart for the pressure gauge,
+`_rotated_pressure_gauge_residual`, exists only when the solve ran with
+`petsc_use_pressure_nullspace`.
 
 A mesh that declares nothing is offered the Cartesian rotations. Each is
 admitted to the increment null space and the post-solve gauge removal only if

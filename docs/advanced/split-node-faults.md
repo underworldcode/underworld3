@@ -45,7 +45,8 @@ child = mesh.add_fault(("Fault", fault_points))
 `FaultMinus` — two geometrically coincident copies of the fault — plus
 the record of which degree of freedom pairs with which. The source mesh
 is untouched: when the fault moves, call `add_fault` again on the base
-mesh at the new position (nothing is cumulative).
+mesh at the new position. A further `add_fault` on `child` adds a fault
+and keeps this one; it does not move it.
 
 A frictionless (perfectly slippery) fault is then a one-line boundary
 condition, and the solve is an ordinary `solve()`:
@@ -276,6 +277,28 @@ from both sides and no special treatment is needed.
 - **Networks**: pass a list of faults to `add_fault`. Segments must not
   share vertices — represent a branch or crossing as offset segments
   separated by a ligament of one or two cell sizes.
+- **Adding a fault later**: `add_fault` on a mesh that already carries
+  split faults returns a mesh with all of them; the earlier faults keep
+  their pairing, and two calls give the solution one call gives. The
+  boundaries are numbered in the order the faults were added, so the
+  label values can differ from those of one call; the names do not. The new
+  fault must keep clear of the earlier ones, as the faults of one call
+  must of each other: one that crosses or touches an earlier fault is
+  refused. In 2-D a gap of one cell is enough. In 3-D the placement
+  treats the two sides of an earlier fault as walls, and a new sheet
+  needs the clearance it would need from a domain wall: two to three
+  cells in our tests. A surface cut into a split mesh
+  (`add_conforming_surface`, `add_conforming_sheet`) keeps the earlier
+  faults' pairing too, and is refused if its cut would refine or move
+  an earlier fault's nodes. In parallel, a mesh with a fault split through
+  the partition seams (`across_seams=True`) is not repartitioned for a
+  later fault: that call is refused, and the network goes to one call.
+- **A split fault with no law**: every split fault needs a law
+  (`add_fault_bc`) or a condition on each of its two sides
+  (`<name>Plus`, `<name>Minus`); a natural condition counts. With no
+  law and a side left free the fault is a traction-free crack and
+  opens under load. The Stokes and thin-sheet solves warn once per
+  solver, naming the fault and the free side.
 - **Parallel**: `add_fault` / `split_fault` REDISTRIBUTE first, in
   both 2-D and 3-D: the fault's cell star (plus one growth layer — a
   thin skin, not the refined band) is gathered onto the rank that

@@ -101,6 +101,9 @@ def test_an_unknown_mesher_is_refused():
                           mesher="lattice")
 
 
+# the fault is left a traction-free crack on purpose: the test is about the
+# multigrid tail, and a law would change its baselines
+@pytest.mark.filterwarnings("ignore:split fault")
 def test_a_placed_mesh_owns_the_base_hierarchy_and_the_cut_inherits_it():
     """A placement built on a refined base OWNS the base's geometric-MG
     tail with the band as FAC zone; the split child inherits the tail

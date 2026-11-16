@@ -21,6 +21,7 @@ cdef extern from "petsc.h" nogil:
 
     ctypedef int PetscErrorCode
     ctypedef int PetscInt
+    ctypedef long long PetscInt64
     ctypedef double PetscReal
     ctypedef void* MPI_Comm
 
@@ -37,6 +38,8 @@ cdef extern from "petsc_tools.h" nogil:
     PetscErrorCode DMInterpolationSetUp_UW(DMInterpolationInfo ipInfo, PetscDM dm, int petscbool, int petscbool, size_t* owning_cell, int petscbool)
     PetscErrorCode DMInterpolationEvaluate_UW(DMInterpolationInfo ipInfo, PetscDM dm, PetscVec x, PetscVec v)
     PetscErrorCode DMInterpolationGetUnlocated_UW(DMInterpolationInfo ipInfo, PetscInt n, signed char* mask)
+    PetscErrorCode DMInterpolationGetCells_UW(DMInterpolationInfo ipInfo, PetscInt n, PetscInt64* cells)
+    PetscErrorCode DMPlexCellClosureFieldRange_UW(PetscDM dm, PetscVec x, PetscInt field, PetscInt nc, PetscInt n, const PetscInt64* cells, double* lo, double* hi)
 
 cdef class CachedDMInterpolationInfo:
     """
@@ -65,6 +68,7 @@ cdef class CachedDMInterpolationInfo:
     cdef public object coords  # numpy array - Python keeps alive
     cdef public object cells   # numpy array - Python keeps alive (may be None)
     cdef public object unlocated_mask  # bool ndarray: points with no owning cell
+    cdef public object located_cells   # int64 ndarray: the cell each point is evaluated in (-1: none)
     cdef public int dofcount
     cdef public int dim
     cdef public bint is_valid
@@ -76,6 +80,7 @@ cdef class CachedDMInterpolationInfo:
         self.is_valid = False
         self.use_count = 0
         self.unlocated_mask = None
+        self.located_cells = None
         import time
         self.creation_time = time.time()
 
@@ -204,6 +209,20 @@ cdef class CachedDMInterpolationInfo:
                 raise RuntimeError(f"DMInterpolationGetUnlocated_UW failed with error {ierr}")
         self.unlocated_mask = mask_arr.astype(bool)
 
+        # The cell each point is evaluated in: the evaluator's own answer
+        # (hint, or DMLocatePoints), -1 where it found none. A monotone clamp
+        # bounds the value by this cell's closure, so it never locates the
+        # point a second time (#682).
+        cdef np.ndarray cells_arr = np.full(n_points, -1, dtype=np.int64)
+        cdef np.int64_t[::1] cells_out
+        if n_points > 0:
+            cells_out = cells_arr
+            ierr = DMInterpolationGetCells_UW(self._ipInfo, n_points, <PetscInt64*> &cells_out[0])
+            if ierr != 0:
+                DMInterpolationDestroy(&self._ipInfo)
+                raise RuntimeError(f"DMInterpolationGetCells_UW failed with error {ierr}")
+        self.located_cells = cells_arr
+
         self.is_valid = True
 
     def evaluate(self, mesh, np.ndarray[double, ndim=2] outarray):
@@ -271,3 +290,33 @@ cdef class CachedDMInterpolationInfo:
                 f"{self.coords.shape[0]} points, "
                 f"{self.dofcount} DOFs, "
                 f"used {self.use_count} times)")
+
+
+def cell_closure_field_range(mesh, int field_id, int num_components, cells):
+    """Per-component min and max of one mesh variable's values over the
+    closure of each cell, read from ``mesh.lvec`` (the vector the evaluator
+    interpolates from; the caller must have run ``mesh.update_lvec()``).
+
+    All the field's DOFs in the closure count, including P2 and higher edge,
+    face and cell DOFs. A cell index of -1 gives ``(-inf, +inf)``. Rank-local.
+
+    Returns ``(lo, hi)``, each of shape ``(len(cells), num_components)``, in
+    the variable's storage order.
+    """
+    cdef np.ndarray cells_arr = np.ascontiguousarray(np.asarray(cells, dtype=np.int64).reshape(-1))
+    cdef Py_ssize_t n = cells_arr.shape[0]
+    cdef np.ndarray lo = np.empty((n, num_components), dtype=np.float64)
+    cdef np.ndarray hi = np.empty((n, num_components), dtype=np.float64)
+    if n == 0:
+        return lo, hi
+    cdef np.int64_t[::1] cv = cells_arr
+    cdef double[:, ::1] lv = lo
+    cdef double[:, ::1] hv = hi
+    cdef DM dm_obj = mesh.dm
+    cdef Vec lvec_obj = mesh.lvec
+    cdef PetscErrorCode ierr = DMPlexCellClosureFieldRange_UW(
+        dm_obj.dm, lvec_obj.vec, field_id, num_components, n,
+        <PetscInt64*> &cv[0], &lv[0, 0], &hv[0, 0])
+    if ierr != 0:
+        raise RuntimeError(f"DMPlexCellClosureFieldRange_UW failed with error {ierr}")
+    return lo, hi

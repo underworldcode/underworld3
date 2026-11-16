@@ -148,11 +148,17 @@ a pair with an empty column on a hierarchy registered by hand.
 ## The band routes and the direct placement (18 October)
 
 `FaultNetwork.build` (the 3-D band) and `place_fault_ribbon_2d` in gather mode now
-partition before placing, with `mark_band`: a superset of the thin-volume
-placement's own mask, at the placement's reach plus one band width from the band's
-path (the skin lies within a mitred half width of it), with two growth layers. The
-placement then moves nothing, `adopt_hierarchy` keeps the base's own levels under
-the partitioned host instead of co-locating copies of them, and the pair the
+partition before placing, with marks that hold the thin-volume placement's own and
+two growth layers against the placement's one. The 3-D band uses `mark_band`: the
+placement's reach plus one band width from the band's path, a superset because the
+band's skin lies within a mitred half width of its path. That does not hold for a
+2-D ladder band that outcrops, whose cap runs along the wall past the end of the
+path, so the ribbon marks with the placement's own expression on the band's own
+skin (`place_surface._ribbon_region_marks`; both read `_gathered_vertices_2d`,
+#1172). The first placement then moves nothing by construction; a later strand is
+placed on the mesh the earlier ones left, where the same holds as measured and a gather
+that does move a cell is refused. `adopt_hierarchy` then keeps the base's own
+levels under the partitioned host instead of co-locating copies of them, and the pair the
 partition separated is read from the recorded provenance (`test_1099`). The ribbon's
 ligament and conform modes mesh across the seams in place and are unchanged.
 

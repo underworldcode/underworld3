@@ -1,16 +1,17 @@
 """Contract tests for the ``monotone`` keyword on
 ``uw.function.evaluate`` / ``global_evaluate``.
 
-``monotone`` is an opt-in, default-off post-process that bounds the
-interpolated result to the local data range of the source field (the
-``mesh.dim + 1`` nearest DOFs). It was lifted out of the semi-Lagrangian
-trace-back limiter (PR #186/#188) so any resampling path can request the
-same bounded result from one place.
+``monotone`` is opt-in and off by default. ``"clamp"`` bounds each value by
+the source field's DOFs in the closure of the cell it was interpolated in
+(#682); ``"pick"`` tests against the ``mesh.dim + 1`` nearest DOFs and
+re-evaluates the out-of-bounds values by RBF. It was lifted out of the
+semi-Lagrangian trace-back limiter (PR #186/#188) so any resampling path can
+request the same bounded result from one place.
 
 These tests lock:
   (a) default ``monotone=False`` is bit-identical to omitting it;
   (b) ``"clamp"`` bounds the result to an independently recomputed
-      neighbour ``[min, max]`` while ``False`` reproduces the overshoot;
+      containing-cell ``[min, max]`` while ``False`` reproduces the overshoot;
   (c) ``"pick"`` leaves in-bounds points untouched and brings
       out-of-bounds points within range;
   (d) composite expressions and unknown options raise ``ValueError``.
@@ -58,6 +59,22 @@ def _recompute_bounds(T, coords):
     return nbr.min(axis=1).ravel(), nbr.max(axis=1).ravel()
 
 
+def _cell_bounds(T, coords, res=8):
+    """Independent reference for "clamp": min/max over the DOFs of the
+    structured cell holding each point, i.e. every DOF in the closed box
+    ``[i/res, (i+1)/res] x [j/res, (j+1)/res]`` (all 16 nodes of a Q3 cell; node coordinates carry about 1e-12 of rounding)."""
+    nodes = np.asarray(T.coords_nd)
+    data = np.asarray(T.data).reshape(nodes.shape[0])
+    cell = np.floor(np.asarray(coords) * res).astype(int)
+    lo = np.empty(len(coords)); hi = np.empty(len(coords))
+    for key in {tuple(c) for c in cell}:
+        box = np.array(key) / res
+        inside = np.all((nodes >= box - 1e-9) & (nodes <= box + 1.0 / res + 1e-9), axis=1)
+        here = np.all(cell == key, axis=1)
+        lo[here], hi[here] = data[inside].min(), data[inside].max()
+    return lo, hi
+
+
 class TestMonotoneDefaultNoOp:
 
     def test_evaluate_default_bit_identical(self):
@@ -80,14 +97,14 @@ class TestMonotoneClamp:
     def test_clamp_bounds_result(self):
         mesh, T = _steep_p3_field()
         coords = _offnode_coords(mesh)
-        nbr_min, nbr_max = _recompute_bounds(T, coords)
+        nbr_min, nbr_max = _cell_bounds(T, coords)
 
         unlimited = np.asarray(
             uw.function.evaluate(T.sym, coords)).ravel()
         clamped = np.asarray(
             uw.function.evaluate(T.sym, coords, monotone="clamp")).ravel()
 
-        # Clamp lies within the recomputed neighbour range, exactly
+        # Clamp lies within the recomputed containing-cell range, exactly
         # (np.clip is a closed bound).
         assert np.all(clamped >= nbr_min)
         assert np.all(clamped <= nbr_max)
@@ -100,7 +117,19 @@ class TestMonotoneClamp:
         assert overshoot.any(), "expected FE overshoot on the steep field"
 
         # The clamp result reproduces an independent clip against the
-        # recomputed neighbour bounds, to the last bit.
+        # recomputed containing-cell bounds, to the last bit.
+        assert np.array_equal(clamped, np.clip(unlimited, nbr_min, nbr_max))
+
+    def test_the_switch_restores_the_nearest_dof_bound(self, monkeypatch):
+        """``UW_MONOTONE_CLAMP_BOUND=nearest`` gives back the earlier clamp, by
+        the ``dim + 1`` nearest DOFs (the register's switch, #682)."""
+        mesh, T = _steep_p3_field()
+        coords = _offnode_coords(mesh)
+        nbr_min, nbr_max = _recompute_bounds(T, coords)
+        unlimited = np.asarray(uw.function.evaluate(T.sym, coords)).ravel()
+        monkeypatch.setenv("UW_MONOTONE_CLAMP_BOUND", "nearest")
+        clamped = np.asarray(
+            uw.function.evaluate(T.sym, coords, monotone="clamp")).ravel()
         assert np.array_equal(clamped, np.clip(unlimited, nbr_min, nbr_max))
 
     def test_true_aliases_clamp(self):

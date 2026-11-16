@@ -29,8 +29,8 @@ requirements:
     - {{ mpi }}
     - python
     - mpi4py
-    - petsc>=3.21.0
-    - petsc4py>=3.21.0
+    - petsc>=3.25,<3.26
+    - petsc4py>=3.25,<3.26
     - numpy
     - scipy
     - cython
@@ -43,8 +43,8 @@ requirements:
     - numpy
     - mpi4py
     - sympy
-    - petsc>=3.21.0
-    - petsc4py>=3.21.0
+    - petsc>=3.25,<3.26
+    - petsc4py>=3.25,<3.26
     - numpy
     - scipy
     - cython

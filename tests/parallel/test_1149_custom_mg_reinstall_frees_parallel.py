@@ -26,8 +26,11 @@ from petsc4py import PETSc
 import underworld3 as uw
 from underworld3.utilities import custom_mg
 
+# the fault is left a traction-free crack on purpose: the test is about the
+# custom multigrid, and a law would change its baselines
 pytestmark = [pytest.mark.mpi(min_size=2), pytest.mark.level_2, pytest.mark.tier_b,
-              pytest.mark.timeout(600)]
+              pytest.mark.timeout(600),
+              pytest.mark.filterwarnings("ignore:split fault")]
 
 REINSTALLS = 4
 

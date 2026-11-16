@@ -1,12 +1,16 @@
 # Prescribed pressure jumps
 
 ```{note}
-Experimental and opt-in. `pressure_split`, `cylindrical_pressure_lifting` and the
-lagged circular-wall methods described in the boundary-condition rulings are new,
-are exercised by exactness and component tests, and carry no stability or
-convergence theorem. Convergence studies against analytic annulus solutions are
-still to be recorded in this repository. Existing solves are unaffected unless
-these methods are called.
+Experimental and opt-in. `pressure_split` is exercised by exactness tests on
+fitted interfaces, in serial and in parallel, and carries no convergence theorem.
+The split is built once from the mesh geometry: build it again after any change
+of mesh geometry or topology. A solve warns if the mesh geometry has changed
+since the split was built; it does not refuse. Existing solves are
+unaffected unless the method is called.
+`cylindrical_pressure_lifting` and the lagged circular-wall methods described in
+the boundary-condition rulings are also experimental and opt-in. They take each
+wall's circle from the mesh's declaration (`mesh.analytic_surface`) and refuse
+a wall the mesh does not declare as a circle.
 ```
 
 `Stokes.pressure_split` separates total pressure into a continuous P1 unknown
@@ -90,11 +94,10 @@ rate for this implementation.
 
 ## Verification
 
-`tests/test_1099_general_pressure_split.py` checks prescribed analytic/numerical
+`tests/test_1184_general_pressure_split.py` checks prescribed analytic/numerical
 data, compatible and incompatible finite tips/intersections, tetrahedral traces,
 independence of repeated extractions and manufactured Stokes solutions with
-essential and natural boundaries. Alongside the circular extraction tests,
-14 tests pass at 1, 2 and 8 ranks in the Mac Linux ARM64 int32 container.
+essential and natural boundaries.
 The fitted-square manufactured refinement test gives velocity order 3 and
 pressure order 2 at h=1/8, 1/16 and 1/32; this establishes the tested problem's
 convergence, not a rate for arbitrary interfaces.

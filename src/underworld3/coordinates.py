@@ -1961,29 +1961,33 @@ class CoordinateSystem:
     @property
     def units(self):
         """
-        Physical units of the coordinate system.
+        Physical units of the coordinates returned by ``.coords``.
 
-        Returns the units for coordinates accessed via ``.coords``. This is
-        derived from the mesh's reference quantities and indicates the physical
-        scale of the coordinate data.
+        ``.coords`` holds SI metres, from the length scale, whatever unit the
+        reference length was given in, so this is ``meter`` in a model with
+        reference quantities and None otherwise. It used to return
+        ``mesh.units`` (kilometres for a reference length in km), which
+        mislabelled the coordinates by a factor of 1000 (#979).
 
         Returns
         -------
-        str or None
-            Unit string (e.g., 'kilometer', 'meter'), or None if no reference
-            quantities are set.
+        pint.Unit or None
 
         Examples
         --------
-        >>> print(mesh.X.units)  # 'kilometer'
-        >>> coords = mesh.X.coords  # Coordinates in kilometers
+        >>> print(mesh.X.units)  # 'meter'
+        >>> coords = mesh.X.coords  # Coordinates in metres
 
         See Also
         --------
         coords : Coordinate data array.
-        mesh.units : Same as mesh.X.units.
+        mesh.units : The unit output is written in (XDMF, plots), e.g. km.
         """
-        return self.mesh.units
+        if self.mesh.units is None:
+            return None
+        import underworld3 as uw
+
+        return uw.units("meter").units
 
     @property
     def with_units(self):
@@ -2163,7 +2167,7 @@ class CoordinateSystem:
         >>> x_values = mesh.X.coords[:, 0]
 
         >>> # Coordinate units (if set)
-        >>> units = mesh.X.units  # e.g., 'kilometer'
+        >>> units = mesh.X.units  # 'meter' in a units model
 
         See Also
         --------

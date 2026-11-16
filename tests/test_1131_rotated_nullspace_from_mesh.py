@@ -46,6 +46,7 @@ from mpi4py import MPI
 from petsc4py import PETSc
 
 import underworld3 as uw
+from _units_helpers import model_units
 from underworld3.adjoint import misfit_duals
 from underworld3.utilities import custom_mg, rotated_bc
 
@@ -91,7 +92,7 @@ def _shell_stokes(name, radial=False, torque=0.0):
     p = uw.discretisation.MeshVariable(f"P{name}", mesh, 1, degree=1)
     stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
     stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
-    stokes.constitutive_model.Parameters.shear_viscosity_0 = 1.0
+    stokes.constitutive_model.Parameters.shear_viscosity_0 = model_units(1.0, "Pa*s")
     x, y, z = mesh.X
     r = sympy.sqrt(x ** 2 + y ** 2 + z ** 2)
     th = sympy.atan2(y, x)
@@ -113,7 +114,7 @@ def _annulus_stokes(name, mesh=None):
     p = uw.discretisation.MeshVariable(f"P{name}", mesh, 1, degree=1)
     stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
     stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
-    stokes.constitutive_model.Parameters.shear_viscosity_0 = 1.0
+    stokes.constitutive_model.Parameters.shear_viscosity_0 = model_units(1.0, "Pa*s")
     x, y = mesh.X
     r = sympy.sqrt(x ** 2 + y ** 2)
     th = sympy.atan2(y, x)
@@ -449,7 +450,7 @@ def test_a_box_declares_no_mode_and_finds_none():
     p = uw.discretisation.MeshVariable("P1131b", mesh, 1, degree=1)
     stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
     stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
-    stokes.constitutive_model.Parameters.shear_viscosity_0 = 1.0
+    stokes.constitutive_model.Parameters.shear_viscosity_0 = model_units(1.0, "Pa*s")
     x, y = mesh.X
     stokes.bodyforce = (0.0, sympy.cos(sympy.pi * x) * sympy.sin(sympy.pi * y))
     for wall in ("Bottom", "Top", "Left", "Right"):
@@ -499,6 +500,9 @@ def test_the_setter_declares_only_rigid_rotations():
     assert mesh.nullspace_rotations == []
 
 
+# the fault is left a traction-free crack on purpose: the test is about the
+# declared rotation, and a law would change its baselines
+@pytest.mark.filterwarnings("ignore:split fault")
 def test_an_add_fault_child_inherits_the_declaration():
     base = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.5, cellSize=0.2, refinement=1,
                               qdegree=2)
@@ -558,7 +562,7 @@ def test_a_units_model_shell_solves_with_its_declared_modes(velocity_units):
                                            degree=1)
         stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
         stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
-        stokes.constitutive_model.Parameters.shear_viscosity_0 = 1.0
+        stokes.constitutive_model.Parameters.shear_viscosity_0 = model_units(1.0, "Pa*s")
         x, y, z = mesh.X
         r = sympy.sqrt(x ** 2 + y ** 2 + z ** 2)
         stokes.bodyforce = (sympy.cos(4 * sympy.atan2(y, x)) * (z / r)
@@ -606,7 +610,7 @@ def test_a_segmented_shell_keeps_its_modes():
     p = uw.discretisation.MeshVariable("P1131s", mesh, 1, degree=1)
     stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
     stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
-    stokes.constitutive_model.Parameters.shear_viscosity_0 = 1.0
+    stokes.constitutive_model.Parameters.shear_viscosity_0 = model_units(1.0, "Pa*s")
     x, y, z = mesh.X
     r = sympy.sqrt(x ** 2 + y ** 2 + z ** 2)
     stokes.bodyforce = (sympy.cos(4 * sympy.atan2(y, x)) * (z / r)
@@ -702,7 +706,7 @@ def test_an_undeclared_box_in_a_units_model_offers_the_cartesian_rotations():
         p = uw.discretisation.MeshVariable("P1131x", mesh, 1, degree=1)
         stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
         stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
-        stokes.constitutive_model.Parameters.shear_viscosity_0 = 1.0
+        stokes.constitutive_model.Parameters.shear_viscosity_0 = model_units(1.0, "Pa*s")
         x, y, z = mesh.X
         stokes.bodyforce = sympy.Matrix([[0, 0, sympy.sin(sympy.pi * x) * sympy.sin(sympy.pi * y)]])
         for wall in ("Bottom", "Top", "Right", "Left", "Front", "Back"):

@@ -122,6 +122,9 @@ def test_a_wall_deformed_on_some_ranks_drops_the_mode_on_every_rank():
 MOVES_AT = (3, 4, 5, 8)
 
 
+# the fault is left a traction-free crack on purpose: the test is about the
+# declared rotation, and a law would change its baselines
+@pytest.mark.filterwarnings("ignore:split fault")
 def test_an_add_fault_child_keeps_the_declaration_on_every_rank(monkeypatch):
     from underworld3.utilities import addon_partition
     calls = []

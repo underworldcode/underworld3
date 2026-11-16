@@ -114,6 +114,103 @@ def cell_diameters(dm, return_tables=False):
     return diam
 
 
+def percentile_over_ranks(values, pct):
+    """``numpy.percentile(pooled, pct)``, where ``pooled`` is every rank's
+    ``values`` together. Collective.
+
+    The pooled values are never gathered: an order statistic is found by
+    bisecting on the count of values at or below a trial, which is a sum over
+    the ranks. The result does not depend on how the values are dealt out, and
+    at one rank it equals ``numpy.percentile`` of the same float64 values. The
+    values are finite and well inside the float range. ``nan`` when no rank
+    holds a value.
+    """
+    comm = uw.mpi.comm
+    local = np.sort(np.asarray(values, dtype=float).ravel())
+    n = comm.allreduce(int(local.size), op=MPI.SUM)
+    if n == 0:
+        return float("nan")
+
+    def ranked(k):
+        """The k-th smallest of the pooled values, counting from zero."""
+        below = np.nextafter(
+            comm.allreduce(local[0] if local.size else np.inf, op=MPI.MIN), -np.inf)
+        reached = comm.allreduce(local[-1] if local.size else -np.inf, op=MPI.MAX)
+        # More than k values lie at or below `reached`, and at most k at or
+        # below `below`. When no float separates the two, `reached` is the one.
+        while True:
+            middle = 0.5 * (below + reached)
+            if not below < middle < reached:
+                return float(reached)
+            at_or_below = comm.allreduce(
+                int(np.searchsorted(local, middle, side="right")), op=MPI.SUM)
+            if at_or_below > k:
+                reached = middle
+            else:
+                below = middle
+
+    # numpy's default ("linear") rule, with its two-sided interpolation
+    position = (pct / 100.0) * (n - 1)
+    k = int(np.floor(position))
+    t = position - k
+    a = ranked(k)
+    if t == 0.0:
+        return a
+    b = ranked(k + 1)
+    return float(a + (b - a) * t if t < 0.5 else b - (b - a) * (1.0 - t))
+
+
+def top_over_ranks(metric, centroids, count):
+    """Indices of this rank's share of the ``count`` largest ``metric`` values
+    over every rank's candidates together. Collective.
+
+    Ties are broken by centroid, smallest coordinates first, so which cells are
+    kept depends only on the cells and not on how they are dealt out, as long as
+    no candidate is held by two ranks (no mesh's own dm carries overlap cells).
+    The pooled top ``count`` lies within the union of each rank's own top
+    ``count``, so no more than that is gathered from any rank. Returned in
+    ranked order. At one rank this is the first ``count`` of the ranking.
+    """
+    comm = uw.mpi.comm
+    metric = np.asarray(metric, dtype=float).ravel()
+    if count <= 0:          # every rank holds the same count, so all leave here
+        return np.empty(0, dtype=np.int64)
+    centroids = np.asarray(centroids, dtype=float)
+    centroids = centroids.reshape(metric.size, centroids.shape[-1])
+    # columns of the key, most significant first: -metric, then x, y(, z)
+    key = np.column_stack([-metric, centroids])
+    order = np.lexsort(key.T[::-1])
+    n = comm.allreduce(int(metric.size), op=MPI.SUM)
+    if n <= count:
+        return order
+    pooled = comm.allgather(key[order[:count]])
+    pooled = np.vstack([p.reshape(-1, key.shape[1]) for p in pooled])
+    last = pooled[np.lexsort(pooled.T[::-1])[count - 1]]
+    # keep the local candidates that rank at or before the pooled count-th
+    before = np.zeros(metric.size, dtype=bool)
+    equal = np.ones(metric.size, dtype=bool)
+    for j in range(key.shape[1]):
+        before |= equal & (key[:, j] < last[j])
+        equal &= key[:, j] == last[j]
+    keep = before | equal
+    return order[keep[order]]
+
+
+def resolved_cell_size(dm, diameters=None):
+    """The size of the cells a mesh resolves with: the 5th percentile of the
+    cell diameters over the whole mesh. Collective.
+
+    A low percentile rather than the minimum, so one thin cell does not set
+    it. It is taken over every rank's cells together, so it is a property of
+    the mesh and not of its partition. The dm carries no overlap cells, as no
+    mesh's own dm does. ``diameters`` are this rank's :func:`cell_diameters`
+    where the caller has them already. ``inf`` for a mesh with no cells.
+    """
+    d = cell_diameters(dm) if diameters is None else diameters
+    h = percentile_over_ranks(d, 5)
+    return float("inf") if np.isnan(h) else h
+
+
 def _sf_logical_or(dm, flag):
     """Logical-OR a point-indexed flag array over the point star-forest, in place.
 

@@ -199,13 +199,13 @@ stokes.constitutive_model.Parameters.shear_viscosity_0 = 1
 
 if not free_slip_upper:
     stokes.add_dirichlet_bc(0.0, "Upper", 0)
-    stokes.add_dirichlet_bc(0.0, "Upper", 1)
+    stokes.add_dirichlet_bc((None, 0.0), "Upper")
 
 else:
     stokes.add_dirichlet_bc(0.0, "Upper", 0)
 
 stokes.add_dirichlet_bc(0.0, "Lower", 0)
-# stokes.add_dirichlet_bc(0.0, "Lower", 1)
+# stokes.add_dirichlet_bc((None, 0.0), "Lower")
 # -
 
 
@@ -243,7 +243,7 @@ stokes_xy.petsc_options["snes_monitor"] = None
 
 if not free_slip_upper:
     stokes_xy.add_dirichlet_bc(0.0, "Upper", 0)
-    stokes_xy.add_dirichlet_bc(0.0, "Upper", 1)
+    stokes_xy.add_dirichlet_bc((None, 0.0), "Upper")
 else:
     print("Free slip !")
     penalty = 100000

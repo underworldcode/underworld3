@@ -111,7 +111,7 @@ stokes.constitutive_model.Parameters.viscosity = 1.0
 stokes.bodyforce = sympy.Matrix([0, -1])
 
 # Boundary conditions
-stokes.add_dirichlet_bc((0.0,), "Bottom", (0, 1))
+stokes.add_dirichlet_bc((0.0, 0.0), "Bottom")
 
 # Solve
 stokes.solve()
@@ -400,8 +400,8 @@ stokes.bodyforce = sympy.Matrix([0, -1])
 # Boundary conditions
 stokes.add_dirichlet_bc((0.0,), "Left", (0,))   # No horizontal velocity on left
 stokes.add_dirichlet_bc((0.0,), "Right", (0,))  # No horizontal velocity on right
-stokes.add_dirichlet_bc((0.0,), "Bottom", (1,)) # No vertical velocity on bottom
-stokes.add_dirichlet_bc((0.0,), "Top", (1,))    # No vertical velocity on top
+stokes.add_dirichlet_bc((None, 0.0), "Bottom") # No vertical velocity on bottom
+stokes.add_dirichlet_bc((None, 0.0), "Top")    # No vertical velocity on top
 
 # Solve
 stokes.solve()

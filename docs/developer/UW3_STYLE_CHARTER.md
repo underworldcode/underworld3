@@ -89,6 +89,7 @@ These settle the June-2026 drift (see `docs/reviews/2026-07/API-CONSISTENCY-REVI
 | Namespaces | Every user-facing module is exported from its subpackage `__init__`/`__all__` in the PR that creates it. No deep-import-only features. |
 | Docstrings | NumPy/Sphinx style with RST `:math:`. This SUPERSEDES the Markdown-for-pdoc prescription still printed in `UW3_Style_and_Patterns_Guide.md` — that section is wrong; do not follow it. |
 | Constants in symbolic forms | A number that enters a residual, a scheme or a constitutive law is EXACT where it is exact: `sympy.Rational(1, 2)` for a theta of one half, `sympy.Integer(4)` for a weight of four, never `0.5` or `4.0`. A float cannot cancel, and prints as `0.5` or `64.0` in the form the run records. A regulariser that keeps a denominator finite is `uw.maths.functions.vanishing`, which prints as :math:`\varepsilon`, never a literal `1e-30`. User-supplied floats are made exact at the boundary with `sympy.nsimplify(x, rational=True)`. |
+| Field numbers | A solver's field numbers are on its own DM: velocity 0, pressure 1, multipliers from 2 (a scalar solver's unknown is 0). A variable's `field_id` is its index on the mesh DM, which the solver sees only as the auxiliary vector. Nothing relates the two: nothing makes the mesh's 0 and 1 the solver's velocity and pressure. Never pass a `field_id` to a solver method that takes a field number, and never compare one with a solver's number. Values cross between the DMs only through the solver's field decomposition, looked up by field name, and that decomposition is rebuilt whenever the solver's DM is. (maintainer decision 2026-11-14) |
 
 ## 7. Data Access
 
@@ -182,7 +183,7 @@ This Charter wins on any conflict. One governing document per topic:
 this Charter disagree (notably docstring format and coordinate access), the Charter wins.
 
 **Machine enforcement**: the cheapest-to-check rules here (§3 hedging names, §4 silent
-swallows, §7 deprecated data access) are enforced in CI by
+swallows, §6 field numbers, §7 deprecated data access) are enforced in CI by
 `scripts/check_deprecated_patterns.py` via `.github/workflows/style-gates.yml`; its
 allowlist records pre-existing legacy hits and may only shrink. See `guides/style-gates.md`.
 
@@ -207,3 +208,43 @@ Examples:
   PETSc options) — not `argparse`, not ad-hoc `sys.argv` handling, not a config dict at
   the top of the file. A session script is a model a reader should be able to run and
   read; the founding rule applies to it in full.
+
+Mesh geometry is degree 1, for the time being: higher-order coordinates are refused at
+construction (maintainer decision 2026-11-12; #1088; #978 not planned). Don't build
+features for curved geometry or ask a review for them; a check that relies on affine cells
+or planar faces is correct under this rule. Curved geometry would be a campaign across
+particle location, cell geometry, boundary normals, mesh motion and the multigrid
+hierarchy. For particle location, the inside/outside test is exact
+only on planar faces, a curved face needs a nonlinear inverse map for every particle on
+every step, and parallel migration needs a crisp answer
+([Finding Particles in a Distributed, Unstructured Mesh](https://www.underworldcode.org/finding-particles-in-a-distributed-unstructured-mesh/), UWTN 2026-009).
+
+## 12. Identity, Geometry and Tolerances
+
+Coordinates are values, not names. A 2026-11 survey found 41 coordinate-keyed sites and
+49 absolute tolerances in the library, and each one can give a different answer when the
+partition, the mesh size or the unit system changes.
+
+- **Identity is topological.** A vertex, facet, fault side or owning rank is identified
+  by its mesh point, its label or its point-SF ownership, NEVER by its coordinates. Where
+  a choice must be the same at every rank count, say so in the code. A DMPlex point
+  number, local or global, depends on the partition, so a partition-independent
+  tie-break needs a partition-independent key. Once topology has fixed the candidates,
+  and they are the same on every rank, ordering them by their coordinates is such a
+  key: the coordinates rank the candidates, they do not identify them.
+- **Properties are declared and maintained, not re-measured.** An operation that writes
+  coordinates either preserves a declared property by construction or releases it, and
+  says which. A mover that keeps boundary nodes on their wall is the example: it keeps
+  them there, or it says it has let them go. It does not leave the next caller to find
+  out by measuring.
+- **Geometric search is only for points that are not mesh entities.** It starts from
+  connectivity where a start cell is known, and it tests containment in the cell's
+  reference coordinates, with relative tolerances.
+- **Any tolerance that remains is named in one place**, with a comment saying what it
+  bounds and what it scales with. NEVER an absolute number in model units.
+
+**The exception.** Reconstructing from saved data whose topology or numbering does not
+match the live mesh, such as a reload on a different partition, may match by
+coordinates, because nothing else is available. The tolerance is then scaled by the
+mesh (its cell size or extent) and stated, and the match refuses rather than guesses
+when a point has no partner, or more than one.

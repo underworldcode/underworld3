@@ -845,12 +845,21 @@ class _StressHistoryMixin:
             if getattr(cm, "_stress_history", "stress") == "stress":
                 return self.DFDt.psi_star[0]
             if getattr(self, "_tau_decoded", None) is None:
+                # This solver's own: two viscoelastic solvers on one mesh each
+                # decode their own stress.
+                from underworld3.discretisation.discretisation_mesh_variables import (
+                    _mark_made_by, _owned_name)
                 self._tau_decoded = uw.discretisation.MeshVariable(
-                    "tau_decoded", self.mesh, (self.mesh.cdim, self.mesh.cdim),
+                    _owned_name(self.mesh, "tau_decoded", lambda k: f"tau_decoded_{k}", self),
+                    self.mesh, (self.mesh.cdim, self.mesh.cdim),
                     vtype=uw.VarType.SYM_TENSOR, degree=self.DFDt.psi_star[0].degree,
                     continuous=True, units=uw.units.Pa if uw.get_default_model().has_units() else None)
+                _mark_made_by(self._tau_decoded, self)
                 self._tau_decode = uw.systems.Tensor_Projection(self.mesh, self._tau_decoded)
                 self._tau_decode.smoothing = 0.0
+                # The decoded stress is a return value of the solver: project it
+                # well below the momentum solve's own tolerance.
+                self._tau_decode.tolerance = 1.0e-10
             self._tau_decode.uw_function = cm._carried_stress_sym(0)
             self._tau_decode.solve()
             return self._tau_decoded
@@ -2098,8 +2107,12 @@ class SNES_Stokes(_StressHistoryMixin, _ConstitutiveModelStateMixin, SNES_Stokes
         timestep : float, optional
             Advection timestep. Required when stress history is active.
         time : float or Quantity, optional
-            Physical evaluation time for expressions using ``mesh.t``. This is
-            distinct from the viscoelastic integration ``timestep``.
+            Physical time for this solve, set as PETSc's time on the solver's
+            DM. This is distinct from the viscoelastic integration
+            ``timestep``. Expressions written with ``mesh.t`` do not follow
+            it: ``mesh.t`` carries the model clock
+            (``uw.get_default_model().tracker.time``), in source terms and
+            in essential conditions alike (#410). Set the clock.
         _force_setup : bool
             Force rebuild of pointwise functions.
         verbose : bool
@@ -4279,8 +4292,13 @@ class SNES_Tensor_Projection(SNES_Projection):
         Target tensor mesh variable for the projection.
     scalar_Field : MeshVariable, optional
         Scalar work variable used internally.
-    degree : int, default=2
-        Polynomial degree for the finite element space.
+    degree : int, optional
+        Polynomial degree of the scalar work variable. By default the degree
+        of ``tensor_Field``, whose components are copied in and out of it
+        node for node; a work variable whose nodes are not the tensor's (for
+        a discontinuous tensor, or a ``scalar_Field`` of another degree) is
+        refused. At degree 0 the gradient of a component is zero, so
+        smoothing has no effect.
     verbose : bool, default=False
         Enable verbose output.
 
@@ -4303,10 +4321,12 @@ class SNES_Tensor_Projection(SNES_Projection):
         mesh: uw.discretisation.Mesh,
         tensor_Field: uw.discretisation.MeshVariable = None,
         scalar_Field: uw.discretisation.MeshVariable = None,
-        degree=2,
+        degree=None,
         verbose=False,
     ):
         self.t_field = tensor_Field
+        if degree is None:
+            degree = tensor_Field.degree if tensor_Field is not None else 2
 
         super().__init__(
             mesh=mesh,
@@ -4314,6 +4334,19 @@ class SNES_Tensor_Projection(SNES_Projection):
             degree=degree,
             verbose=verbose,
         )
+
+        # Each component is copied between the tensor and the work variable
+        # node for node, so the two must have the same nodes.
+        if tensor_Field is not None and (
+                self.u.degree != tensor_Field.degree
+                or bool(self.u.continuous) != bool(tensor_Field.continuous)):
+            raise ValueError(
+                f"Tensor_Projection: the work variable '{self.u.clean_name}' (degree "
+                f"{self.u.degree}, continuous={self.u.continuous}) does not have the nodes "
+                f"of the tensor '{tensor_Field.clean_name}' (degree {tensor_Field.degree}, "
+                f"continuous={tensor_Field.continuous}). Pass a scalar_Field with the "
+                f"tensor's degree and continuity."
+            )
 
         return
 
@@ -5652,7 +5685,8 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
         self._penalty = expression(R"{\uplambda}", 0, "Incompressibility Penalty")
 
         self.restore_points_to_domain_func = restore_points_func
-        self._bodyforce = sympy.Matrix([[0] * self.mesh.dim]).T
+        # a row, as the setter stores it and F0's time term is (#1034)
+        self._bodyforce = sympy.Matrix([[0] * self.mesh.dim])
         self._constitutive_model = None
 
         # self._E = self.mesh.vector.strain_tensor(self.u.sym)

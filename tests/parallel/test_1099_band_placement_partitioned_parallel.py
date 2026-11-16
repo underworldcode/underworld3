@@ -5,8 +5,9 @@ gather mode) placed its band with ``place_thin_volume``, which gathered the
 band's region onto a surgery rank; ``adopt_hierarchy`` then moved copies of
 the base's coarse levels to follow it (``_colocate_level``), so every
 transfer of the tail paired a level with one built for it. Both routes now
-partition the add-on for the band first (``addon_partition.mark_band``, a
-superset of the placement's own mask): the placement moves nothing, the tail
+partition the add-on for the band first, with marks that hold the placement's
+own (``addon_partition.mark_band`` in 3-D, the band's skin in 2-D): the
+placement moves nothing, the tail
 is the base's own levels with the partitioned host above them, and the pair
 the partition separated is read from the recorded provenance.
 

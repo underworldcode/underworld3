@@ -338,6 +338,9 @@ class SNES_ThinSheet(_StressHistoryMixin, _ConstitutiveModelStateMixin, SNES_Vec
         evalf : bool, default False
             Numerical evaluation during the history carry.
         """
+        from underworld3.utilities.fault_contact import warn_unpaired_split_faults
+
+        warn_unpaired_split_faults(self)
         _refresh_facet_normal(self.mesh)
         if self.Unknowns.DFDt is None:
             super().solve(zero_init_guess, _force_setup=_force_setup, verbose=verbose,

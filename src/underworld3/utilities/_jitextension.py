@@ -717,6 +717,12 @@ def _pack_constants(manifest):
     if not manifest:
         return np.array([], dtype=np.float64)
 
+    # A dimensional parameter left at its bare-number default, in a units model.
+    # Decided from the manifest alone, which every rank holds the same, so every
+    # rank raises together.
+    from underworld3.function.functions_unit_system import _refuse_unset_dimensional_defaults
+    _refuse_unset_dimensional_defaults([uw_expr for _idx, uw_expr in manifest])
+
     values = np.zeros(len(manifest), dtype=np.float64)
     for idx, uw_expr in manifest:
         try:
@@ -1005,43 +1011,87 @@ def getext(
             )
 
             if multi_rank and disk_enabled:
+                comm = underworld3.mpi.comm
+                # Every failure below is held until all ranks can hear of it:
+                # raised on one rank alone it left the others waiting in the
+                # next collective until a wall-clock limit (#842).
+                build_error = store_error = None
                 if underworld3.mpi.rank == 0 and module is None:
                     if verbose:
                         print(
                             f"JIT compiling new module on rank 0 ... {source_hash}",
                             flush=True,
                         )
-                    module, tmpdir = compile_and_load(
-                        real_modname, codeguys_final, verbose=verbose
-                    )
-                    if verbose:
-                        print(f"Location of compiled module: {tmpdir}", flush=True)
-                    _jc.store_module(
-                        source_hash, real_modname, tmpdir, constants_manifest
-                    )
-                # Synchronisation point: rank 0 has now published the
-                # entry; other ranks may load it.
-                underworld3.mpi.comm.Barrier()
+                    try:
+                        module, tmpdir = compile_and_load(
+                            real_modname, codeguys_final, verbose=verbose
+                        )
+                    except Exception as error:
+                        build_error = error
+                    else:
+                        if verbose:
+                            print(f"Location of compiled module: {tmpdir}", flush=True)
+                        try:
+                            _jc.store_module(
+                                source_hash, real_modname, tmpdir, constants_manifest
+                            )
+                        except Exception as error:
+                            store_error = error
+                # Rank 0 has now published the entry, or failed to; the bcast
+                # waits for it, so no barrier is needed before it.
+                verdict = comm.bcast(
+                    None if build_error is None and store_error is None else (
+                        "build" if build_error is not None else "cache write",
+                        _describe(build_error or store_error)),
+                    root=0)
+                if verdict is not None:
+                    what, detail = verdict
+                    message = (f"JIT build of {real_modname} failed on rank 0, so it "
+                               f"fails on every rank:\n{detail}" if what == "build" else
+                               f"JIT build of {real_modname} succeeded on rank 0 but "
+                               f"storing it in the JIT cache failed, so it fails on "
+                               f"every rank:\n{detail}")
+                    raise RuntimeError(message) from (build_error or store_error)
+                fallback_error = None
                 if module is None:
                     module = _jc.load_module(
                         source_hash, real_modname, constants_manifest
                     )
                     if module is None:
-                        # Defensive: rank-0 publish failed (e.g. write
-                        # error). Fall back to a local compile so this
-                        # rank is at least correct, even if wasteful.
-                        module, _tmpdir = compile_and_load(
-                            real_modname, codeguys_final, verbose=verbose
-                        )
+                        # This rank cannot see rank 0's entry (a per-node cache
+                        # directory, a write store_module swallowed, a stale
+                        # entry). It compiles its own copy, and that build may
+                        # fail here alone, so its outcome is agreed too.
+                        try:
+                            module, _tmpdir = compile_and_load(
+                                real_modname, codeguys_final, verbose=verbose
+                            )
+                        except Exception as error:
+                            fallback_error = error
+                _raise_if_any_rank_failed(comm, real_modname, fallback_error)
             else:
                 if verbose and underworld3.mpi.rank == 0:
                     print(
                         f"JIT compiling new module ... {source_hash}", flush=True
                     )
+                build_error = None
+                compiled = False
                 if module is None:
-                    module, tmpdir = compile_and_load(
-                        real_modname, codeguys_final, verbose=verbose
-                    )
+                    try:
+                        module, tmpdir = compile_and_load(
+                            real_modname, codeguys_final, verbose=verbose
+                        )
+                        compiled = True
+                    except Exception as error:
+                        build_error = error
+                if multi_rank:
+                    # Each rank compiled its own copy; a failure on some ranks
+                    # only is agreed before any of them goes on (#842).
+                    _raise_if_any_rank_failed(underworld3.mpi.comm, real_modname,
+                                              build_error)
+                elif build_error is not None:
+                    raise build_error
+                if compiled:
                     if verbose and underworld3.mpi.rank == 0:
                         # Tests in test_0004_pointwise_fns parse this exact
                         # prefix to find the per-call build directory.
@@ -2085,6 +2135,23 @@ cpdef PtrContainer getptrobj():
     return MODNAME, codeguys, diagnostics
 
 
+def _describe(error):
+    return None if error is None else f"{type(error).__name__}: {error}"
+
+
+def _raise_if_any_rank_failed(comm, modname, error):
+    """Raise on every rank if the local build failed on any. Collective (#842).
+
+    The failing rank's own exception is chained, so its traceback is kept there;
+    the others carry its message."""
+    failed = comm.allgather(_describe(error))
+    ranks = [r for r, e in enumerate(failed) if e is not None]
+    if ranks:
+        raise RuntimeError(
+            f"JIT build of {modname} failed on rank(s) {ranks}, so it fails on every "
+            f"rank:\n{_describe(error) or failed[ranks[0]]}") from error
+
+
 def compile_and_load(modname, codeguys, verbose=False):
     """Write ``codeguys`` files to a temp directory, build with Cython, and dynamically load.
 
@@ -2138,12 +2205,20 @@ def compile_and_load(modname, codeguys, verbose=False):
         env=_petsc_build_env(),
     )
     stdout, stderr = process.communicate()
+    build_output = ""
 
     if process.returncode != 0:
         if verbose:
             print(f"Warning: Build process failed with return code {process.returncode}")
             print(f"stdout: {stdout.decode() if stdout else 'None'}")
             print(f"stderr: {stderr.decode() if stderr else 'None'}")
+        # The compiler's own words, whatever ``verbose`` says: the error below
+        # names only the build directory otherwise (#842).
+        text = (stderr or b"").decode(errors="replace").strip() or \
+            (stdout or b"").decode(errors="replace").strip()
+        tail = "\n".join(text.splitlines()[-40:])[-4000:]
+        build_output = (f"\nThe build exited with code {process.returncode}. The last lines "
+                        f"of its output:\n{tail}\n")
 
     def load_dynamic(name, path):
         """Load an extension module from ``path``.
@@ -2174,6 +2249,7 @@ def compile_and_load(modname, codeguys, verbose=False):
             f"Underworld and therefore any modifications to the above files will not persist into "
             f"your Underworld runtime.\n"
             f"Please contact the developers if you are unable to resolve the issue."
+            f"{build_output}"
         )
 
     return module, tmpdir

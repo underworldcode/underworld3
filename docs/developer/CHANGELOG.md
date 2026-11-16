@@ -6,6 +6,121 @@ This log tracks significant development work at a conceptual level, suitable for
 
 ## 2026 Q4 (October – December)
 
+### A units model refuses bare numbers for dimensional parameters, and plain arrays in `mesh.deform` (November 2026, #1182, #1081)
+
+Two API breaks, both following the units ruling of 2026-11-13: in a model with
+reference quantities an ambiguous number is refused rather than guessed at.
+
+- **Parameters.** A finite nonzero bare number assigned to a parameter that declares
+  a dimension (a viscosity, a diffusivity, a stress) is refused at the setter; the
+  message shows the `uw.quantity(value, "<units>")` form. A dimensional parameter
+  left at its bare-number default (the viscosity's 1) is refused when a solve or an
+  `evaluate` first reads it. Zero and infinity, numbers inside expressions, and
+  models without reference quantities are unchanged. Scripts that set
+  `Parameters.shear_viscosity_0 = 1.0` in a units model now give units; a value
+  meant as one model unit is `uw.dimensionalise(1.0, target_dimensionality=...)`
+  (the test suite's `model_units` helper). (#1182)
+- **`mesh.deform`.** A plain array is refused in a units model, whatever its values:
+  it could be metres or model units, and the size-based guess that decided it
+  before failed when the length scale is near 1. Pass coordinates with units
+  (`mesh.X.coords` plus a displacement with units) or model coordinates marked
+  `units="dimensionless"`. (#1081)
+
+### adapt's node_budget is one budget for the whole mesh (November 2026, #1122)
+
+`Mesh.adapt(..., node_budget=N)` caps the cells marked in each refinement pass at
+N, highest metric first. Each rank applied the cap to its own cells, so P ranks
+marked up to N x P cells per pass, and which cells they were depended on the
+partition: the refined mesh, and the multigrid levels built from it, changed with
+the rank count. The cap is now taken over the whole mesh, and cells of equal
+metric are ordered by centroid (smallest x, then y, then z), so the adapted mesh
+is the same at any rank count. In serial only the choice among cells of equal
+metric changes, which argsort made before: on a guide-surface fixture with
+`node_budget=50` the last edge_split level goes from 2956 to 2690 cells, and nvb
+and sbr are unchanged. Iteration counts recorded on such a budgeted mesh may
+move. Without a budget nothing changes.
+
+### The monotone clamp bounds a value by the cell it was interpolated in (November 2026, #682, #994)
+
+`evaluate` and `global_evaluate` with `monotone="clamp"` (or `True`) used to clip each
+value into the range of the `dim + 1` source DOFs nearest the point, from a kd-tree over
+the asking rank's own nodes. Those nodes need not enclose the point, so a P1 field
+linear in x and y was clipped at 5 of 400 interior points in serial (by up to 1.7e-2).
+In parallel they are the wrong rank's nodes for a point another rank owns: 48 and 74 of
+400 points were wrong at np 2, by up to 0.61. On a rank with fewer than `dim + 1` DOFs
+the query failed on that rank alone. The bound is now the per-component range of the
+source variable's DOFs in the closure of the cell the evaluator interpolated the value
+in, P2 and higher edge, face and cell DOFs included, applied on the rank that evaluated
+the point. The cell is the evaluator's own (`DMInterpolationEvaluate_UW` takes its
+closure), so nothing is located twice. A point no cell owns keeps its inverse-distance
+value, which is bounded already. The bound does not depend on the partition for a
+point inside a cell; a point exactly on a face cells share takes the bound of the cell
+the evaluating rank found, until the locator settles such ties by the mesh. Clamped
+results change wherever the clamp acted: the
+semi-Lagrangian `monotone_mode="clamp"`, which the free-surface solver's composition
+transport sets, and `REMESH_MONOTONE=clamp` (off by default).
+`UW_MONOTONE_CLAMP_BOUND=nearest` restores the earlier bound. `"pick"` is unchanged.
+
+### A Stokes solve completes on a mesh with a rank that holds no cells (November 2026, #962)
+
+A Stokes or constrained solve assembles two matrices, the Jacobian and the one its
+preconditioner is built from. PETSc assembles both in one pass, and on a rank with
+no cells that pass leaves early and skips an assembly of the Jacobian that every
+other rank makes: the solve stopped in MPI or hung. A small mesh on many ranks
+and a region extracted from a parent can both leave a rank without cells. The
+solvers now hand PETSc one matrix and one set of kernels to a call, which every
+rank assembles alike; on one rank both matrices are bit for bit the ones PETSc's
+single pass gives. The refusal that stood in front of the defect is removed. A
+constrained solve and a multigrid hierarchy with such a rank have no test yet.
+
+This is a workaround for a defect in PETSc (3.25.0 to 3.26.1 and `main`), and it
+reads tables PETSc keeps private, so the build now stops on any PETSc outside
+3.25.x and every stated requirement says 3.25.x: the pixi environments,
+`pyproject.toml`, `setup.cfg`, the conda recipe, `uw doctor`, the custom PETSc
+build script and the install page. The workaround goes when PETSc assembles alike
+on every rank.
+
+### An adapted mesh keeps the same multigrid levels at any rank count (November 2026, #865)
+
+`Mesh.adapt` keeps one refinement generation per halving of the cell size as a
+multigrid level. It sized a generation by the smallest of the ranks' own
+5th-percentile cell diameters, which moved with how the cells were dealt out: the
+same adapted mesh kept two add-on levels at 1 to 6 ranks and one at 7 and 8. The
+size is now the 5th percentile over the whole mesh, found without gathering the
+cells. Serial hierarchies are unchanged. In parallel the levels are the serial
+ones wherever the refinement gives the serial generations (with `repair=True` or
+a `node_budget` it does not), so an iteration count recorded in parallel on an
+adapted mesh can move.
+
+### The Nitsche condition's continuity-row term is assembled (November 2026, #1072)
+
+`add_nitsche_bc` on a Stokes solver builds two wall terms, one for the momentum rows
+and one for the continuity rows. PETSc integrates a boundary term only for the field
+its boundary entry is registered with, and the condition was registered with the
+velocity field alone, so the continuity-row term was never assembled. Its sign was
+also opposite to the one the `+q div(u)` continuity residual needs. The assembled
+pressure-velocity block was then not minus the transpose of the velocity-pressure
+block, and a closed box with Nitsche on some walls had a system with no solution: the
+solve ended in a failed line search at whatever residual it had reached. A solve
+could also report convergence on a small step with a wrong pressure: the SolCx
+benchmark with Nitsche free slip on its top wall did so at 16 and 32 cells across,
+with a stress error of order ten or more.
+
+Each Nitsche condition now registers a second boundary entry on the pressure field,
+the continuity-row residual and its Jacobian are wired to that entry, and the term is
+`-(n.d)(u.d - g)`. On a manufactured free-slip solution in a box, at cell sizes 1/8,
+1/16 and 1/32, the Nitsche velocity and pressure errors are within 4 % of the
+essential condition's and each solve takes one Newton step. Before, the pressure
+error was 2.7 to 4.4 times the essential one and no solve converged. The flow through
+the wall is the same to 1 %: 1.4e-3, 1.9e-4 and 2.4e-5 of the largest velocity at the
+three cell sizes.
+
+Every Stokes answer with a Nitsche condition whose direction is not tangential
+changes, including solves that converged before: on an annulus with a no-slip inner
+wall and Nitsche free slip on the outer wall, the difference from the rotated
+free-slip answer goes from 1.60e-3 to 1.23e-3 at 8 cells across and from 2.33e-4 to
+1.87e-4 at 16.
+
 ### The fault-band patch factors in quotient minimum degree (November 2026, #895)
 
 The FAC patch smoother solves a fault band's block by LU, and under PETSc's default

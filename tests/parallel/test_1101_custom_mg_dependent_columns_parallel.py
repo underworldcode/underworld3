@@ -1,16 +1,21 @@
-"""Coarse unknowns with the same single fine image are dropped at install (#1101).
+"""Coarse unknowns with the same single fine image are merged at install (#1101).
 
-When the fine level moves far from coarse levels that did not move with it, two
-coarse unknowns can be left whose prolongation columns each have one entry, on
-the same fine row. The columns are proportional, so their Galerkin rows are,
-and the coarse operator is singular. In test_1152 (a mover after #1024) this
+When a coarse level and the level above it are not nested (a placed, cut or
+add-on level over a base it was not refined from; any pair whose transfer is
+built by locating one level's nodes in the other), two coarse unknowns can be
+left whose prolongation columns each have one entry, on the same fine row.
+The columns are proportional, so their Galerkin rows are,
+and the coarse operator is singular. A mesh move under coarse levels that are
+not moved with it makes this more likely: in test_1152 (a mover after #1024) it
 happened on about half of the 1e-13 coordinate perturbations: SOR's inode block
 over the two rows met a zero pivot. ``fault_mg.restrict_unreached`` now keeps
 the largest-weight column of such a group and drops the others (the range of P
 is unchanged), folds each dropped unknown's row of the level below into its
 kept twin's, so the composite coarse functions are unchanged (a merge: they
-still reproduce constants through the shared row), warns, and refuses a support of s > 1 fine rows shared by more
-than s columns. A hierarchy with no such pair comes back untouched.
+still reproduce constants through the shared row), and warns. More columns
+than fine rows on one support (seen on a fault cut into a moved child, where
+the guard first refused a solve that had converged) are reduced the same way,
+to as many as they span. A hierarchy with no such pair comes back untouched.
 
 The configuration is built directly: a 1-D Laplacian, P a linear interpolation
 plus two extra columns with one entry each, both on fine row 1. Rank 0 owns
@@ -89,8 +94,9 @@ def _prolongation(extra_entries):
     entries = _linear(N_FINE)
     for k, (row, weight) in enumerate(extra_entries):
         if isinstance(row, tuple):
-            for r in row:
-                entries[r, N_LINEAR + k] = weight
+            weights = weight if isinstance(weight, tuple) else (weight,) * len(row)
+            for r, w in zip(row, weights):
+                entries[r, N_LINEAR + k] = w
         else:
             entries[row, N_LINEAR + k] = weight
     n = N_LINEAR + len(extra_entries)
@@ -159,7 +165,7 @@ def test_the_smaller_column_is_dropped_and_the_operator_is_nonsingular():
     assert _smallest_eigenvalue(A.ptap(T)) > 1e-3
     if RANK == 0:
         assert len(messages) == 1 and "1 coarse unknown(s)" in messages[0] \
-            and "merged" in messages[0], messages
+            and "merged" in messages[0] and "not nested" in messages[0], messages
     else:
         assert messages == []
 
@@ -229,11 +235,67 @@ def test_no_dependent_pair_leaves_the_transfer_untouched():
     assert messages == []
 
 
-def test_more_columns_than_shared_rows_is_refused_on_every_rank():
-    P = _prolongation([((1, 3), 1.0), ((1, 3), 0.5), ((1, 3), 0.25)])
-    raised = 0
-    try:
-        restrict_unreached([P], COMM)
-    except RuntimeError as err:
-        raised = int("#1101" in str(err))
-    assert COMM.tompi4py().allgather(raised) == [1] * SIZE
+def test_more_columns_than_shared_rows_are_reduced_exactly():
+    """Three columns on the same two fine rows span two dimensions (W1's case
+    on a cut of a moved child: a rotated transfer mixes a node's components).
+    The smallest is dropped as a combination of the other two, the level below
+    folded with the same coefficients: the composite transfer is unchanged,
+    the coarse operator is nonsingular, and nothing is refused."""
+    P1 = _prolongation([((1, 3), (1.0, 0.2)), ((1, 3), (0.3, 1.0)), ((1, 3), (0.5, 0.5))])
+    n1 = N_LINEAR + 3
+    rng = np.random.default_rng(1111)
+    entries = {(i, j): float(rng.uniform(0.1, 1.0))
+               for i in range(n1) for j in range(n1) if abs(i - j) <= 1}
+    P0 = _mat(n1, n1, _coarse_layout(3), _coarse_layout(3), entries)
+    out, messages = _restrict([P0, P1])
+    assert out[1].getSize()[1] == n1 - 1 and out[0].getSize()[0] == n1 - 1
+    np.testing.assert_allclose(_gathered(out[1].matMult(out[0])),
+                               _gathered(P1.matMult(P0)), rtol=0, atol=1e-13)
+    assert abs(_smallest_eigenvalue(_laplacian().ptap(P1))) < 1e-12
+    assert _smallest_eigenvalue(_laplacian().ptap(out[1])) > 1e-6
+    if RANK == 0:
+        assert len(messages) == 1 and "1 coarse unknown(s)" in messages[0], messages
+
+
+@pytest.mark.parametrize("d", [1e-9, 1e-8, 1e-7])
+def test_no_more_columns_kept_than_rows_when_two_are_nearly_parallel(d):
+    """Three columns on two rows, the two largest nearly parallel: the residual
+    test alone would keep all three (rounding in the fit exceeds its
+    tolerance), leaving the operator exactly singular. At most as many are
+    kept as there are rows."""
+    P1 = _prolongation([((1, 3), (1.0, 0.5)), ((1, 3), (1.0, 0.5 + d)), ((1, 3), (0.3, -0.5))])
+    n1 = N_LINEAR + 3
+    P0 = _mat(n1, n1, _coarse_layout(3), _coarse_layout(3), {(i, i): 1.0 for i in range(n1)})
+    out, messages = _restrict([P0, P1])
+    assert out[1].getSize()[1] == n1 - 1 and out[0].getSize()[0] == n1 - 1
+    composite, original = _gathered(out[1].matMult(out[0])), _gathered(P1.matMult(P0))
+    np.testing.assert_allclose(composite, original, rtol=0, atol=1e-12)
+    if RANK == 0:
+        assert len(messages) == 1 and "1 coarse unknown(s)" in messages[0], messages
+
+
+def test_nearly_but_not_dependent_columns_are_left_alone():
+    """Two columns on two rows, independent by 1e-6: not a dependent group
+    (the tolerance is relative 1e-10), so nothing is merged."""
+    P = _prolongation([((1, 3), (1.0, 0.5)), ((1, 3), (1.0, 0.5 + 1e-6))])
+    (T,), messages = _restrict([P])
+    assert T is P
+    assert messages == []
+
+
+def test_each_install_that_merges_is_on_the_solver_record():
+    """The warning prints once per session; the solver keeps what each install
+    merged, and it is not a preconditioner fallback (the merge is an exact
+    change of basis, and the hierarchy requested is the one installed)."""
+    import underworld3 as uw
+    from underworld3.utilities.fault_mg import record_repairs
+
+    mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0),
+                                             cellSize=0.5)
+    poisson = uw.systems.Poisson(mesh)
+    for _ in range(3):
+        record_repairs(poisson, [(2, 2)])
+    assert poisson._mg_merged_coarse_unknowns == {"levels": {2: 2}, "installs_with_merges": 3}
+    record_repairs(poisson, [])
+    assert poisson._mg_merged_coarse_unknowns == {"levels": {}, "installs_with_merges": 3}
+    assert poisson.pc_fallbacks == {}

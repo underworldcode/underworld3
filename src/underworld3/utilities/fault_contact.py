@@ -58,7 +58,7 @@ from underworld3.utilities.facet_normals import facet_measure_and_normal
 _VELOCITY_FIELD = 0
 
 
-def _collective_raise(problem):
+def _collective_raise(problem, error=RuntimeError, **error_kwargs):
     """One synchronisation point for rank-local failures in collective paths.
 
     ``problem`` is ``None`` or an error message string. The verdicts are
@@ -68,6 +68,10 @@ def _collective_raise(problem):
     leaves the other ranks blocked in the next collective (Q assembly, the
     trace-mass exchange, the Newton loop) instead of aborting: a deadlock
     where an error was meant. COLLECTIVE — every rank must reach it.
+
+    ``error`` (with ``error_kwargs``) is the class raised: a hierarchy build
+    passes ``custom_mg.CollectiveBuildError`` so the ranks retry or degrade
+    together, as its other checks do.
     """
     if mpi.size > 1:
         # on the verdict communicator: a rank still inside a collective of
@@ -76,7 +80,89 @@ def _collective_raise(problem):
         problems = [p for p in gathered if p is not None]
         problem = problems[0] if problems else None
     if problem is not None:
-        raise RuntimeError(problem)
+        raise error(problem, **error_kwargs)
+
+
+def warn_unpaired_split_faults(solver):
+    """Warn, naming each one, about the split faults of the solver's mesh that
+    this solver neither ties with a law (``add_fault_bc``) nor constrains on
+    both sides.
+
+    A side with nothing on it is a free face: with no law the solve leaves the
+    fault a traction-free crack that opens under load, which is rarely what
+    was meant and looks like a fault that slips. It is a warning and not a
+    refusal because the sides may be meant free, and because conditions on
+    ``<name>Plus`` / ``<name>Minus`` are the other documented way to drive a
+    split fault (:func:`fault_split.split_fault`): a fault with a condition of
+    any kind on each side (essential, natural or a multiplier constraint), or
+    one on the fault's own label, is left alone. A natural condition counts
+    whatever its value: a traction stated on a side, zero included, is a
+    choice. Called at the start of the momentum solves (Stokes, thin sheet),
+    not of a projection, which has no crack to open. Said once per solver, and
+    again if the faults it names change. Rank 0 shows the warning and every
+    rank issues it, so a filter that raises it as an error stops every rank.
+    """
+    import os
+    import sys
+    import warnings
+
+    split = getattr(solver.mesh, "_fault_point_pairs", None) or {}
+    if not split:
+        return
+    # The solver's ONE enumeration of its constraints. It lists a multiplier
+    # constraint by its variable, so the boundary each sits on is read from
+    # the constraints themselves. A mechanism the enumeration gains later
+    # cannot be placed on a boundary here, and keeps this quiet rather than
+    # wrong.
+    mechanisms = dict(solver._constraint_mechanisms())
+    with_law = set(mechanisms.pop("fault_contact"))
+    conditioned = {bc.boundary for kind in ("essential", "natural")
+                   for bc in mechanisms.pop(kind)}
+    conditioned |= {entry if isinstance(entry, str) else entry[0]
+                    for entry in mechanisms.pop("rotated_freeslip")}
+    mechanisms.pop("multipliers")
+    conditioned |= {bc.boundary for bc in
+                    getattr(solver, "_block_constraint_bcs", None) or []}
+    if any(mechanisms.values()):
+        return
+    free_sides = {}
+    for name in sorted(split):
+        if name in with_law or name in conditioned:
+            continue
+        free = [side for side in (f"{name}Plus", f"{name}Minus")
+                if side not in conditioned]
+        if free:
+            free_sides[name] = free
+    said = tuple((name, tuple(free)) for name, free in free_sides.items())
+    if getattr(solver, "_unpaired_faults_warned", ()) == said:
+        return
+    if not free_sides:
+        solver._unpaired_faults_warned = said
+        return
+    listed = "; ".join(f"{name!r} (nothing on {', '.join(map(repr, free))})"
+                       for name, free in free_sides.items())
+    first = next(iter(free_sides))
+    # Reported at the caller's line, and outside Python's once-per-line
+    # registry: a second solver built by the same line is told as well.
+    package = os.path.dirname(os.path.dirname(os.path.abspath(__file__))) \
+        + os.sep
+    frame = sys._getframe(1)
+    while frame.f_back is not None \
+            and os.path.abspath(frame.f_code.co_filename).startswith(package):
+        frame = frame.f_back
+    # Issued on every rank and shown by rank 0: raised as an error on rank 0
+    # alone, the other ranks would go on into the solve and wait there.
+    with warnings.catch_warnings(record=mpi.rank != 0):
+        warnings.warn_explicit(
+            f"split fault(s) with no fault law in this solver and a side left "
+            f"free: {listed}. Nothing ties the two sides of such a fault, and "
+            f"the solve leaves it a traction-free crack that can open. Give "
+            f"the fault a law, solver.add_fault_bc(0, {first!r}) for a "
+            f"frictionless one, or set a condition on each side.",
+            UserWarning, frame.f_code.co_filename, frame.f_lineno)
+    # recorded once the warning is out: raised as an error (-W error), it is
+    # raised again by the next solve, not said once and then dropped
+    solver._unpaired_faults_warned = said
 
 
 def add_frictionless_fault_bc(solver, boundary, normal=None):
@@ -521,6 +607,7 @@ def solve_with_fault(solver, verbose=False, zero_init_guess=True, picard=0):
         raise RuntimeError(
             "no fault contact registered on this solver; call "
             "add_frictionless_fault_bc first.")
+    warn_unpaired_split_faults(solver)
     info = solve_rotated_freeslip(
         solver, list(getattr(solver, "_rotated_freeslip_bcs", [])),
         verbose=verbose, zero_init_guess=zero_init_guess, picard=picard,

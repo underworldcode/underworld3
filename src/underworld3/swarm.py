@@ -39,6 +39,7 @@ from underworld3.utilities._api_tools import uw_object
 from underworld3.utilities.mathematical_mixin import MathematicalMixin
 
 import underworld3.timing as timing
+from underworld3.discretisation.discretisation_mesh_variables import _mark_made_by, _owned_name
 
 comm = uw.mpi.comm
 
@@ -74,6 +75,35 @@ class _ReadOnlyCoordinateSnapshot(np.ndarray):
 
     def __setitem__(self, key, value):
         raise ValueError(self._GUIDANCE)
+
+
+def _candidate_ranks(boxes, centroids, coords, n):
+    """The first ``n`` ranks a point is offered to, ``(m, n)``, -1 past the end
+    of its list. Rank-local: the same for a point on whichever rank holds it.
+
+    A point's list is the ranks whose inflated domain box
+    (``Mesh._get_domain_boxes``) contains it, nearest domain centroid first:
+    the only ranks whose domain can contain it. A point in no box (outside the
+    mesh by more than a cell) is offered to its nearest centroid only, where it
+    is left, as before. A rank with no cells has an empty box and no finite
+    centroid, so it is never offered a point."""
+    lo, hi = boxes
+    coords = np.asarray(coords, dtype=float).reshape(-1, lo.shape[1])
+    out = np.full((len(coords), n), -1, dtype=np.int64)
+    for s in range(0, len(coords), 4096):
+        X = coords[s:s + 4096]
+        inside = np.all((X[:, None, :] >= lo[None]) & (X[:, None, :] <= hi[None]), axis=2)
+        d = np.linalg.norm(X[:, None, :] - centroids[None], axis=2)
+        nearest = np.argmin(d, axis=1)
+        d = np.where(inside, d, np.inf)
+        order = np.argsort(d, axis=1, kind="stable")[:, :n]
+        ok = np.isfinite(np.take_along_axis(d, order, axis=1))
+        block = np.where(ok, order, -1)
+        none = ~inside.any(axis=1)
+        block[none] = -1
+        block[none, 0] = nearest[none]
+        out[s:s + 4096] = block
+    return out
 
 
 def _coordinate_row_keys(coords):
@@ -1314,6 +1344,10 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
         self._meshVar = None
 
         if self._proxy:
+            proxy_name = _owned_name(
+                self.swarm.mesh, "proxy_" + self.clean_name,
+                lambda k: f"proxy_{k}_{self.clean_name}", self)
+
             # REINIT policy: a swarm proxy is re-projected from the
             # *particles* on next access, so a mesh adapt should NOT
             # interpolate the old proxy values onto the new node
@@ -1326,7 +1360,7 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
                 # Particles -> integration points directly: the assembler reads
                 # the stored values at the rule with no basis interpolation.
                 self._meshVar = uw.discretisation.IntegrationPointVariable(
-                    "proxy_" + self.clean_name,
+                    proxy_name,
                     self.swarm.mesh,
                     self.shape,
                     self._vtype,
@@ -1338,7 +1372,7 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
                 # Particles -> a polynomial per cell (least squares); read by
                 # the assembler through the ordinary discontinuous basis.
                 self._meshVar = uw.discretisation.MeshVariable(
-                    "proxy_" + self.clean_name,
+                    proxy_name,
                     self.swarm.mesh,
                     self.shape,
                     self._vtype,
@@ -1351,7 +1385,7 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
                 self._cell_projector = None
             else:
                 self._meshVar = uw.discretisation.MeshVariable(
-                    "proxy_" + self.clean_name,
+                    proxy_name,
                     self.swarm.mesh,
                     self.shape,
                     self._vtype,
@@ -1366,6 +1400,7 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
                     # (issue #439). Stored data stays non-dimensional either way.
                     units=self._units,
                 )
+            _mark_made_by(self._meshVar, self)
             # The remesh helper calls this on REINIT vars after an
             # adapt. It holds the SwarmVariable weakly: the proxy's mesh
             # owns the proxy, and a strong capture made that mesh keep the
@@ -1377,7 +1412,12 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
                 if variable is not None:
                     variable._proxy_stale = True
 
+            # On the base variable, which is what mesh.vars holds and the remesh
+            # pass reads (#866); on the wrapper too, for anything holding that.
             self._meshVar._remesh_reinit_callback = _mark_proxy_stale
+            base = getattr(self._meshVar, "_base_var", None)
+            if base is not None:
+                base._remesh_reinit_callback = _mark_proxy_stale
 
     def _update(self):
         """
@@ -1485,7 +1525,7 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
             if (
                 projector is None
                 or projector.var is not meshVar
-                or projector.mesh_version != self.swarm.mesh._mesh_version
+                or projector.geometry_version != self.swarm.mesh._geometry_version
             ):
                 projector = CellPolynomialProjector(meshVar)
                 self._cell_projector = projector
@@ -2072,17 +2112,22 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
     @array.setter
     def array(self, array_value):
         """
-        Set variable data through canonical data property with format conversion.
-        """
-        if self._is_simple_variable():
-            # Simple case: reshape array format (N,a,b) to canonical format (N,components)
-            canonical_data = array_value.reshape(array_value.shape[0], -1)
-        else:
-            # Complex case: use pack operations for tensor layout conversion
-            canonical_data = self._pack_array_to_data_format(array_value)
+        Set variable data through the view's write path, as MeshVariable does.
 
-        # Assign to canonical data property (triggers PETSc sync)
-        self.data[:] = canonical_data
+        The view's ``__setitem__`` converts units and packs tensor layouts.
+        Writing the magnitude straight into ``.data`` stored a dimensional
+        number as non-dimensional (#993).
+        """
+        view = self.array
+        shape = tuple(np.shape(view))
+        given = tuple(np.shape(array_value))
+        if (hasattr(array_value, "reshape") and given != shape and given[:1] == shape[:1]
+                and tuple(d for d in given[1:] if d != 1) == tuple(d for d in shape[1:] if d != 1)):
+            # Shapes that differ only by axes of length one, (N, 2, 1) for a
+            # vector viewed as (N, 1, 2) say, hold the entries in the same order;
+            # the old setter accepted them, so this one does too.
+            array_value = array_value.reshape(shape)
+        view[...] = array_value
 
     @property
     def sym(self):
@@ -2613,7 +2658,12 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
             )
         else:
             kdt = uw.kdtree.KDTree(landed_X)
-            self.array[:, 0, :] = kdt.rbf_interpolator_local(
+            # The file holds the storage layout (``save`` writes ``self.data``),
+            # one column per stored component, so it goes back into the storage
+            # layout: the raw inverse of the write. ``self.array[:, 0, :]`` is
+            # that layout only for scalars and vectors; a tensor's array is
+            # (N, dim, dim) and a symmetric one stores fewer columns (#984).
+            self.data[...] = kdt.rbf_interpolator_local(
                 self.swarm._particle_coordinates.data, landed_D, nnn=1
             )
 
@@ -2760,7 +2810,11 @@ class IndexSwarmVariable(SwarmVariable):
         self._meshLevelSetVars = [None] * self.indices
 
         for i in range(indices):
-            lname = name + R"^{[" + str(i) + R"]}"
+            # "_<k>_" keeps its trailing separator through cleaning, so the
+            # numbered names of different indices cannot coincide.
+            lname = _owned_name(
+                self.swarm.mesh, name + R"^{[" + str(i) + R"]}",
+                lambda k, i=i: f"{name}_{k}_" + R"^{[" + str(i) + R"]}", self)
             if proxy_location == "integration_points":
                 self._meshLevelSetVars[i] = uw.discretisation.IntegrationPointVariable(
                     lname, self.swarm.mesh,
@@ -2775,6 +2829,7 @@ class IndexSwarmVariable(SwarmVariable):
                     lname, self.swarm.mesh, num_components=1,
                     degree=proxy_degree, continuous=proxy_continuous,
                 )
+            _mark_made_by(self._meshLevelSetVars[i], self)
             self._MaskArray[0, i] = self._meshLevelSetVars[i].sym[0, 0]
 
         # Initialize lazy evaluation state
@@ -3061,7 +3116,7 @@ class IndexSwarmVariable(SwarmVariable):
         # "cells": one fit for every index at once (the level sets share a basis)
         projector = self._cell_projector
         if (projector is None or projector.var is not self._meshLevelSetVars[0]
-                or projector.mesh_version != self.swarm.mesh._mesh_version):
+                or projector.geometry_version != self.swarm.mesh._geometry_version):
             projector = CellPolynomialProjector(self._meshLevelSetVars[0])
             self._cell_projector = projector
         old = np.column_stack([np.asarray(v.data[:, 0]) for v in self._meshLevelSetVars])
@@ -3376,8 +3431,8 @@ class Swarm(Stateful, uw_object):
         self.dim = mesh.dim
         self.cdim = mesh.cdim
 
-        # Mesh version tracking for coordinate change detection
-        self._mesh_version = mesh._mesh_version
+        # The mesh geometry the particles were last binned on
+        self._mesh_geometry_version = mesh._geometry_version
 
         # Informational counter incremented at every particle-population
         # mutation site (populate, migrate, add_particles_*, advection
@@ -3459,7 +3514,7 @@ class Swarm(Stateful, uw_object):
         # stencil and shared by every proxied variable of this swarm. Entries
         # carry the kd-tree they were built from, so they self-invalidate.
         self._proxy_interpolation_cache = {}
-        self._proxy_cache_mesh_version = None
+        self._proxy_cache_geometry_version = None
         self._migration_disabled = False
 
         # Deterministic (SPMD-consistent) creation index — used to order
@@ -3625,14 +3680,26 @@ class Swarm(Stateful, uw_object):
         if global_count == 0:
             return
 
-        # A mesh coordinate change (deform / adaptation) strands particles
-        # in cells that moved; nothing re-bins them since the read-trigger
-        # on swarm.points was retired (#379 item 1 — a collective on READ
-        # was itself a parallel hazard). Solve entry is the collective
-        # point that notices the mesh version changed.
-        if getattr(self, "_mesh_version", None) != self.mesh._mesh_version:
+        # A mesh coordinate change (deform, adaptation, a mover, a snapshot
+        # restore) strands particles in cells that moved; nothing re-bins them
+        # since the read-trigger on swarm.points was retired (#379 item 1: a
+        # collective on READ was itself a parallel hazard). Solve entry is the
+        # collective point that notices the mesh geometry changed.
+        #
+        # Not while the coordinates are being changed: the field transfer of a
+        # move evaluates on the pre-move nodes, and ephemeral_coords evaluates
+        # on a trial geometry. Re-binning onto those would cost a migration for
+        # nothing and would delete particles that lie outside them. Both
+        # scopes are entered on every rank together. After an ephemeral
+        # excursion the geometry is the committed one again under a new
+        # version, which costs one migration at the next solve.
+        mesh = self.mesh
+        changing = (getattr(mesh, "_in_remesh_transfer", False)
+                    or getattr(mesh, "_coord_mutation_depth", 0) > 0)
+        if (not changing
+                and getattr(self, "_mesh_geometry_version", None) != mesh._geometry_version):
             self._needs_migration = True
-            self._mesh_version = self.mesh._mesh_version
+            self._mesh_geometry_version = mesh._geometry_version
 
         if not self._deferred_migration_suspended:
             needs_migration = bool(self._needs_migration)
@@ -3686,17 +3753,20 @@ class Swarm(Stateful, uw_object):
         # handled where it can be detected structurally rather than by a flag
         # someone has to remember to set:
         #
-        #   mesh geometry  -- a deform or adapt bumps _mesh_version. The whole
+        #   mesh geometry  -- any change of the node coordinates (a deform, an
+        #                     adaptation, a mover, a snapshot restore, and the
+        #                     transient ones of a field transfer or
+        #                     ephemeral_coords) bumps mesh._geometry_version. The whole
         #                     cache is dropped, because every entry was built
         #                     against the old node positions. Keying on the
         #                     version instead would keep the dead entries
         #                     forever, one set per mesh generation.
         #   particle motion -- migrate() replaces the kd-tree, so an entry that
         #                     does not carry the current tree is stale.
-        version = self.mesh._mesh_version
-        if self._proxy_cache_mesh_version != version:
+        version = self.mesh._geometry_version
+        if self._proxy_cache_geometry_version != version:
             self._proxy_interpolation_cache.clear()
-            self._proxy_cache_mesh_version = version
+            self._proxy_cache_geometry_version = version
 
         kdtree = self._get_kdtree()
         key = (meshVar.degree, meshVar.continuous, nnn, p, order)
@@ -3859,8 +3929,7 @@ class Swarm(Stateful, uw_object):
         for var in self._vars.values():
             var._create_proxy_variable()  # Safe for all variables (proxied or not)
 
-        # Update mesh version tracking
-        self._mesh_version = new_mesh._mesh_version
+        self._mesh_geometry_version = new_mesh._geometry_version
 
     @property
     def local_size(self):
@@ -4391,21 +4460,29 @@ class Swarm(Stateful, uw_object):
         # Migrate particles between processes (if there are more than one of them)
 
         if uw.mpi.size > 1:
+            # Each unclaimed point is offered, round by round, to the ranks
+            # whose inflated domain box contains it, nearest centroid first
+            # (_candidate_ranks), and stays where it is when its list is
+            # exhausted. No "no progress" exit: a point inside the mesh near a
+            # seam is first offered to its own rank, which claims nothing, and
+            # an exit there stranded it (#1093). The per-point list bounds the
+            # cost instead: a point outside the mesh, near a wall or in a hole,
+            # takes as many rounds as boxes hold it (one or two), and one in no
+            # box takes one, to its nearest domain. No point is ever sent to a
+            # rank with no cells. The rounds stop when no point has a candidate
+            # left, or at the cap.
+            boxes = self.mesh._get_domain_boxes()          # collective, every rank
+            centroids = self.mesh._get_domain_centroids()  # collective, every rank
+            seeking = not_my_points
             for it in range(0, min(max_its, uw.mpi.size)):
 
-                # Send unclaimed points to next processor in line
-
-                swarm_rank_array = self.dm.getField("DMSwarm_rank")
+                swarm_rank_array = self.dm.getField("DMSwarm_rank").reshape(-1)
                 swarm_coord_array = self.dm.getField("DMSwarmPIC_coor").reshape(-1, self.cdim)
 
-                if not_my_points.shape[0] > 0:
-                    dist, rank = mesh_domain_kdtree.query(
-                        swarm_coord_array[not_my_points], k=it + 1, sqr_dists=False
-                    )
-
-                    swarm_rank_array.reshape(-1)[not_my_points] = rank.reshape(
-                        -1, it + 1
-                    )[:, it].flatten()
+                if seeking.shape[0] > 0:
+                    dest = _candidate_ranks(boxes, centroids,
+                                            swarm_coord_array[seeking], it + 1)[:, it]
+                    swarm_rank_array[seeking] = np.where(dest >= 0, dest, uw.mpi.rank)
 
                 self.dm.restoreField("DMSwarm_rank")
                 self.dm.restoreField("DMSwarmPIC_coor")
@@ -4452,36 +4529,19 @@ class Swarm(Stateful, uw_object):
                         [claimed_keys, keys_now[newly_claimed]]
                     )
 
-                self.dm.restoreField("DMSwarmPIC_coor")
-
-                num_points_in_domain = np.count_nonzero(in_or_not == True)
-                num_points_not_in_domain = np.count_nonzero(in_or_not == False)
                 not_my_points = np.where(in_or_not == False)[0]
-
-                unclaimed_points_last_iteration = global_unclaimed_points
-                claimed_points_last_iteration = global_claimed_points
+                # the unclaimed points with a candidate left for the next round
+                if not_my_points.size and it + 1 < min(max_its, uw.mpi.size):
+                    nxt = _candidate_ranks(boxes, centroids,
+                                           swarm_coord_array[not_my_points], it + 2)[:, it + 1]
+                    seeking = not_my_points[nxt >= 0]
+                else:
+                    seeking = not_my_points[:0]
+                self.dm.restoreField("DMSwarmPIC_coor")
 
                 uw.mpi.barrier()
 
-                global_unclaimed_points = int(
-                    uw.utilities.gather_data(
-                        num_points_not_in_domain,
-                        bcast=True,
-                        dtype=int,
-                    ).sum()
-                )
-
-                global_claimed_points = int(
-                    uw.utilities.gather_data(num_points_in_domain, bcast=True, dtype=int).sum()
-                )
-
-                if global_unclaimed_points == 0:
-                    break
-
-                if (
-                    global_unclaimed_points == unclaimed_points_last_iteration
-                    and global_claimed_points == claimed_points_last_iteration
-                ):
+                if uw.mpi.comm.allreduce(int(seeking.size)) == 0:
                     break
 
         # Missing points for deletion if required

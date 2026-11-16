@@ -11,7 +11,7 @@ import numpy as np
 
 import underworld3 as uw
 
-from .graph import (_auto_pinned_labels, _pinned_mask,
+from .graph import (_pinned_labels_or_default, _pinned_mask,
                     _build_adjacency_matrix, _build_local_to_owned_map,
                     _tri_cells, _signed_areas,
                     _global_sum, _global_min, _global_max)
@@ -223,7 +223,9 @@ def smooth_mesh_interior(
         # ... some deformation that leaves bad cells ...
         smooth_mesh_interior(mesh, n_iters=5, alpha=0.5)
 
-    Pin only the outer boundary, allowing the inner to drift::
+    Pin only the outer boundary, allowing the inner to drift. The inner wall is
+    then no longer the circle the mesh declared for it, so the declaration is
+    released (``mesh.analytic_surface("Lower")`` refuses from here on)::
 
         smooth_mesh_interior(mesh, pinned_labels=["Upper"])
 
@@ -304,6 +306,17 @@ def smooth_mesh_interior(
     )
 
 
+def _release_unpinned_surfaces(mesh, pinned_labels):
+    """A mover holds the vertices of ``pinned_labels`` fixed, or slides them and
+    restores them onto their surfaces. The vertices of any other boundary move
+    with the interior, so a circle, sphere or plane declared for it is released.
+    The verdict rests on the arguments alone, so it is the same on every rank."""
+    mesh._release_bounding_surfaces(
+        "a mesh mover ran with this boundary neither pinned nor restored, so its "
+        "vertices moved with the interior",
+        labels=set(mesh.bounding_surfaces) - set(pinned_labels))
+
+
 def _smooth_mesh_interior_bare(
     mesh,
     pinned_labels: Optional[Sequence[str]] = None,
@@ -325,9 +338,7 @@ def _smooth_mesh_interior_bare(
     form to avoid nesting the snapshot/restore dance. End-users should
     keep using :func:`smooth_mesh_interior`.
     """
-    if pinned_labels is None:
-        pinned_labels = _auto_pinned_labels(mesh)
-    pinned_labels = tuple(pinned_labels)
+    pinned_labels = _pinned_labels_or_default(mesh, pinned_labels)
 
     # Resolve strategy defaults — individual kwargs override.
     # "off" → early-exit, mesh stays uniform.
@@ -402,6 +413,7 @@ def _smooth_mesh_interior_bare(
                       f"alignment r={mm['alignment']:.3f})",
                       flush=True)
         if method in ("mmpde", "variational"):
+            _release_unpinned_surfaces(mesh, pinned_labels)
             _mmpde_mover(mesh, metric, pinned_labels, verbose,
                            boundary_slip=boundary_slip, **mk)
         elif method in _RETIRED_METHODS:
@@ -417,6 +429,7 @@ def _smooth_mesh_interior_bare(
                 f"metric).")
         return
 
+    _release_unpinned_surfaces(mesh, pinned_labels)
     dm = mesh.dm
     pStart, pEnd = dm.getDepthStratum(0)
     cStart, cEnd = dm.getHeightStratum(0)

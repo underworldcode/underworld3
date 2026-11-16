@@ -70,6 +70,7 @@ def _evaluate_impl(
     # Expert overrides (override mode settings)
     rbf=None,
     force_l2=None,
+    limit=None,
 ):
     """
     Evaluate expression at coordinates with automatic unit handling.
@@ -126,6 +127,7 @@ def _evaluate_impl(
             f"different meshes. All variables in an expression must belong to "
             f"the same mesh. Use var.copy_into() to transfer data first."
         )
+    _refuse_mixed_unit_leaves(expr)
 
     # Step 1: UNWRAP to canonical form (preprocessing/compiler IR)
     # This converts ALL expressions to a standardized form:
@@ -282,6 +284,11 @@ def _evaluate_impl(
     if coords_for_eval.ndim == 1:
         coords_for_eval = np.atleast_2d(coords_for_eval)
 
+    # Serial only: a rank-local evaluate in parallel does not know the global
+    # extent without a collective; global_evaluate does the same check there.
+    if uw.mpi.size == 1 and not check_extrapolated:
+        _refuse_points_far_outside(expr, coords_for_eval, collective=False)
+
     # Step 3: Call Cython implementation with plain non-dimensional arrays
     # NOTE: Returns NON-DIMENSIONAL values [0-1] since we queried
     # the KDTree with non-dimensional coordinates
@@ -298,6 +305,7 @@ def _evaluate_impl(
         check_extrapolated=True,      # always: free, and needed for the guard below
         force_l2=force_l2_flag,
         smoothing=smoothing,
+        limit=limit,
     )
 
     # Step 4: Unpack the extrapolation flag.
@@ -361,6 +369,7 @@ def _global_evaluate_impl(
     rbf=None,
     force_l2=None,
     local_fallback=True,
+    limit=None,
 ):
     """
     Global evaluate with automatic unit-aware results.
@@ -454,6 +463,7 @@ def _global_evaluate_impl(
     # OPTIMIZATION: Check if this is a pure sympy expression (no UW3 variable data)
     # If so, use fast lambdified evaluation instead of full RBF machinery
     # This includes expressions with mesh coordinates (BaseScalar) or pure symbols
+    _refuse_mixed_unit_leaves(expr)
     is_pure_sympy, free_symbols, symbol_type = is_pure_sympy_expression(expr)
 
     if is_pure_sympy and coords is not None and (rbf_flag or evalf):
@@ -526,6 +536,10 @@ def _global_evaluate_impl(
     scaling_is_active = uw.is_nondimensional_scaling_active()
     _, result_dimensionality = unwrap_for_evaluate(expr, scaling_active=scaling_is_active)
 
+    # Every rank calls this, whatever its own points: it is collective (#786).
+    if not check_extrapolated:
+        _refuse_points_far_outside(expr, coords_for_cython, collective=True)
+
     # Call the original Cython implementation with all parameters
     # Note: Pass original expr, not unwrapped - _global_evaluate_nd handles the expression directly
     raw_result = _global_evaluate_nd(
@@ -542,6 +556,7 @@ def _global_evaluate_impl(
         force_l2=force_l2_flag,
         smoothing=smoothing,
         local_fallback=local_fallback,
+        limit=limit,
     )
 
     # Step 2: Re-dimensionalize and wrap with units (GATEWAY PRINCIPLE)
@@ -610,48 +625,16 @@ def _normalize_monotone(monotone):
     )
 
 
-def _apply_monotone_limit(
-    expr, coords, value, mode, coord_sys=None, other_arguments=None):
-    """Bound an interpolated result to the local data range of its source
-    field (monotone / bounded interpolation).
+def _monotone_source_variable(expr):
+    """The single MeshVariable (and component, or -1) a monotone bound is
+    taken from, or ``ValueError``.
 
-    For each evaluation coordinate this finds the ``mesh.dim + 1`` nearest
-    source-field DOFs and bounds ``value`` to their nodal min/max:
-
-    - ``mode == "clamp"`` clips the result into ``[nbr_min, nbr_max]``
-      (cheap, always bounded).
-    - ``mode == "pick"`` keeps the in-bounds result and re-evaluates only
-      the out-of-bounds subset via the bounded RBF path (``evalf=True``,
-      which is intrinsically neighbour-bounded). ``evalf=True`` is a
-      deliberate override -- the FE result is exactly what overshot, so we
-      do *not* honour the caller's ``mode``/``rbf``/``force_l2`` here.
-      ``coord_sys`` / ``other_arguments`` are propagated so the re-eval
-      stays in the same frame.
-
-    MVP scope: a single source MeshVariable. ``expr`` must resolve
-    directly to one mesh variable (or one of its components, e.g.
-    ``T.sym``); composite / multi-field expressions raise ``ValueError``
-    because the neighbour bound across fields is ill-defined.
-
-    The clamp algorithm is lifted verbatim from the SL trace-back limiter
-    so that routing the DDt through here is bit-identical.
+    Decided from the expression alone, so every rank reaches the same answer
+    before any evaluation starts: a refusal raised on one rank only, part way
+    through a collective evaluation, left the others waiting.
     """
-    from ..utilities.unit_aware_array import UnitAwareArray
     from .expressions import extract_meshes
 
-    # "pick" re-evaluates the out-of-bounds subset via a collective
-    # global_evaluate, gated on a rank-local mask -> would deadlock in
-    # parallel (see TODO(parallel) below). Fail fast with a clear message
-    # instead of hanging. "clamp" is rank-local-only and parallel-safe.
-    if mode == "pick" and uw.mpi.size > 1:
-        raise NotImplementedError(
-            "monotone='pick' is serial-only: its out-of-bounds "
-            "re-evaluation is gated on a rank-local mask around a "
-            "collective evaluate and would deadlock under MPI. Use "
-            "monotone='clamp' (parallel-safe) instead."
-        )
-
-    # --- Resolve the single source MeshVariable --------------------------
     meshes = extract_meshes(expr)
     if len(meshes) != 1:
         raise ValueError(
@@ -670,7 +653,121 @@ def _apply_monotone_limit(
             "Composite expressions such as `a*T.sym + b` cannot be bounded "
             "against a single source field."
         )
-    var, _comp = hit  # use the full var.data (matches the SL limiter)
+    var, comp = hit
+    return mesh, var, comp
+
+
+def _clamp_by_containing_cell():
+    """Whether ``monotone="clamp"`` bounds by the containing cell (the default,
+    #682) or, with ``UW_MONOTONE_CLAMP_BOUND=nearest``, by the ``mesh.dim + 1``
+    nearest DOFs on the asking rank as before (kept only to reproduce earlier
+    results: it clips linear fields and is wrong in parallel)."""
+    import os
+    return os.environ.get("UW_MONOTONE_CLAMP_BOUND", "cell").strip().lower() != "nearest"
+
+
+def _containing_cell_clamp(expr):
+    """Build the ``limit`` callback for ``monotone="clamp"`` (#682).
+
+    Each value is clipped into the per-component ``[min, max]`` of the source
+    variable's DOFs in the closure of the cell the value was interpolated in:
+    the element's own range. The cell is the evaluator's own answer (the cell
+    ``DMInterpolationEvaluate_UW`` took the closure of), handed back up through
+    ``petsc_interpolate``, so nothing is located twice and no distance is used.
+    All the closure's DOFs count, P2 and higher edge and face DOFs included.
+
+    The callback runs inside ``evaluate_nd`` on the rank that evaluated the
+    points, where the cell and its closure's DOFs are local, so there is no
+    seam truncation and no halo is needed. The bound is the same at any rank
+    count for a point inside a cell. A point exactly on a face (or edge or
+    vertex) that cells share takes the bound of whichever of them the
+    evaluating rank's locator returned, so on such points it can depend on the
+    partition until the locator settles ties by the mesh (the locator rework).
+    A point no cell owns (``-1``) is
+    left as it is: its value comes from the inverse-distance RBF rung, a
+    convex combination of nodal values, which is bounded already.
+
+    The bound is taken from ``mesh.lvec`` in non-dimensional units, the frame
+    the evaluator works in, so units need no handling here.
+    """
+    from ._dminterp_wrapper import cell_closure_field_range
+
+    mesh, var, comp = _monotone_source_variable(expr)
+    rows, columns = var.sym.shape
+    if comp is not None and comp >= 0:
+        entry = var.sym_1d[comp]
+        i, j = next((i, j) for i in range(rows) for j in range(columns)
+                    if var.sym[i, j] == entry)
+        stored_column = [var._data_layout(i, j)]
+    else:
+        stored_column = [var._data_layout(i, j)
+                         for i in range(rows) for j in range(columns)]
+    field_id = var.field_id
+    num_components = var.num_components
+
+    def limit(values, cells):
+        cells = np.asarray(cells, dtype=np.int64).reshape(-1)
+        located = cells >= 0
+        if not located.any():
+            return values
+        unique_cells, which = np.unique(cells[located], return_inverse=True)
+        lo, hi = cell_closure_field_range(
+            mesh, field_id, num_components, unique_cells)
+        lo = lo[:, stored_column][which]
+        hi = hi[:, stored_column][which]
+        limited = np.array(values, dtype=np.float64, copy=True)
+        flat = limited.reshape(limited.shape[0], -1)
+        flat[located] = np.clip(flat[located], lo, hi)
+        return flat.reshape(limited.shape)
+
+    return limit
+
+
+def _apply_monotone_limit(
+    expr, coords, value, mode, coord_sys=None, other_arguments=None):
+    """Bound an interpolated result by the ``mesh.dim + 1`` nearest source
+    DOFs, after the evaluation, on the asking rank.
+
+    This is ``monotone="pick"``, and ``"clamp"`` only under
+    ``UW_MONOTONE_CLAMP_BOUND=nearest``. The default ``"clamp"`` is applied
+    inside the evaluator, by the containing cell's closure
+    (:func:`_containing_cell_clamp`, #682).
+
+    - ``mode == "pick"`` keeps the in-bounds result and re-evaluates only
+      the out-of-bounds subset via the bounded RBF path (``evalf=True``,
+      which is intrinsically neighbour-bounded). ``evalf=True`` is a
+      deliberate override -- the FE result is exactly what overshot, so we
+      do *not* honour the caller's ``mode``/``rbf``/``force_l2`` here.
+      ``coord_sys`` / ``other_arguments`` are propagated so the re-eval
+      stays in the same frame.
+
+    MVP scope: a single source MeshVariable. ``expr`` must resolve
+    directly to one mesh variable (or one of its components, e.g.
+    ``T.sym``); composite / multi-field expressions raise ``ValueError``
+    because the neighbour bound across fields is ill-defined.
+
+    The clamp algorithm is lifted verbatim from the SL trace-back limiter
+    so that routing the DDt through here is bit-identical.
+    """
+    from ..utilities.unit_aware_array import UnitAwareArray
+
+    if mode not in ("clamp", "pick"):
+        raise ValueError(f"Unknown monotone mode {mode!r}")
+
+    # "pick" re-evaluates the out-of-bounds subset via a collective
+    # global_evaluate, gated on a rank-local mask -> would deadlock in
+    # parallel (see TODO(parallel) below). Fail fast with a clear message
+    # instead of hanging. "clamp" is rank-local-only and parallel-safe.
+    if mode == "pick" and uw.mpi.size > 1:
+        raise NotImplementedError(
+            "monotone='pick' is serial-only: its out-of-bounds "
+            "re-evaluation is gated on a rank-local mask around a "
+            "collective evaluate and would deadlock under MPI. Use "
+            "monotone='clamp' (parallel-safe) instead."
+        )
+
+    # --- Resolve the single source MeshVariable --------------------------
+    mesh, var, _comp = _monotone_source_variable(expr)
 
     # --- Convert coords to the ND space of the source DOF cloud ----------
     # In unit-aware runs `coords` is dimensional (e.g. metres) while
@@ -720,6 +817,13 @@ def _apply_monotone_limit(
     # symmetric tensor stores one column for two entries.
     rows, columns = var.sym.shape
     stored_column = [var._data_layout(i, j) for i in range(rows) for j in range(columns)]
+    if _comp >= 0:
+        # One component of the variable: ``value`` holds that entry alone, so its
+        # bound is that entry's stored column, not the whole variable's (#1000).
+        entry = var.sym_1d[_comp]
+        i, j = next((i, j) for i in range(rows) for j in range(columns)
+                    if var.sym[i, j] == entry)
+        stored_column = [var._data_layout(i, j)]
     nbr_min = nbr_vals.min(axis=1)[:, stored_column]
     nbr_max = nbr_vals.max(axis=1)[:, stored_column]
 
@@ -736,36 +840,39 @@ def _apply_monotone_limit(
     veep_flat = veep_np.reshape(nbr_min.shape)
 
     if mode == "clamp":
-        veep_lim = np.clip(veep_flat, nbr_min, nbr_max)
-    else:
-        # "pick": re-evaluate via RBF only at the subset of coords whose
-        # result is out-of-bounds. Keeps cost dominated by the cheap pass
-        # when most points are in-bounds.
-        out_of_bounds = ((veep_flat < nbr_min) | (veep_flat > nbr_max))
-        oob_mask = out_of_bounds.any(
-            axis=tuple(range(1, out_of_bounds.ndim)))
-        veep_lim = veep_flat.copy()
-        # TODO(parallel): this re-evaluation is gated on a rank-local
-        # `oob_mask.any()`, so in parallel one rank may enter the
-        # (collective) global_evaluate while another skips it -> deadlock.
-        # Guarded against above (pick is serial-only) until the rank-local
-        # bound is hardened (see project_parallel_point_eval_decision).
-        if oob_mask.any():
-            # `coords` is an ndarray / UnitAwareArray here (the evaluator
-            # rejects non-array coords upstream, before monotone runs), so
-            # boolean masking preserves both the data and any units.
-            oob_coords = coords[oob_mask]
-            value_rbf_oob = global_evaluate(
-                expr, oob_coords, coord_sys=coord_sys,
-                other_arguments=other_arguments, evalf=True)
-            vrbf_flat = (np.asarray(getattr(value_rbf_oob, "magnitude", value_rbf_oob))
-                         * to_model).reshape((-1,) + veep_flat.shape[1:])
-            # Only overwrite entries individually out of bounds
-            # (multi-component case).
-            sub_oob = out_of_bounds[oob_mask]
-            veep_sub = veep_lim[oob_mask]
-            veep_sub = np.where(sub_oob, vrbf_flat, veep_sub)
-            veep_lim[oob_mask] = veep_sub
+        limited = np.clip(veep_flat, nbr_min, nbr_max).reshape(orig_shape)
+        if value_units is not None:
+            limited = UnitAwareArray(limited / to_model, units=value_units)
+        return limited
+
+    # "pick": re-evaluate via RBF only at the subset of coords whose
+    # result is out-of-bounds. Keeps cost dominated by the cheap pass
+    # when most points are in-bounds.
+    out_of_bounds = ((veep_flat < nbr_min) | (veep_flat > nbr_max))
+    oob_mask = out_of_bounds.any(
+        axis=tuple(range(1, out_of_bounds.ndim)))
+    veep_lim = veep_flat.copy()
+    # TODO(parallel): this re-evaluation is gated on a rank-local
+    # `oob_mask.any()`, so in parallel one rank may enter the
+    # (collective) global_evaluate while another skips it -> deadlock.
+    # Guarded against above (pick is serial-only) until the rank-local
+    # bound is hardened (see project_parallel_point_eval_decision).
+    if oob_mask.any():
+        # `coords` is an ndarray / UnitAwareArray here (the evaluator
+        # rejects non-array coords upstream, before monotone runs), so
+        # boolean masking preserves both the data and any units.
+        oob_coords = coords[oob_mask]
+        value_rbf_oob = global_evaluate(
+            expr, oob_coords, coord_sys=coord_sys,
+            other_arguments=other_arguments, evalf=True)
+        vrbf_flat = (np.asarray(getattr(value_rbf_oob, "magnitude", value_rbf_oob))
+                     * to_model).reshape((-1,) + veep_flat.shape[1:])
+        # Only overwrite entries individually out of bounds
+        # (multi-component case).
+        sub_oob = out_of_bounds[oob_mask]
+        veep_sub = veep_lim[oob_mask]
+        veep_sub = np.where(sub_oob, vrbf_flat, veep_sub)
+        veep_lim[oob_mask] = veep_sub
 
     limited = veep_lim.reshape(orig_shape)
     if value_units is not None:
@@ -817,6 +924,296 @@ def _warn_if_points_are_not_owned(extrapolated):
         stacklevel=3,
     )
 
+
+_internal_resampling_depth = 0
+
+
+class _internal_resampling:
+    """Context for the library's own work that the user-facing units refusals
+    are not meant for: a remap after a mesh move or a refinement transfer (whose
+    points can lie more than a cell outside the old geometry), a solver's own
+    history evaluation, and the adjoint's inert scratch assemblers (whose bare
+    parameter values are overridden by their templates). Under it the far-point
+    refusal (#786), the mixed-units refusal (#904) and the bare-number setter
+    refusal stand aside. Entered on every rank by collective code, so the checks
+    it switches off are skipped on every rank alike."""
+
+    def __enter__(self):
+        global _internal_resampling_depth
+        _internal_resampling_depth += 1
+        return self
+
+    def __exit__(self, *exc):
+        global _internal_resampling_depth
+        _internal_resampling_depth -= 1
+        return False
+
+
+def _as_symbolic(expr):
+    """``expr`` as sympy: a mesh or swarm variable passed itself, rather than its
+    ``.sym``, is read through ``.sym``, as the evaluators read it."""
+    import sympy
+
+    if not isinstance(expr, (sympy.Basic, sympy.MatrixBase)) and hasattr(expr, "sym"):
+        return expr.sym
+    return expr
+
+def _has_dimension(units):
+    """True for units with a physical dimension. Pint's ``dimensionless`` (and
+    any unit that reduces to it) is no units for every check here: a field or
+    constant declared dimensionless is a known pure number (#904)."""
+    if units is None:
+        return False
+    try:
+        return bool(dict((1.0 * uw.units(str(units))).dimensionality))
+    except Exception:
+        # Sanctioned fallback: a unit label pint cannot parse is treated as
+        # dimensional, the safe side for a refusal that names it.
+        return True
+
+def _unit_leaves(expr):
+    """The leaves of ``expr`` that decide its units, split by whether they carry
+    units: ``(unitless_fields, dimensional)``, each a sorted list of names.
+
+    A leaf is a mesh or swarm variable (through its function's ``meshvar``
+    back-reference, derivatives included) or a named expression that carries
+    units. Named expressions are walked into, each once, so a nested chain costs
+    one visit per expression (#1080). Coordinates and plain numbers are not
+    leaves: a number is a pure number, and a coordinate inside a composite
+    expression is already read in model units.
+    """
+    import sympy
+    from .expressions import UWexpression
+
+    unitless, dimensional = set(), set()
+    seen = set()
+    stack = [_as_symbolic(expr)]
+    while stack:
+        e = stack.pop()
+        if isinstance(e, UWexpression):
+            if id(e) in seen:
+                continue
+            seen.add(id(e))
+            if (getattr(e, "has_units", False)
+                    and _has_dimension(getattr(e, "units", None))):
+                dimensional.add(str(e.name))
+            stack.append(e.sym)
+            continue
+        if isinstance(e, sympy.MatrixBase):
+            stack.extend(list(e))
+            continue
+        if not hasattr(e, "atoms"):
+            continue
+        for atom in e.atoms(sympy.Function, sympy.Derivative):
+            ref = getattr(type(atom), "meshvar", None)
+            if ref is None and isinstance(atom, sympy.Derivative):
+                ref = getattr(type(atom.expr), "meshvar", None)
+            var = ref() if callable(ref) else ref
+            if var is None:
+                continue
+            units = getattr(var, "units", None)
+            if units is None:
+                unitless.add(str(getattr(var, "name", var)))
+            elif _has_dimension(units):
+                dimensional.add(str(getattr(var, "name", var)))
+            # declared dimensionless: a known pure number, in neither set
+        for atom in e.atoms(sympy.Symbol):
+            if isinstance(atom, UWexpression):
+                stack.append(atom)
+    return sorted(unitless), sorted(dimensional)
+
+
+def _mixed_product(expr):
+    """The first product (or sum) in ``expr`` that puts a field without units
+    beside factors whose COMBINED dimension is not dimensionless, or None.
+
+    The dimensional factors of a product are reduced together, so a viscosity
+    contrast ``T * eta1/eta0`` or an Arrhenius factor ``T * exp(-E/(R*T0))`` is
+    a known pure number beside ``T``, and is not a mix; ``T * eta1`` is. In a sum,
+    a term that depends only on unitless fields beside a dimensional term is a
+    mix (``T + eta1``). Coordinates are left out of the reduction. Named
+    expressions are walked into, each once.
+    """
+    import sympy
+    from sympy.vector import BaseScalar
+    from underworld3.units import get_units
+    from .expressions import UWexpression
+
+    unitless_cache = {}
+
+    def has_unitless_field(e):
+        key = id(e)
+        if key not in unitless_cache:
+            unitless_cache[key] = bool(_unit_leaves(e)[0])
+        return unitless_cache[key]
+
+    def dimensional(e):
+        e = e.subs({c: 1 for c in e.atoms(BaseScalar)}) if hasattr(e, "atoms") else e
+        try:
+            return _has_dimension(get_units(e))
+        except Exception:
+            # Sanctioned fallback: units inference that cannot reduce a factor
+            # does not make a mix; the refusal must not fire on what it cannot read.
+            return False
+
+    seen = set()
+    stack = [_as_symbolic(expr)]
+    while stack:
+        e = stack.pop()
+        if isinstance(e, UWexpression):
+            if id(e) in seen:
+                continue
+            seen.add(id(e))
+            stack.append(e.sym)
+            continue
+        if isinstance(e, sympy.MatrixBase):
+            stack.extend(list(e))
+            continue
+        if not isinstance(e, sympy.Basic):
+            continue
+        if isinstance(e, sympy.Mul):
+            fields = [f for f in e.args if has_unitless_field(f)]
+            others = [f for f in e.args if not has_unitless_field(f)]
+            if fields and others and dimensional(sympy.Mul(*others)):
+                return e
+        elif isinstance(e, sympy.Add):
+            field_terms = [t for t in e.args
+                           if has_unitless_field(t) and not _unit_leaves(t)[1]]
+            dim_terms = [t for t in e.args
+                         if not has_unitless_field(t) and dimensional(t)]
+            if field_terms and dim_terms:
+                return e
+        stack.extend(e.args)
+        stack.extend(a for a in e.atoms(sympy.Symbol) if isinstance(a, UWexpression))
+    return None
+
+
+
+def _refuse_unset_dimensional_defaults(leaves):
+    """Refuse a dimensional parameter left at its bare-number default, in a model
+    with reference quantities (ruling, 2026-11-13). ``leaves`` are named
+    expressions; the mark is set by the parameter descriptor and cleared when
+    the parameter is assigned. Depends only on the expressions, so it gives the
+    same answer on every rank."""
+    import sympy
+    from .expressions import UWexpression
+
+    if not uw.get_default_model().has_units():
+        return
+    seen = set()
+    stack = list(leaves)
+    while stack:
+        e = stack.pop()
+        if isinstance(e, UWexpression):
+            if id(e) in seen:
+                continue
+            seen.add(id(e))
+            mark = getattr(e, "_unset_dimensional_default", None)
+            if mark:
+                name, units, value = mark
+                raise ValueError(
+                    f"'{name}' was left at its default, {value}, which has no units "
+                    f"in a model with reference quantities. Set it with units, e.g. "
+                    f"Parameters.{name} = uw.quantity({value}, \"{units}\") "
+                    "(units ruling, 2026-11-13).")
+            stack.append(e.sym)
+            continue
+        if isinstance(e, sympy.MatrixBase):
+            stack.extend(list(e))
+        elif isinstance(e, sympy.Basic):
+            stack.extend(a for a in e.atoms(sympy.Symbol) if isinstance(a, UWexpression))
+
+def _refuse_mixed_unit_leaves(expr):
+    """Refuse an expression that puts a field without units beside dimensional
+    factors, in a model with reference quantities (#771, #904).
+
+    A field without units stores a non-dimensional number of unknown dimension.
+    Alone, or times a combination of dimensional leaves that reduces to a pure
+    number (``eta1/eta0``), it is returned as a pure number. Times a factor with
+    a dimension the result is incoherent: the gateway would re-dimensionalise
+    the product with that factor's scale only.
+    """
+    if _internal_resampling_depth or not uw.get_default_model().has_units():
+        return
+    _refuse_unset_dimensional_defaults([_as_symbolic(expr)])
+    unitless, dimensional = _unit_leaves(expr)
+    if not (unitless and dimensional):
+        return
+    offending = _mixed_product(expr)
+    if offending is None:
+        return
+    raise ValueError(
+        "evaluate: this expression puts fields without units "
+        f"({', '.join(unitless)}) beside factors with units "
+        f"({', '.join(dimensional)}), in a model with reference quantities, in "
+        f"{str(offending)[:120]}. A field without units holds a non-dimensional "
+        "number of unknown dimension, so the product has no coherent units. Give "
+        "the field units (MeshVariable(..., units=...), or units='dimensionless' "
+        "for a pure multiplier), or evaluate the pieces separately (#771, #904)."
+    )
+
+def _refuse_points_far_outside(expr, coords_nd, collective):
+    """Refuse query points further outside the mesh than its largest cell (#786).
+
+    A point further outside the node bounding box than the mesh's largest cell
+    radius lies in no cell, so this needs no point location and runs before any
+    evaluation: the refusal is the same whatever the expression (a derivative
+    included, #999) and whatever the rank count. The distance separates a
+    wholesale mistake (coordinates in metres on a model-unit mesh, say) from a
+    point just past a curved boundary, which semi-Lagrangian and remesh callers
+    ask about routinely and which is extrapolated as before. The scale is the
+    mesh's own, so it means the same on any mesh. Only expressions that read
+    mesh data are checked. COLLECTIVE when ``collective`` is True: every rank
+    calls it, a rank with no points contributing none.
+    """
+    from mpi4py import MPI
+    from .expressions import mesh_vars_in_expression
+
+    if _internal_resampling_depth:
+        return
+    from .expressions import unwrap
+    # Unwrapped, so a field inside a named expression is seen too.
+    mesh = mesh_vars_in_expression(unwrap(_as_symbolic(expr)))[0]
+    if mesh is None:
+        return
+    nodes = np.asarray(mesh._coords, dtype=np.float64).reshape(-1, mesh.cdim)
+    lo = nodes.min(axis=0) if nodes.size else np.full(mesh.cdim, np.inf)
+    hi = nodes.max(axis=0) if nodes.size else np.full(mesh.cdim, -np.inf)
+    if collective and uw.mpi.size > 1:
+        # Buffer form: elementwise. The pickled form compares whole arrays.
+        lo = np.ascontiguousarray(lo, dtype=np.float64)
+        hi = np.ascontiguousarray(hi, dtype=np.float64)
+        lo_g, hi_g = np.empty_like(lo), np.empty_like(hi)
+        uw.mpi.comm.Allreduce(lo, lo_g, op=MPI.MIN)
+        uw.mpi.comm.Allreduce(hi, hi_g, op=MPI.MAX)
+        lo, hi = lo_g, hi_g
+    largest_cell = mesh.get_max_radius() if collective else float(
+        np.max(np.asarray(mesh._cell_radii))
+    )
+    if coords_nd is None or np.size(coords_nd) == 0:
+        pts = np.zeros((0, mesh.cdim))
+    else:
+        pts = np.asarray(coords_nd, dtype=np.float64)
+        pts = pts.reshape(-1, pts.shape[-1])[:, : mesh.cdim]
+    if pts.shape[0]:
+        beyond = np.maximum(np.maximum(lo - pts, pts - hi), 0.0).max(axis=1)
+        far = beyond > largest_cell
+    else:
+        far = np.zeros(0, dtype=bool)
+    n_far, n_all = int(np.count_nonzero(far)), int(pts.shape[0])
+    if collective and uw.mpi.size > 1:
+        n_far = uw.mpi.comm.allreduce(n_far, op=MPI.SUM)
+        n_all = uw.mpi.comm.allreduce(n_all, op=MPI.SUM)
+    if n_far == 0:
+        return
+    raise ValueError(
+        f"evaluate: {n_far} of {n_all} query points lie outside the mesh, further "
+        f"than its largest cell ({largest_cell:.3g} model units). Mesh extent "
+        f"{np.round(lo, 6).tolist()} to {np.round(hi, 6).tolist()}. Coordinates "
+        "are model coordinates unless they carry units (pass mesh.X.coords, or a "
+        "unit-aware array). Pass check_extrapolated=True to get the extrapolation "
+        "mask instead of this error (#786)."
+    )
 
 def evaluate(
     expr,
@@ -909,9 +1306,10 @@ def evaluate(
     monotone : bool or str, optional
         Opt-in bounded (monotone) interpolation, applied as a
         post-process to the computed result. ``False`` (default) → no
-        limiting. ``True`` / ``"clamp"`` → clip the result into the
-        ``[min, max]`` of the ``mesh.dim + 1`` nearest source-field DOFs.
-        ``"pick"`` → keep in-bounds values and re-evaluate only the
+        limiting. ``True`` / ``"clamp"`` → clip each value, per component,
+        into the ``[min, max]`` of the source field's DOFs in the closure of
+        the cell it was interpolated in (P2 edge DOFs included), on the rank
+        that evaluated it. ``"pick"`` → keep in-bounds values and re-evaluate only the
         out-of-bounds subset via (bounded) RBF interpolation. Only
         single-MeshVariable expressions are supported; composites raise
         ``ValueError``. See :func:`_apply_monotone_limit`.
@@ -937,6 +1335,10 @@ def evaluate(
     """
     # Validate up front so an unknown option fails fast (no wasted eval).
     monotone_mode = _normalize_monotone(monotone)
+    # The clamp is applied inside the evaluator, by the cell each value was
+    # interpolated in; its eligibility is settled here, before evaluating.
+    limit = (_containing_cell_clamp(expr)
+             if monotone_mode == "clamp" and _clamp_by_containing_cell() else None)
 
     result = _evaluate_impl(
         expr,
@@ -952,9 +1354,10 @@ def evaluate(
         smoothing=smoothing,
         rbf=rbf,
         force_l2=force_l2,
+        limit=limit,
     )
 
-    if monotone_mode is None:
+    if monotone_mode is None or limit is not None:
         return result
 
     if check_extrapolated:
@@ -1014,6 +1417,10 @@ def global_evaluate(
             "monotone interpolation is not supported together with "
             "check_extrapolated in global_evaluate."
         )
+    # Settled on every rank before the collective evaluation starts: a
+    # refusal reached on one rank only, mid-evaluation, hung the others.
+    limit = (_containing_cell_clamp(expr)
+             if monotone_mode == "clamp" and _clamp_by_containing_cell() else None)
 
     result = _global_evaluate_impl(
         expr,
@@ -1030,9 +1437,10 @@ def global_evaluate(
         rbf=rbf,
         force_l2=force_l2,
         local_fallback=local_fallback,
+        limit=limit,
     )
 
-    if monotone_mode is None:
+    if monotone_mode is None or limit is not None:
         return result
 
     return _apply_monotone_limit(

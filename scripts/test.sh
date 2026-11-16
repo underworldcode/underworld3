@@ -345,6 +345,7 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   batch 4 tests/test_005[1-9]*py tests/test_00[6-7]*py
   batch 4 tests/test_01*py
   batch 4 tests/test_02*py tests/test_03*py
+  batch 4 tests/test_04*py
 
   # Intermediate tests (0500-0799: data structures, transformations, enhanced interfaces)
   # test_06*py was disabled as "potentially problematic" and stayed that way. The
@@ -401,11 +402,37 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   batch 3 tests/parallel/test_1152_fac_zone_survives_a_mover_parallel.py
   # So is the boundary-slip classification of seam vertices (#1086).
   batch 3 tests/parallel/test_1086_boundary_slip_classification_parallel.py
+  # So is a split fault's sides slipping as in serial (#1103).
+  batch 3 tests/parallel/test_1103_split_fault_slip_parallel.py
   # So is the merge of coarse unknowns sharing one fine image (#1101).
   batch 3 tests/parallel/test_1101_custom_mg_dependent_columns_parallel.py
+  # So is a fault cut into a moved adapt child under the #1101 guard (#1111).
+  batch 3 tests/parallel/test_1111_custom_mg_cut_of_a_moved_child_parallel.py
   # Shell Inner/Outer cell labels follow the Internal surface, not a radius test:
   # the same assertions hold on one rank, so the file also runs serially.
   batch 3 tests/parallel/test_1175_shell_region_labels.py
+  # So is a failed JIT build, raised on every rank with the compiler's output (#842).
+  batch 3 tests/parallel/test_0842_jit_build_failure_collective_parallel.py
+  # So is points_in_domain by the exact locator, a swarm's claims agreeing with global_evaluate.
+  batch 3 tests/parallel/test_1213_points_in_domain_exact_parallel.py
+  # So is the adjoint dual on a field in a Dirichlet datum, the same at any rank count (#787).
+  batch 3 tests/parallel/test_0787_field_dual_through_dirichlet_datum_parallel.py
+  # So is Stokes.set_active_region's refusal (#1154).
+  batch 3 tests/parallel/test_1154_stokes_active_region_refused_parallel.py
+  # So is a constrained Stokes solve with a discontinuous pressure (#1167).
+  batch 3 tests/parallel/test_1167_constrained_stokes_discontinuous_pressure_parallel.py
+  # So is #1123's sheared mesh: every inside point owned at any rank count, exact serially.
+  batch 3 tests/parallel/test_1123_exact_locator_parallel.py
+  # So are the contained points the walk misses on that mesh, found by the exact fallback (#1183).
+  batch 3 tests/parallel/test_1183_contained_points_owned_parallel.py
+  # So is the line cut on a mesh wound clockwise throughout (#874).
+  batch 3 tests/parallel/test_0874_mirrored_mesh_cut_parallel.py
+  # So are the multigrid levels an adapt keeps, the same at any rank count (#865).
+  batch 3 tests/parallel/test_1177_mg_levels_same_at_any_rank_count_parallel.py
+  # So is the monotone clamp by the containing cell, the same bound at any rank count for a point inside a cell (#682).
+  batch 3 tests/parallel/test_0682_clamp_by_containing_cell_parallel.py
+  # So is adapt's node_budget, one cut for the whole mesh at any rank count (#1122).
+  batch 3 tests/parallel/test_1122_adapt_node_budget_global_parallel.py
   # test_106*/test_107* were held back pending "a triage/deselect decision". That
   # decision is made: the band is not the unit of exclusion. Of the 243 tests in
   # the deferred bands only 26 are level_3 or tier_c; 55 are level_1 AND tier_a —
@@ -574,6 +601,56 @@ if [ $PARALLEL_RANKS -gt 0 ] && shard_owns 4; then
     # (The variable lets Open MPI start three ranks on a two-slot host; MPICH ignores it.)
     OMPI_MCA_rmaps_base_oversubscribe=1 $SUPERVISE mpirun -n 3 python -m pytest --with-mpi \
       tests/parallel/test_1084_rotated_datum_collectives.py || status=1
+
+    # An internal boundary's facet on a partition seam once took a normal at
+    # three ranks and more, never at two (seeds 1 to 12 measured): this file
+    # runs at np 3 always (#1135).
+    OMPI_MCA_rmaps_base_oversubscribe=1 $SUPERVISE mpirun -n 3 python -m pytest --with-mpi \
+      tests/parallel/test_1135_internal_boundary_normal_on_a_seam_parallel.py || status=1
+
+    # At two ranks the triangle of cells in this file is skipped (one cell, nothing
+    # to solve for), so the solve on it with a rank without cells runs at np 3 always.
+    OMPI_MCA_rmaps_base_oversubscribe=1 $SUPERVISE mpirun -n 3 python -m pytest --with-mpi \
+      tests/parallel/test_0786_stokes_rank_without_cells_parallel.py || status=1
+    # adapt(engine='nvb') with a rank without cells: the box that leaves a rank
+    # empty does so from np 3 (at np 2 the test skips), so it runs at np 3 always.
+    OMPI_MCA_rmaps_base_oversubscribe=1 $SUPERVISE mpirun -n 3 python -m pytest --with-mpi \
+      tests/parallel/test_1189_adapt_nvb_rank_without_cells_parallel.py || status=1
+    # A free surface with a rank without cells: the shell partition empties a rank
+    # from np 3 (at np 2 it would leave one rank holding every cell), so np 3 always.
+    OMPI_MCA_rmaps_base_oversubscribe=1 $SUPERVISE mpirun -n 3 python -m pytest --with-mpi \
+      tests/parallel/test_1074_free_surface_on_an_empty_rank_parallel.py || status=1
+
+    # Four ranks give a rank that shares an interface vertex and holds none of the
+    # interface's facets, which the pressure split must still be told about: with
+    # that exchange skipped these cases pass at one and two ranks and fail at four.
+    # The np 4 pass below is opt-in, so this one file runs at np 4 always.
+    OMPI_MCA_rmaps_base_oversubscribe=1 $SUPERVISE mpirun -n 4 python -m pytest --with-mpi \
+      tests/test_1184_general_pressure_split.py || status=1
+
+    # Boundary terms on 3-D faces not at orientation 0 (#1188, #1150), on a rank
+    # that may hold none of a boundary's faces. The np 4 pass below is opt-in, so
+    # this one file runs at np 4 always.
+    OMPI_MCA_rmaps_base_oversubscribe=1 $SUPERVISE mpirun -n 4 python -m pytest --with-mpi \
+      tests/test_1188_boundary_terms_on_rotated_faces.py || status=1
+
+    # A wall that refinement left off its surface is released on every rank, also on
+    # a rank holding none of the held-back vertices. At two ranks both hold one (the
+    # case then skips); at four, one rank holds none. So this file runs at np 4 always.
+    OMPI_MCA_rmaps_base_oversubscribe=1 $SUPERVISE mpirun -n 4 python -m pytest --with-mpi \
+      tests/parallel/test_1189_refinement_release_agrees_across_ranks_parallel.py || status=1
+
+    # The facet-slip seam layouts: #1109's 3-D seam defect showed at np 3 and 4
+    # (rand3), and the serial driver no longer launches four ranks (#1155), so
+    # this one file runs at np 4 always. np 5 is run locally only.
+    OMPI_MCA_rmaps_base_oversubscribe=1 $SUPERVISE mpirun -n 4 python -m pytest --with-mpi \
+      tests/parallel/test_1103_facet_slip_against_serial_parallel.py || status=1
+
+    # The outcropping ribbon's base is dealt to four ranks by cell number, so the
+    # cells a path-measured partition leaves out are on other ranks (#1172); at
+    # two ranks the file is skipped. This one file runs at np 4 always.
+    OMPI_MCA_rmaps_base_oversubscribe=1 $SUPERVISE mpirun -n 4 python -m pytest --with-mpi \
+      tests/parallel/test_1097_outcropping_ribbon_partitioned_parallel.py || status=1
 
     # Further passes at three and four ranks, because two is a special case:
     # the failure this suite exists to catch is a collective entered by some
