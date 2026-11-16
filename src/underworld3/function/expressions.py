@@ -1088,10 +1088,10 @@ class UWexpression(MathematicalMixin, uw_object, Symbol):
     @property
     def units(self):
         """Get units from the wrapped thing (if it has units)."""
-        # TRANSPARENT CONTAINER: Always derive from _sym
-        if hasattr(self._sym, 'units'):
-            return self._sym.units
-        return None
+        # TRANSPARENT CONTAINER: Always derive from _sym. One read: hasattr()
+        # then a second access evaluated a nested expression's property twice
+        # per level, doubling the cost with each level of nesting (#1080).
+        return getattr(self._sym, 'units', None)
 
     @property
     def has_units(self):
@@ -1101,10 +1101,8 @@ class UWexpression(MathematicalMixin, uw_object, Symbol):
     @property
     def dimensionality(self):
         """Get dimensionality from the wrapped thing."""
-        # TRANSPARENT CONTAINER: Always derive from _sym
-        if hasattr(self._sym, 'dimensionality'):
-            return self._sym.dimensionality
-        return {}
+        # TRANSPARENT CONTAINER: Always derive from _sym, in one read (#1080).
+        return getattr(self._sym, 'dimensionality', {})
 
     @property
     def expression(self):
