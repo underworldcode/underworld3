@@ -2112,17 +2112,22 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
     @array.setter
     def array(self, array_value):
         """
-        Set variable data through canonical data property with format conversion.
-        """
-        if self._is_simple_variable():
-            # Simple case: reshape array format (N,a,b) to canonical format (N,components)
-            canonical_data = array_value.reshape(array_value.shape[0], -1)
-        else:
-            # Complex case: use pack operations for tensor layout conversion
-            canonical_data = self._pack_array_to_data_format(array_value)
+        Set variable data through the view's write path, as MeshVariable does.
 
-        # Assign to canonical data property (triggers PETSc sync)
-        self.data[:] = canonical_data
+        The view's ``__setitem__`` converts units and packs tensor layouts.
+        Writing the magnitude straight into ``.data`` stored a dimensional
+        number as non-dimensional (#993).
+        """
+        view = self.array
+        shape = tuple(np.shape(view))
+        given = tuple(np.shape(array_value))
+        if (hasattr(array_value, "reshape") and given != shape and given[:1] == shape[:1]
+                and tuple(d for d in given[1:] if d != 1) == tuple(d for d in shape[1:] if d != 1)):
+            # Shapes that differ only by axes of length one, (N, 2, 1) for a
+            # vector viewed as (N, 1, 2) say, hold the entries in the same order;
+            # the old setter accepted them, so this one does too.
+            array_value = array_value.reshape(shape)
+        view[...] = array_value
 
     @property
     def sym(self):

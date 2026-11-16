@@ -3384,25 +3384,6 @@ class Mesh(Stateful, uw_object):
     #  (FE-exact, the quality path); parallel (np>1) falls back to the
     #  partition-agnostic ``global_evaluate`` REMAP (swarm-migration based).
     # ------------------------------------------------------------------ #
-    @staticmethod
-    def _refuse_parallel_refinement_with_units(*variables):
-        """The parallel refinement route reads the coordinates as non-dimensional, so
-        it gets every shape wrong when the model has reference quantities
-        (``uw.get_default_model().has_units()``), whatever the variables carry and
-        whether or not non-dimensional scaling is switched on, and when either
-        variable carries units (#991). Refuse rather than give a wrong value. These
-        facts and the rank count are the same on every rank, so every rank raises
-        together."""
-        if uw.mpi.size == 1:
-            return
-        referenced = uw.get_default_model().has_units()
-        with_units = [v.clean_name for v in variables if getattr(v, "units", None) is not None]
-        if referenced or with_units:
-            reason = ("the model has reference quantities" if referenced
-                      else f"{', '.join(repr(n) for n in with_units)} carry units")
-            raise NotImplementedError(
-                f"Transfers between a parent and its refinement child are not yet "
-                f"right in parallel when {reason}; see #991.")
 
     def _refine_prolongate(self, parent_var, child_var, mode="replace"):
         """Coarse parent -> fine child interpolation (this mesh is the child)."""
@@ -3410,8 +3391,6 @@ class Mesh(Stateful, uw_object):
             raise ValueError("_refine_prolongate requires an adapt() refinement child")
         pv = getattr(parent_var, "_base_var", parent_var)
         cv = getattr(child_var, "_base_var", child_var)
-
-        self._refuse_parallel_refinement_with_units(pv, cv)
 
         if uw.mpi.size > 1:
             from underworld3.discretisation.discretisation_mesh_variables import _evaluated_in_storage_layout
@@ -3447,8 +3426,6 @@ class Mesh(Stateful, uw_object):
             raise ValueError("_refine_restrict requires an adapt() refinement child")
         pv = getattr(parent_var, "_base_var", parent_var)
         cv = getattr(child_var, "_base_var", child_var)
-
-        self._refuse_parallel_refinement_with_units(pv, cv)
 
         if uw.mpi.size > 1:
             from underworld3.discretisation.discretisation_mesh_variables import _evaluated_in_storage_layout
@@ -3969,6 +3946,10 @@ class Mesh(Stateful, uw_object):
         # spherical shell in SERIAL — see :meth:`boundary_normal`. It also cannot
         # be made to agree across ranks, because each rank's tree is built from
         # its own local coordinates.)
+        # A facet on a partition seam lies between two ranks' cells: interior,
+        # even where this rank holds only one of them. Read on every rank,
+        # before the rank-local walk, since it is collective (#1135).
+        seam = self._seam_points()
         indexset, subdm = dm.createSubDM(var.field_id)
         try:
             try:
@@ -3982,6 +3963,14 @@ class Mesh(Stateful, uw_object):
                     # requested for an INTERNAL boundary comes back zero.
                     # (rotated_bc keeps the raw PETSc normal there instead;
                     # neither is a supported use of this routine today.)
+                    # In parallel an internal boundary's facet on a seam has one
+                    # LOCAL cell, so ``exterior`` alone took it for an outer
+                    # facet: an Internal surface then claimed the vertices where
+                    # it meets the walls on that rank, and the slip normal there
+                    # was refused (#1135). The seam test is topological, from
+                    # the point star forest.
+                    if int(f) in seam:
+                        continue
                     measure, nrm, exterior = facet_measure_and_normal(dm, f)
                     if not exterior:
                         continue
@@ -4688,6 +4677,22 @@ class Mesh(Stateful, uw_object):
             numpy.asarray(coords, dtype=float),
             numpy.asarray(reference, dtype=float))
 
+    def _seam_points(self):
+        """The mesh points this rank shares with another through the point star
+        forest: a leaf here, or a root with leaves elsewhere. A facet among them
+        lies between two ranks' cells, so it is interior to the mesh even when
+        this rank holds only one of its cells. Empty in serial. Collective (the
+        root degrees are an SF reduction)."""
+        dm = self.dm
+        if dm.getComm().getSize() == 1:
+            return set()
+        sf = dm.getPointSF()
+        _nroots, leaves, _remote = sf.getGraph()
+        degree = numpy.asarray(sf.computeDegree())               # collective
+        shared = set(int(p) for p in (leaves if leaves is not None else []))
+        shared.update(int(p) for p in numpy.flatnonzero(degree > 0))
+        return shared
+
     def _drop_seam_facets(self, facets):
         """``facets`` without those on a partition seam. Collective.
 
@@ -4701,11 +4706,7 @@ class Mesh(Stateful, uw_object):
         the mesh point, not coordinates: a split fault's Plus and Minus
         replicas coincide by design, and a coordinate key dropped both."""
         dm = self.dm
-        sf = dm.getPointSF()
-        _nroots, leaves, _remote = sf.getGraph()
-        degree = numpy.asarray(sf.computeDegree())               # collective
-        shared = set(int(p) for p in (leaves if leaves is not None else []))
-        shared.update(int(p) for p in numpy.flatnonzero(degree > 0))
+        shared = self._seam_points()                             # collective
         if facets is None or not len(facets):
             return facets
         vS = dm.getDepthStratum(0)[0]
@@ -5194,9 +5195,8 @@ class Mesh(Stateful, uw_object):
         length unit; a unit that is not a length is refused. A plain array is model
         coordinates, as evaluate reads one, and so are dimensionless coordinates. They
         are read in this model's frame: values scaled by another model cannot be told
-        apart. In a units model a plain array the size of
-        the physical domain is refused rather than read as model coordinates and
-        scaled up.
+        apart. In a units model a plain array is refused: it could be metres or model
+        units (#1081).
         """
         from underworld3.utilities.unit_aware_array import UnitAwareArray
 
@@ -5204,11 +5204,10 @@ class Mesh(Stateful, uw_object):
                  if getattr(self.CoordinateSystem, "_scaled", False) else 1.0)
         units = getattr(coords, "units", None)
         if units is not None and not (1.0 * uw.units(str(units))).dimensionality:
-            # Dimensionless coordinates are model coordinates, as a plain array is,
-            # and take the same physical-size check below.
+            # Coordinates marked dimensionless are model coordinates, by the
+            # caller's statement (#1081).
             coords = coords.to("dimensionless")
-            coords = numpy.asarray(getattr(coords, "magnitude", coords), dtype=float)
-            units = None
+            return numpy.asarray(getattr(coords, "magnitude", coords), dtype=float)
         if units is not None:
             if (1.0 * uw.units(str(units))).dimensionality != (1.0 * uw.units("m")).dimensionality:
                 raise ValueError(f"mesh coordinates must be a length, not {units}")
@@ -5217,18 +5216,16 @@ class Mesh(Stateful, uw_object):
             model = uw.non_dimensionalise(coords)
             return numpy.asarray(getattr(model, "magnitude", model), dtype=float)
         model = numpy.asarray(coords, dtype=float)
-        # Collective: a rank with no vertices still enters both reductions.
-        if scale != 1.0:
-            current = numpy.asarray(self._coords).reshape(-1, self.cdim)
-            extent = uw.mpi.comm.allreduce(float(numpy.abs(current).max()) if current.size else 0.0,
-                                           op=uw.MPI.MAX)
-            size = uw.mpi.comm.allreduce(float(numpy.abs(model).max()) if model.size else 0.0,
-                                         op=uw.MPI.MAX)
-            if (extent > 0.0 and size > 0.0
-                    and abs(numpy.log(size / (extent * scale))) < abs(numpy.log(size / extent))):
-                raise ValueError(
-                    "mesh.deform was given a plain array the size of the physical domain. "
-                    "Pass coordinates with units, such as mesh.X.coords, or model coordinates.")
+        # In a model with reference quantities a plain array is ambiguous (metres,
+        # or model units?) and is refused, as a bare number for a dimensional
+        # parameter is (#1081; units ruling, 2026-11-13). The rule depends only on
+        # the model, so every rank decides the same.
+        if uw.get_default_model().has_units():
+            raise ValueError(
+                "mesh.deform: a plain array is ambiguous in a model with reference "
+                "quantities. Pass coordinates with units, e.g. mesh.X.coords plus a "
+                "displacement with units, or model coordinates marked as such, e.g. "
+                "UnitAwareArray(model_coords, units=\"dimensionless\") (#1081).")
         return model
 
     def deform(self, new_coords, *, dt=None, zero=None, verbose=False):
@@ -5246,7 +5243,9 @@ class Mesh(Stateful, uw_object):
         new_coords : ndarray
             Target vertex coordinates, in the shape of ``mesh.X.coords``. Coordinates
             with units, such as ``mesh.X.coords`` itself in a model with reference
-            quantities, are converted; a plain array is read as model coordinates.
+            quantities, are converted. Without reference quantities a plain array is
+            model coordinates; with them it is refused, and model coordinates are
+            passed marked ``units="dimensionless"`` (#1081).
         dt : float, optional
             Timestep for the ALE ``v_mesh = Δx/dt`` correction. Required when
             SemiLagrangian history is present and the move is advective (a
@@ -10167,8 +10166,12 @@ class Mesh(Stateful, uw_object):
             the on-rank imbalance). Each level re-marks against the metric.
         node_budget : int or None
             Optional cap on the number of *seed* cells marked per level (highest-
-            metric first). **Caveat:** this caps the marked seeds, *not* the
-            resulting DOFs — SBR's conforming closure re-refines the whole
+            metric first). The cap is for the whole mesh, not per rank, so the
+            cells marked do not depend on the partition. Ties, including a flat
+            metric, go to the smallest x, then y, then z, so on a plateau the
+            budget is spent from the low-x end of the feature first. ``0`` marks
+            nothing. **Caveat:** this caps the marked seeds, *not* the resulting
+            DOFs — SBR's conforming closure re-refines the whole
             connected patch from any seed in it, so a seed cap does not bound the
             added DOFs and cannot, on its own, concentrate the finest level near a
             feature. To make the **finest level hug a feature** (a funnel) with
@@ -10466,6 +10469,19 @@ class Mesh(Stateful, uw_object):
 
             return numpy.clip(eval_metric(centroids), 1e-30, None)
 
+        def budget_cut(sel, M, centroids):
+            """The ``node_budget`` cells of highest metric among the candidates
+            ``sel``, over the whole mesh. Collective when a budget is set.
+
+            One budget for the mesh, not one per rank: cut per rank, P ranks
+            marked up to P budgets, and which cells depended on the seams
+            (#1122). Ties go to the smaller centroid, which no partition moves.
+            """
+            if node_budget is None:
+                return sel
+            from underworld3.utilities import edge_split
+            return sel[edge_split.top_over_ranks(M[sel], centroids[sel], node_budget)]
+
         def cell_geometry(dm):
             """Per-cell centroid and size for every cell of a simplicial DM.
 
@@ -10687,11 +10703,10 @@ class Mesh(Stateful, uw_object):
                 if M is not None and cur_h.size:
                     h_target = 1.0 / numpy.sqrt(M)
                     sel = numpy.where(cur_h > h_target)[0]
-                    if node_budget is not None and sel.size > node_budget:
-                        order = numpy.argsort(M[sel])[::-1]
-                        sel = sel[order[:node_budget]]
                 else:
                     sel = numpy.empty(0, dtype=int)   # rank owns no cells this level
+                if M is not None:
+                    sel = budget_cut(sel, M, centroids)
 
                 # Collective stop: refine while ANY rank still has cells to split
                 # (a rank with none may still bisect via the cross-rank closure).
@@ -10783,12 +10798,10 @@ class Mesh(Stateful, uw_object):
                     diameter, _edge_tables = edge_split.cell_diameters(
                         current_dm, return_tables=True)
                     sel = numpy.where(diameter > h_target)[0]
-                    if node_budget is not None and sel.size > node_budget:
-                        order = numpy.argsort(M[sel])[::-1]
-                        sel = sel[order[:node_budget]]
                 else:
                     sel = numpy.empty(0, dtype=int)   # rank owns no cells
                 if M is not None:
+                    sel = budget_cut(sel, M, centroids)
                     # The marking pass has just measured this dm, and the MG
                     # level selection sizes each generation from the same
                     # diameters, so the size is taken here rather than by
@@ -10904,9 +10917,7 @@ class Mesh(Stateful, uw_object):
                     if verbose:
                         uw.pprint(0, f"[adapt] nvb gen {level}: nothing to refine")
                     break
-                if node_budget is not None and sel.size > node_budget:
-                    order = numpy.argsort(M[sel])[::-1]
-                    sel = sel[order[:node_budget]]
+                sel = budget_cut(sel, M, centroids)   # serial path (see above)
                 marked = [int(cids[j]) for j in sel]
                 markers_per_level.append(marked)
                 _n_coarse_verts = len(nvb.coords)   # before this generation
@@ -10981,10 +10992,7 @@ class Mesh(Stateful, uw_object):
                         uw.pprint(0, f"[adapt] level {level}: no cells need refinement")
                     break
 
-                if node_budget is not None and refine.size > node_budget:
-                    # keep the highest-metric (finest-demand) cells first
-                    order = numpy.argsort(M[refine])[::-1]
-                    refine = refine[order[:node_budget]]
+                refine = budget_cut(refine, M, centroids)
 
                 cell_ids = [int(cs + j) for j in refine]
                 markers_per_level.append(cell_ids)

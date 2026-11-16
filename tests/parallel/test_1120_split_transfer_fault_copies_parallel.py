@@ -102,3 +102,31 @@ def test_every_coarse_fault_copy_has_fine_images_in_parallel():
         f"np={uw.mpi.size}: {int((norms == 0).sum())} fault-copy column(s) empty and "
         f"{int(weak.sum())} below a tenth of the median copy column "
         f"({np.sort(norms)[:6]})")
+
+
+def test_the_weak_copies_are_counted_as_nodes_as_in_serial(monkeypatch):
+    """``last_parent_rows`` counts coarse fault-copy NODES in parallel, as the
+    serial transfer does, not their per-component columns (#1206 review: the
+    parallel count was twice the serial one in 2-D). The expected count is
+    taken from the located transfer alone: the copy nodes with a column below
+    the weak bar."""
+    (args, kwargs), _info = _finest_split_pair_call()
+    coarse, _fine, degree = args[:3]
+    coarse_layout, ncomp = args[6], args[8]
+    monkeypatch.setattr(fault_mg, "_WEAK_COPY", 0.0)        # the located rule alone
+    norms_located = _copy_column_norms(args, kwargs)
+    monkeypatch.undo()
+    copies = _copies_by_point(coarse, degree)
+    l2g = np.asarray(coarse_layout.l2g, dtype=np.int64).reshape(-1, ncomp)
+    cols = np.unique(l2g[copies].ravel())
+    cols = cols[cols >= 0]
+    every = np.unique(np.concatenate(uw.mpi.comm.allgather(cols)))
+    weak_cols = every[norms_located < 0.1 * np.median(norms_located)]
+    node_cols = l2g[copies]
+    node_cols = node_cols[(node_cols >= 0).any(axis=1)]
+    table = np.unique(np.vstack(uw.mpi.comm.allgather(node_cols)), axis=0)
+    expected = int(np.isin(table, weak_cols).any(axis=1).sum())
+    assert expected > 0
+    fault_mg.cell_located_transfer_parallel(*args, **kwargs)
+    record = fault_mg.last_parent_rows
+    assert record["weak_copies"] == expected, (record, expected, weak_cols.size)
