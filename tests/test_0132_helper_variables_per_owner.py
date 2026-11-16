@@ -12,6 +12,7 @@ against a closed form where the field has one.
 
 import numpy as np
 import pytest
+import sympy
 
 import underworld3 as uw
 
@@ -38,7 +39,16 @@ def test_two_swarms_with_a_variable_of_one_name_keep_their_own_proxies(mesh):
     assert fields[0][0]._meshVar._base_var is not fields[1][0]._meshVar._base_var
     # The first swarm keeps the plain name its checkpoints carry.
     assert fields[0][0]._meshVar.clean_name == "proxy_phase"
-    assert fields[1][0]._meshVar.clean_name == f"proxy_{swarms[1].instance_number}_phase"
+    assert fields[1][0]._meshVar.clean_name == "proxy_1_phase"
+    # The two proxies show one symbol, <phase>, and are two functions: an
+    # expression in one reads that one's values, not the other's.
+    a, b = (s for s, _ in fields)
+    assert sympy.simplify(a.sym[0] - b.sym[0]) != 0
+    X = np.asarray(fields[1][0]._meshVar.coords)
+    np.testing.assert_allclose(np.asarray(uw.function.evaluate(b.sym[0], X)).ravel(), X[:, 1],
+                               atol=1e-10)
+    np.testing.assert_allclose(np.asarray(uw.function.evaluate(a.sym[0], X)).ravel(), X[:, 0],
+                               atol=1e-10)
     for s, axis in fields:
         s._update_proxy_if_stale()
         proxy = s._meshVar
@@ -56,8 +66,7 @@ def test_two_index_variables_of_one_name_keep_their_own_level_sets(mesh):
                                          proxy_location="nodes")
     for a, b in zip(first._meshLevelSetVars, second._meshLevelSetVars):
         assert a._base_var is not b._base_var
-    n = swarms[1].instance_number
-    assert [v.clean_name for v in second._meshLevelSetVars] == [f"M_{n}_0", f"M_{n}_1"]
+    assert [v.clean_name for v in second._meshLevelSetVars] == ["M_1_0", "M_1_1"]
     assert [v.degree for v in first._meshLevelSetVars] == [1, 1]
     assert [v.degree for v in second._meshLevelSetVars] == [2, 2]
 
@@ -76,6 +85,7 @@ def test_interface_thickness_is_its_level_sets_own():
     eps2 = uw.systems.level_set.interface_thickness(mesh, phi2)
     assert (eps1.degree, eps2.degree) == (1, 2)
     assert np.all(np.asarray(user.array) == -1.0)            # the user's field is untouched
+    assert sympy.simplify(eps1.sym[0] - user.sym[0]) != 0      # both shown as epsilon
     expect = 0.35 * np.sqrt(h * h / 2.0) / np.sqrt(2.0)
     for eps in (eps1, eps2):
         np.testing.assert_allclose(np.asarray(eps.array).ravel(), expect, rtol=1e-10)
@@ -118,3 +128,17 @@ def test_two_fault_collections_keep_their_own_distance_fields():
         # distance to the horizontal plane at height z
         np.testing.assert_allclose(np.abs(np.asarray(var.array).ravel()),
                                    np.abs(np.asarray(var.coords)[:, 2] - z), atol=1e-10)
+
+
+
+def test_two_variables_showing_one_symbol_are_two_functions(mesh):
+    # A variable's function is identified by its mesh and its own name, not by
+    # the symbol it shows.
+    a = uw.discretisation.MeshVariable("a0132", mesh, 1, degree=1, varsymbol="q")
+    b = uw.discretisation.MeshVariable("b0132", mesh, 1, degree=1, varsymbol="q")
+    X = np.asarray(a.coords)
+    a.array[:, 0, 0] = X[:, 0]
+    b.array[:, 0, 0] = X[:, 1]
+    assert sympy.simplify(a.sym[0] - b.sym[0]) != 0
+    total = np.asarray(uw.function.evaluate(a.sym[0] + b.sym[0], X)).ravel()
+    np.testing.assert_allclose(total, X[:, 0] + X[:, 1], atol=1e-12)

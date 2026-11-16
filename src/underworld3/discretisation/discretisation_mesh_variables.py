@@ -155,6 +155,41 @@ def _clean_name(name):
     return re.sub(r"[^a-zA-Z0-9_]", "", name)
 
 
+def _owned_name(mesh, name, numbered, owner):
+    """The name a mesh variable that ``owner`` makes on ``mesh`` takes: ``name``
+    if no variable holds it or ``owner`` made the one that does, else the first
+    of ``numbered(1)``, ``numbered(2)``, ... that is free or ``owner``'s.
+
+    The choice reads only ``mesh.vars``, which collective creation keeps the
+    same on every rank, so every rank chooses the same name; a creation count
+    would not, since an object made on one rank only (an expression printed on
+    rank 0) advances it there alone. A single owner keeps the plain name, and
+    so the name its checkpoints carry."""
+    import itertools
+
+    def free(candidate):
+        held = mesh.vars.get(_clean_name(candidate))
+        if held is None:
+            return True
+        made_by = getattr(held, "_made_by", None)
+        return made_by is not None and made_by() is owner
+
+    if free(name):
+        return name
+    for k in itertools.count(1):
+        if free(numbered(k)):
+            return numbered(k)
+
+
+def _mark_made_by(variable, owner):
+    """Record on ``variable``'s base, which ``mesh.vars`` holds, the owner that
+    made it (weakly: the mesh owns the variable)."""
+    import weakref
+
+    base = getattr(variable, "_base_var", variable)
+    base._made_by = weakref.ref(owner)
+
+
 def _declared_layout(mesh, num_components, vtype):
     """The ``(vtype, shape, num_components)`` a declaration asks for on ``mesh``.
 
@@ -397,11 +432,9 @@ class _BaseMeshVariable(Stateful, uw_object):
         self.name = name
         self.symbol = symbol
 
-        # Symbol disambiguation is now handled by _uw_id in UnderworldFunction (2025-12)
-        # No need for invisible \hspace{} hack - clean symbols for everyone!
-        # The mesh.instance_number is passed to UnderworldFunction._uw_id which
-        # makes symbols with same name from different meshes distinct via SymPy's
-        # __eq__ and __hash__ for UndefinedFunction kwargs.
+        # The variable's symbol is told apart from any other by
+        # UnderworldFunction's _uw_id: the mesh and this clean name, which is
+        # unique on the mesh. Two variables may show the same symbol.
 
         self.clean_name = re.sub(r"[^a-zA-Z0-9_]", "", name)
 

@@ -469,9 +469,11 @@ def metric_density_from_gradient(
     pStart, pEnd = dm.getDepthStratum(0)
     cStart, cEnd = dm.getHeightStratum(0)
     tag = name or "mdg"
-    # The same on every rank, so every rank hits or misses together: a miss
-    # builds projection solvers, which number themselves. The global point
-    # and cell counts catch a topology change in place; a move keeps them.
+    # Every rank hits or misses together: a miss builds projection solvers.
+    # The key is this process's (mesh.instance_number is never reused, as an
+    # id() can be once a mesh is freed); the global point and cell counts
+    # catch a topology change in place, which a move keeps. The variables live
+    # on this mesh, so their names need only the tag and degree.
     counts = tuple(uw.mpi.comm.allreduce(
         np.array([pEnd - pStart, cEnd - cStart], dtype=np.int64)).tolist())
     key = (mesh.instance_number, int(degree), tag, counts)
@@ -479,13 +481,13 @@ def metric_density_from_gradient(
     cache = _MDG_CACHE.get(key)
     if cache is None:
         g = uw.discretisation.MeshVariable(
-            f"mdg_g_{mesh.instance_number}_{tag}{degree}", mesh,
+            f"mdg_g_{tag}{degree}", mesh,
             vtype=uw.VarType.VECTOR, degree=int(degree),
             continuous=True)
         gp = uw.systems.Vector_Projection(mesh, g)
         gp.smoothing = 0.0
         rho0 = uw.discretisation.MeshVariable(
-            f"mdg_rho_{mesh.instance_number}_{tag}{degree}", mesh,
+            f"mdg_rho_{tag}{degree}", mesh,
             vtype=uw.VarType.SCALAR, degree=int(degree),
             continuous=True)
         # Optional pre-smoothing of the input field: a scalar
@@ -494,7 +496,7 @@ def metric_density_from_gradient(
         # from sub-L mesh structure, breaking the metric/mesh
         # feedback loop.
         f_smooth = uw.discretisation.MeshVariable(
-            f"mdg_fs_{mesh.instance_number}_{tag}{degree}", mesh,
+            f"mdg_fs_{tag}{degree}", mesh,
             vtype=uw.VarType.SCALAR, degree=int(degree),
             continuous=True)
         fp = uw.systems.Projection(mesh, f_smooth)

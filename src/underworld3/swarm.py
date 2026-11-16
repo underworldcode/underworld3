@@ -39,6 +39,7 @@ from underworld3.utilities._api_tools import uw_object
 from underworld3.utilities.mathematical_mixin import MathematicalMixin
 
 import underworld3.timing as timing
+from underworld3.discretisation.discretisation_mesh_variables import _mark_made_by, _owned_name
 
 comm = uw.mpi.comm
 
@@ -254,32 +255,6 @@ def _validate_index_proxy_sampling(proxy_location, proxy_sampling):
             f"fractions from every particle), not {proxy_sampling!r}"
         )
     return proxy_sampling
-
-
-def _unshared_name(mesh, name, numbered, owner):
-    """The name for a mesh variable that ``owner`` (a swarm variable) makes:
-    ``name``, unless a variable another owner made already holds it on
-    ``mesh``, then ``numbered`` (which carries the swarm's number). Two swarms
-    on one mesh with variables of the same name keep their proxies apart, and
-    a single swarm keeps the plain name, also when it comes back to a mesh it
-    held a proxy on. ``mesh.vars`` is the same on every rank, so the choice
-    is too."""
-    from underworld3.discretisation.discretisation_mesh_variables import _clean_name
-
-    held = mesh.vars.get(_clean_name(name))
-    if held is None:
-        return name
-    made_by = getattr(held, "_made_by_swarm_variable", None)
-    if made_by is not None and made_by() is owner:
-        return name
-    return numbered
-
-
-def _mark_made_by(variable, owner):
-    """Record on ``variable``'s base, which ``mesh.vars`` holds, the swarm
-    variable that made it (weakly: the mesh owns the variable)."""
-    base = getattr(variable, "_base_var", variable)
-    base._made_by_swarm_variable = weakref.ref(owner)
 
 
 class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object):
@@ -1369,9 +1344,9 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
         self._meshVar = None
 
         if self._proxy:
-            proxy_name = _unshared_name(
+            proxy_name = _owned_name(
                 self.swarm.mesh, "proxy_" + self.clean_name,
-                f"proxy_{self.swarm.instance_number}_{self.clean_name}", self)
+                lambda k: f"proxy_{k}_{self.clean_name}", self)
 
             # REINIT policy: a swarm proxy is re-projected from the
             # *particles* on next access, so a mesh adapt should NOT
@@ -2830,11 +2805,11 @@ class IndexSwarmVariable(SwarmVariable):
         self._meshLevelSetVars = [None] * self.indices
 
         for i in range(indices):
-            # "_<swarm>_" keeps its trailing separator through cleaning, so the
-            # numbered names of different swarms and indices cannot coincide.
-            lname = _unshared_name(
+            # "_<k>_" keeps its trailing separator through cleaning, so the
+            # numbered names of different indices cannot coincide.
+            lname = _owned_name(
                 self.swarm.mesh, name + R"^{[" + str(i) + R"]}",
-                f"{name}_{self.swarm.instance_number}_" + R"^{[" + str(i) + R"]}", self)
+                lambda k, i=i: f"{name}_{k}_" + R"^{[" + str(i) + R"]}", self)
             if proxy_location == "integration_points":
                 self._meshLevelSetVars[i] = uw.discretisation.IntegrationPointVariable(
                     lname, self.swarm.mesh,
