@@ -628,6 +628,34 @@ def _resolve_parents(below, lev):
         return
     n_old = int(below._addon_n_cells_old)
     cS, cE = below.dm.getHeightStratum(0)
+    # Both star forests below are built on recorded addresses. Each must be a
+    # (rank, old local cell) that exists, checked on every rank before either
+    # is built: a damaged entry gave a PETSc error or an MPI abort on its rank
+    # while the others waited (#874)
+    olds = np.asarray(m4.allgather(n_old), dtype=np.int64)
+    fS, fE = lev.dm.getHeightStratum(0)
+    problem = None
+    try:
+        for what, record, rows in (("cells of the level below", self_old, cE - cS),
+                                   ("parents", parent_old, fE - fS)):
+            record = np.asarray(record)
+            if record.ndim != 2 or record.shape[1] != 2 or (
+                    rows is not None and record.shape[0] != rows):
+                problem = (f"addon_partition: the recorded old addresses of the "
+                           f"{what} have shape {tuple(record.shape)}")
+                break
+            rank_ok = (record[:, 0] >= 0) & (record[:, 0] < m4.size)
+            cell_ok = rank_ok & (record[:, 1] >= 0) & (
+                record[:, 1] < olds[np.where(rank_ok, record[:, 0], 0)])
+            if not cell_ok.all():
+                problem = (f"addon_partition: {int((~cell_ok).sum())} recorded old "
+                           f"address(es) of the {what} name a rank or a cell "
+                           f"that does not exist")
+                break
+    except Exception as err:   # sanctioned: raised on every rank just below
+        problem = (f"addon_partition: checking the recorded old addresses failed: "
+                   f"{type(err).__name__}: {err}")
+    _collective_raise(problem)
     unit = MPI.INT64_T.Create_contiguous(2)
     unit.Commit()
     # directory: old cell -> (new rank, new local)

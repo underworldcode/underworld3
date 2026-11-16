@@ -256,3 +256,56 @@ def test_a_cell_table_failure_before_the_parent_location_is_raised_on_every_rank
     messages = uw.mpi.comm.allgather(caught)
     assert all(m is not None and "cell table" in m for m in messages), messages
     assert len(set(messages)) == 1, messages
+
+
+# --------------------------------------------------------------------------- #
+#  The transfer's opening reads, and _resolve_parents' records (#874, the
+#  follow-ups to #1201's review)
+# --------------------------------------------------------------------------- #
+def test_an_opening_read_failure_in_the_provenance_transfer_is_raised_on_every_rank():
+    args, kwargs = _captured_provenance_call()
+    _same_error_everywhere(lambda: fault_mg.provenance_transfer_parallel(*args, **kwargs),
+                           "_cell_vertex_table", "Level table",
+                           when=_caller("provenance_transfer_parallel"),
+                           error=CollectiveBuildError)
+
+
+def _captured_resolve_call():
+    calls = []
+    original = ap._resolve_parents
+
+    def spy(below, lev):
+        calls.append((below, lev, np.asarray(lev._addon_parent_old).copy()))
+        return original(below, lev)
+
+    ap._resolve_parents = spy
+    try:
+        ap.partition_addon(adapted_2d(K), ap.mark_polylines([TRACE]), layers=1,
+                           tolerance=0.1)
+    finally:
+        ap._resolve_parents = original
+    moved = [c for c in calls if getattr(c[0], "_addon_self_old", None) is not None]
+    assert uw.mpi.comm.allreduce(len(moved), op=__import__("mpi4py").MPI.MIN) > 0, \
+        "no level below moved: _resolve_parents never reached its star forests"
+    return moved[0]
+
+
+@pytest.mark.parametrize("damage, message", [
+    (lambda r: r[: max(len(r) // 2, 0)], "have shape"),
+    (lambda r: np.column_stack([np.full(len(r), 10 ** 6), r[:, 1]]),
+     "name a rank or a cell that does not exist"),
+    (lambda r: np.column_stack([r[:, 0], np.full(len(r), 10 ** 9)]),
+     "name a rank or a cell that does not exist"),
+], ids=["short", "no-such-rank", "no-such-cell"])
+def test_a_damaged_old_address_is_refused_on_every_rank(damage, message):
+    below, lev, parent_old = _captured_resolve_call()
+    record = damage(parent_old) if uw.mpi.rank == uw.mpi.size - 1 else parent_old
+    hidden = _Hidden(lev, _addon_parent_old=record)
+    caught = None
+    try:
+        ap._resolve_parents(below, hidden)
+    except RuntimeError as err:
+        caught = str(err)
+    messages = uw.mpi.comm.allgather(caught)
+    assert all(m is not None and message in m for m in messages), messages
+    assert len(set(messages)) == 1, messages

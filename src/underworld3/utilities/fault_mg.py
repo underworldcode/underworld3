@@ -558,32 +558,40 @@ def provenance_transfer_parallel(coarse, fine, pre, degree, continuous,
     cell of ``pre``, which is affine, so the pair has the transfer it had
     before the move (#1091).
     """
-    m4 = comm.tompi4py()
-    cn = np.asarray(coarse._cell_node_indices(degree, continuous))
-    fn = np.asarray(fine._cell_node_indices(degree, continuous))
-    Xc = np.asarray(coarse_coords)
-    Xf = np.asarray(fine_coords)
-    vxy_c, cv_c = _cell_vertex_table(coarse)
-    vxy_f, cv_f = _cell_vertex_table(fine)
-    vxy_p, cv_p = _cell_vertex_table(pre)
-    l2g_c = np.asarray(coarse_layout.l2g, dtype=np.int64).reshape(-1, ncomp)
-    l2g_f = np.asarray(fine_layout.l2g, dtype=np.int64).reshape(-1, ncomp)
-    fstart, fend = fine_layout.rstart, fine_layout.rend
-    cstart, cend = coarse_layout.rstart, coarse_layout.rend
-    n_f = Xf.shape[0]
-    nb = cn.shape[1]
-    nv = cv_c.shape[1]
-    dim = Xc.shape[1]
-
     # Every failure below is raised on every rank together, as a
     # CollectiveBuildError, so the hierarchy build degrades on all of them
     # (#886, #874): the checks on allreduced counts directly, the rank-local
-    # location and weighting through fault_contact._collective_raise. None
-    # passes builder_failure: another builder cannot change a location or a
-    # weight that failed, so a retry would fail the same way.
+    # reads, location and weighting through fault_contact._collective_raise.
+    # None passes builder_failure: another builder cannot change a location or
+    # a weight that failed, so a retry would fail the same way.
     from underworld3.utilities.custom_mg import CollectiveBuildError
     from underworld3.utilities.fault_contact import _collective_raise
-    owner = _fine_cell_of_node(fn, n_f)
+    m4 = comm.tompi4py()
+    # The node tables build a basis DM, which is collective, so they are read
+    # on every rank first (and cached on the mesh); everything else the
+    # transfer opens with is rank-local and read under one guard.
+    cn = np.asarray(coarse._cell_node_indices(degree, continuous))
+    fn = np.asarray(fine._cell_node_indices(degree, continuous))
+    problem = None
+    try:
+        Xc = np.asarray(coarse_coords)
+        Xf = np.asarray(fine_coords)
+        vxy_c, cv_c = _cell_vertex_table(coarse)
+        vxy_f, cv_f = _cell_vertex_table(fine)
+        vxy_p, cv_p = _cell_vertex_table(pre)
+        l2g_c = np.asarray(coarse_layout.l2g, dtype=np.int64).reshape(-1, ncomp)
+        l2g_f = np.asarray(fine_layout.l2g, dtype=np.int64).reshape(-1, ncomp)
+        fstart, fend = fine_layout.rstart, fine_layout.rend
+        cstart, cend = coarse_layout.rstart, coarse_layout.rend
+        n_f = Xf.shape[0]
+        nb = cn.shape[1]
+        nv = cv_c.shape[1]
+        dim = Xc.shape[1]
+        owner = _fine_cell_of_node(fn, n_f)
+    except Exception as err:   # sanctioned: raised on every rank just below
+        problem = (f"fault_mg: the provenance transfer failed to read the level "
+                   f"tables: {type(err).__name__}: {err}")
+    _collective_raise(problem, error=CollectiveBuildError)
     if m4.allreduce(int((owner < 0).sum())):
         raise CollectiveBuildError("fault_mg: a fine node belongs to no cell")
     mine = np.flatnonzero(((l2g_f >= fstart) & (l2g_f < fend)).any(axis=1))
