@@ -160,6 +160,40 @@ def percentile_over_ranks(values, pct):
     return float(a + (b - a) * t if t < 0.5 else b - (b - a) * (1.0 - t))
 
 
+def top_over_ranks(metric, centroids, count):
+    """Indices of this rank's share of the ``count`` largest ``metric`` values
+    over every rank's candidates together. Collective.
+
+    Ties are broken by centroid, smallest coordinates first, so which cells are
+    kept depends only on the cells and not on how they are dealt out, as long as
+    no candidate is held by two ranks (no mesh's own dm carries overlap cells).
+    The pooled top ``count`` lies within the union of each rank's own top
+    ``count``, so no more than that is gathered from any rank. Returned in
+    ranked order. At one rank this is the first ``count`` of the ranking.
+    """
+    comm = uw.mpi.comm
+    metric = np.asarray(metric, dtype=float).ravel()
+    centroids = np.asarray(centroids, dtype=float)
+    centroids = centroids.reshape(metric.size, centroids.shape[-1])
+    # columns of the key, most significant first: -metric, then x, y(, z)
+    key = np.column_stack([-metric, centroids])
+    order = np.lexsort(key.T[::-1])
+    n = comm.allreduce(int(metric.size), op=MPI.SUM)
+    if n <= count:
+        return order
+    pooled = comm.allgather(key[order[:count]])
+    pooled = np.vstack([p.reshape(-1, key.shape[1]) for p in pooled])
+    last = pooled[np.lexsort(pooled.T[::-1])[count - 1]]
+    # keep the local candidates that rank at or before the pooled count-th
+    before = np.zeros(metric.size, dtype=bool)
+    equal = np.ones(metric.size, dtype=bool)
+    for j in range(key.shape[1]):
+        before |= equal & (key[:, j] < last[j])
+        equal &= key[:, j] == last[j]
+    keep = before | equal
+    return order[keep[order]]
+
+
 def resolved_cell_size(dm, diameters=None):
     """The size of the cells a mesh resolves with: the 5th percentile of the
     cell diameters over the whole mesh. Collective.
