@@ -111,6 +111,21 @@ def _radial_viscosity(mesh):
     return eta0 * (1 + 20 * (x ** 2 + y ** 2))
 
 
+def test_a_reassigned_viscosity_is_refused_as_drift_in_a_units_model():
+    """The derived solves were configured at construction. Re-assigning the free
+    solve's viscosity afterwards must be caught as drift, with units as without:
+    it called .subs on a plain number, and a bare except hid it, so the solve ran
+    on the stale viscosity (9.85e-4 off; H1's review of #1205)."""
+    _units_model()
+    try:
+        fs, mesh = _build(viscosity=_radial_viscosity)
+        fs.free.constitutive_model.Parameters.shear_viscosity_0 = model_units(2.0, "Pa*s")
+        with pytest.raises(RuntimeError, match="no longer match"):
+            fs.solve()
+    finally:
+        uw.reset_default_model()
+
+
 def test_the_consistent_solve_is_warm_started_with_the_stored_velocity():
     """The warm start copies the free solve's stored values. Through .array a
     velocity with units went into a field without them, 100 times too large for
@@ -136,23 +151,5 @@ def test_the_consistent_solve_is_warm_started_with_the_stored_velocity():
         assert "u" in seen, "the consistent solve did not run"
         assert np.allclose(seen["u"], seen["free_u"], rtol=1e-12, atol=1e-14)
         assert np.allclose(seen["p"], seen["free_p"], rtol=1e-12, atol=1e-14)
-    finally:
-        uw.reset_default_model()
-
-
-def test_a_reassigned_viscosity_is_refused_as_drift_in_a_units_model():
-    """Last in the file: its refused solve leaves state a later FreeSurface on a new
-    mesh trips over (a foreign-mesh error), which is not what this file tests.
-
-    The derived solves were configured at construction. Re-assigning the free
-    solve's viscosity afterwards must be caught as drift, with units as without:
-    it called .subs on a plain number, and a bare except hid it, so the solve ran
-    on the stale viscosity (9.85e-4 off; H1's review of #1205)."""
-    _units_model()
-    try:
-        fs, mesh = _build(viscosity=_radial_viscosity)
-        fs.free.constitutive_model.Parameters.shear_viscosity_0 = model_units(2.0, "Pa*s")
-        with pytest.raises(RuntimeError, match="no longer match"):
-            fs.solve()
     finally:
         uw.reset_default_model()

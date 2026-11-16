@@ -24,7 +24,13 @@ reference quantities an ambiguous number is refused rather than guessed at.
   it could be metres or model units, and the size-based guess that decided it
   before failed when the length scale is near 1. Pass coordinates with units
   (`mesh.X.coords` plus a displacement with units) or model coordinates marked
-  `units="dimensionless"`. (#1081)
+  `units="dimensionless"`. Coordinates marked dimensionless are taken as model
+  coordinates whatever their size: the mark is the caller's statement, and no
+  size check second-guesses it. (#1081)
+- **`SwarmVariable.array`.** Assignment goes through the view, as for a
+  `MeshVariable`: a unit-aware value is converted, and a plain array in a units
+  model is refused as ambiguous. It used to be stored as non-dimensional, 1000
+  times too large for a 1000 K reference. (#993)
 
 ### adapt's node_budget is one budget for the whole mesh (November 2026, #1122)
 
