@@ -3813,6 +3813,12 @@ class SolverBaseClass(uw_object):
             config["multigrid_hierarchy"] = {
                 "merged_coarse_unknowns": dict(merged["levels"]),
                 "installs_with_merges": merged["installs_with_merges"]}
+        # coarse fault copies the split-level transfer's repair left weak
+        # (#1120): a coarse level that does not follow the fine one's move
+        unrepaired = getattr(self, "_mg_unrepaired_fault_copies", None)
+        if unrepaired:
+            config.setdefault("multigrid_hierarchy", {})[
+                "unrepaired_fault_copies"] = dict(unrepaired)
 
     def _capture_rotated_report(self, info):
         """Record a SolveReport for a rotated-free-slip solve, which runs its own
