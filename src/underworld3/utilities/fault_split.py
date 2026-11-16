@@ -1758,7 +1758,12 @@ def add_fault(mesh, faults, verbose=False, cut=True, exclude=None,
     if cut:
         # each cell of the mesh being cut carries its own index through the cut
         # and the split, so every cell of the result knows the cell it was made
-        # from (the split-level transfer reads it, #1120)
+        # from (the split-level transfer reads it, #1120). The label goes on a
+        # clone, never on the live mesh's DM, so a cut or a split that fails
+        # leaves nothing behind (a level split_tail_levels leaves welded stays
+        # in the hierarchy)
+        if dm is mesh.dm:
+            dm = dm.clone()
         _mark_host_cells(dm)
         for name, poly in segments:
             # EVERY control point gets a vertex, not just the tips: an

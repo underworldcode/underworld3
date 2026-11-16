@@ -141,3 +141,22 @@ def test_the_weak_copy_threshold_sits_in_the_measured_gap(amp, flagged_max, kept
     assert needs.max() < threshold < sound.min(), (
         f"_WEAK_COPY = {threshold} is outside the gap ({needs.max():.3f}, "
         f"{sound.min():.3f}) measured at amp={amp}")
+
+
+@pytest.mark.skipif(uw.mpi.size > 1, reason="serial")
+def test_copies_left_weak_are_reported_not_passed_in_silence(monkeypatch):
+    """Only the child moves (0.015 along the fault), the add-on levels stay
+    where they were built, and no recorded-parent row reaches the weak copies.
+    The transfer must say so: the record counts them and a warning names the
+    solve-report entry that carries them."""
+    child = _child()
+    X = np.asarray(child.X.coords).copy()
+    X[:, 0] += 0.015 * np.sin(np.pi * X[:, 0]) * np.sin(np.pi * X[:, 1])
+    child.deform(X)
+    mesh = child.add_fault([("Flt", TRACE)])
+    coarse = mesh._custom_mg_coarse_meshes[-1]
+    monkeypatch.setattr(fault_mg, "_warned_unrepaired", False)
+    with pytest.warns(UserWarning, match="unrepaired_fault_copies"):
+        fault_mg.cell_located_prolongation(coarse, mesh, DEGREE, True)
+    record = fault_mg.last_parent_rows
+    assert record["weak_copies"] > 0 and record["remaining"] > 0, record

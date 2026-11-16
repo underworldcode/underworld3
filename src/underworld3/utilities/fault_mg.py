@@ -287,7 +287,9 @@ def as_built_nodes(mesh, degree, continuous):
 #     by 0.002 across the fault: flagged 5, all 0;            smallest kept 0.221
 #     by 0.015 across the fault: flagged 13, largest 0.069;   smallest kept 0.379
 # so 0.1 sits in the gap 0.069 to 0.221 (1.45x above its lower edge, 2.2x below
-# its upper edge). Every weak copy's rows come from its own side of the fault,
+# its upper edge). Over 13 split pairs on 8 variants of the fixture (other
+# amplitudes, two other traces, a three-level add-on) the pooled gap is 0.069 to
+# 0.182 (1.8x below the upper edge). Every weak copy's rows come from its own side of the fault,
 # so the side alone does not tell a weak copy from a sound one.
 # tests/test_1120_split_transfer_fault_copies.py fails if the value leaves that
 # gap.
@@ -309,11 +311,22 @@ def _split_record(mesh):
     return np.asarray(record, dtype=np.int64), host
 
 
-def _built_cell_table(mesh):
+def _moved_off_build(mesh):
+    """Whether ``mesh`` sits off the geometry it was made in. Collective (the
+    move check reads every rank's coordinates)."""
+    return bool(mesh._moved_since_built and mesh.isSimplex
+                and mesh._moved_off_transfer_geometry())
+
+
+def _built_cell_table(mesh, moved=None):
     """:func:`_cell_vertex_table` on the geometry ``mesh`` was made in: the
-    nesting of two adapt levels is that of their built grids. Collective."""
+    nesting of two adapt levels is that of their built grids. Collective unless
+    ``moved`` (from :func:`_moved_off_build`, read on every rank) is given;
+    rank-local then."""
+    if moved is None:
+        moved = _moved_off_build(mesh)
     vxy, cv = _cell_vertex_table(mesh)
-    if mesh._moved_since_built and mesh.isSimplex and mesh._moved_off_transfer_geometry():
+    if moved:
         vxy = np.asarray(mesh._transfer_vertices)
     return vxy, cv
 
@@ -449,6 +462,27 @@ def _recorded_parent_cells(coarse, fine, Xf, fn, vxy_c, cv_c, vxy_f, cv_f,
     return cells, stranded
 
 
+_warned_unrepaired = False
+
+
+def _warn_unrepaired(remaining, weak):
+    """Once per Python session: fault copies the repair left weak. COLLECTIVE
+    callers pass agreed counts; rank 0 prints."""
+    global _warned_unrepaired
+    if not remaining or _warned_unrepaired or uw.mpi.rank != 0:
+        return
+    _warned_unrepaired = True
+    import warnings
+
+    warnings.warn(
+        f"fault_mg: {remaining} of {weak} weak coarse fault copies in a split-level "
+        f"transfer have no recorded-parent row to repair them, so they keep a "
+        f"(nearly) empty column and the coarse level may have null directions "
+        f"(#1120). This happens when the coarse levels do not follow a move of "
+        f"the finest; the count is in solve_report.config['multigrid_hierarchy']"
+        f"['unrepaired_fault_copies'].", stacklevel=4)
+
+
 def _weak_copy_columns(norms):
     """The copies whose column norm is below ``_WEAK_COPY`` of the median."""
     if not norms.size:
@@ -521,12 +555,14 @@ def _recorded_rows_where_weak(coarse, fine, degree, continuous, Xf, Xc, cn, fn,
     np.add.at(norms, cn[cells].ravel(), np.abs(W).ravel())
     weak = copies[_weak_copy_columns(norms[copies])]
     if not weak.size:
-        last_parent_rows = dict(weak_copies=0, rows=0, stranded_cells=0)
+        last_parent_rows = dict(weak_copies=0, rows=0, stranded_cells=0, remaining=0)
         return cells, W
     rec = _recorded_parent_cells(coarse, fine, Xf, fn, vxy_c, cv_c, vxy_f, cv_f)
     if rec is None:
+        # no record (a label-embedded fault, a 3-D sheet): nothing to repair with
         last_parent_rows = dict(weak_copies=int(weak.size), rows=0,
-                                stranded_cells=None)
+                                stranded_cells=None, remaining=int(weak.size))
+        _warn_unrepaired(int(weak.size), int(weak.size))
         return cells, W
     pcells, stranded = rec
     have = np.flatnonzero(pcells >= 0)
@@ -540,8 +576,14 @@ def _recorded_rows_where_weak(coarse, fine, degree, continuous, Xf, Xc, cn, fn,
     W = W.copy()
     cells[rows] = pcells[rows]
     W[rows] = Wp[reach]
+    # the copies still weak afterwards, against the same bar
+    after = np.zeros(Xc.shape[0])
+    np.add.at(after, cn[cells].ravel(), np.abs(W).ravel())
+    bar = _WEAK_COPY * float(np.median(norms[copies]))
+    remaining = int((after[weak] < bar).sum())
     last_parent_rows = dict(weak_copies=int(weak.size), rows=int(rows.size),
-                            stranded_cells=int(stranded))
+                            stranded_cells=int(stranded), remaining=remaining)
+    _warn_unrepaired(remaining, int(weak.size))
     return cells, W
 
 
@@ -753,31 +795,57 @@ def _recorded_rows_where_weak_parallel(coarse, fine, degree, continuous, Xf, Xc,
     if not every.size:
         last_parent_rows = None
         return Wall, Call
-    # each copy column's norm over the owned rows of this rank, then summed
-    local = np.zeros(every.size)
     owned_row = (l2g_f[nodes] >= fstart) & (l2g_f[nodes] < fend)     # (n, ncomp)
-    for c in range(ncomp):
-        cols = Call[:, :, c]                                           # (n, nb)
-        use = owned_row[:, c][:, None] & (cols >= 0)
-        pos = np.searchsorted(every, cols[use])
-        hit = (pos < every.size) & (every[np.minimum(pos, every.size - 1)] == cols[use])
-        np.add.at(local, pos[hit], np.abs(Wall)[use][hit])
+
+    def column_norms(W, C):
+        """This rank's owned rows' share of each copy column's norm."""
+        local = np.zeros(every.size)
+        for c in range(ncomp):
+            cols = C[:, :, c]                                          # (n, nb)
+            use = owned_row[:, c][:, None] & (cols >= 0)
+            pos = np.searchsorted(every, cols[use])
+            hit = (pos < every.size) & (every[np.minimum(pos, every.size - 1)]
+                                        == cols[use])
+            np.add.at(local, pos[hit], np.abs(W)[use][hit])
+        return local
+
+    problem = None
+    local = np.zeros(every.size)
+    try:
+        local = column_norms(Wall, Call)
+    except Exception as err:   # sanctioned: raised on every rank just below
+        problem = (f"fault_mg: summing the fault-copy columns failed: "
+                   f"{type(err).__name__}: {err}")
+    _collective_raise(problem, error=CollectiveBuildError)
     norms = np.empty_like(local)
     m4.Allreduce(local, norms)
-    weak_cols = every[_weak_copy_columns(norms)]
+    weak_mask = _weak_copy_columns(norms)
+    weak_cols = every[weak_mask]
     n_weak = int(weak_cols.size)
     rows_taken = 0
     stranded = None
-    problem = None
     # the hosts' built geometry is read collectively, on every rank, before
     # anything rank-local can fail: the record is on every rank or on none
     tables = None
-    if n_weak and m4.allreduce(int(_split_record(fine) is not None
-                                   and _split_record(coarse) is not None), op=MPI.MIN):
-        tables = (_built_cell_table(_split_record(fine)[1]),
-                  _built_cell_table(_split_record(coarse)[1]))
-    if tables is not None:
+    have_record = bool(m4.allreduce(int(_split_record(fine) is not None
+                                        and _split_record(coarse) is not None),
+                                    op=MPI.MIN)) if n_weak else False
+    if have_record:
+        problem = None
         try:
+            hosts = (_split_record(fine)[1], _split_record(coarse)[1])
+        except Exception as err:   # sanctioned: raised on every rank just below
+            problem = (f"fault_mg: reading the split record failed: "
+                       f"{type(err).__name__}: {err}")
+        _collective_raise(problem, error=CollectiveBuildError)
+        # the move check is collective, so it runs on every rank before the
+        # guard; the tables themselves are rank-local and read inside it
+        moved = (_moved_off_build(hosts[0]), _moved_off_build(hosts[1]))
+    problem = None
+    if have_record:
+        try:
+            tables = (_built_cell_table(hosts[0], moved[0]),
+                      _built_cell_table(hosts[1], moved[1]))
             rec = _recorded_parent_cells(coarse, fine, Xf, fn, vxy_c, cv_c, vxy_f, cv_f,
                                          host_tables=tables)
             if rec is not None:
@@ -802,10 +870,27 @@ def _recorded_rows_where_weak_parallel(coarse, fine, degree, continuous, Xf, Xc,
             problem = (f"fault_mg: the recorded-parent rows failed: "
                        f"{type(err).__name__}: {err}")
     _collective_raise(problem, error=CollectiveBuildError)
+    # the copies still weak afterwards, against the same bar
+    remaining = 0
+    if n_weak:
+        problem = None
+        after_local = np.zeros(every.size)
+        try:
+            after_local = column_norms(Wall, Call)
+        except Exception as err:   # sanctioned: raised on every rank just below
+            problem = (f"fault_mg: summing the fault-copy columns failed: "
+                       f"{type(err).__name__}: {err}")
+        _collective_raise(problem, error=CollectiveBuildError)
+        after = np.empty_like(after_local)
+        m4.Allreduce(after_local, after)
+        bar = _WEAK_COPY * float(np.median(norms))
+        remaining = int((after[weak_mask] < bar).sum())
     last_parent_rows = dict(
         weak_copies=n_weak,
         rows=int(m4.allreduce(rows_taken)),
-        stranded_cells=int(m4.allreduce(int(stranded or 0))))
+        stranded_cells=int(m4.allreduce(int(stranded or 0))),
+        remaining=remaining)
+    _warn_unrepaired(remaining, n_weak)
     return Wall, Call
 
 
@@ -1574,7 +1659,7 @@ def _fold_rows(T, fold, comm):
     return out
 
 
-def record_repairs(solver, repairs):
+def record_repairs(solver, repairs, hierarchy=None):
     """Record what one install's #1101 merges did, on the solver.
 
     Not a preconditioner fallback: the merge is an exact change of basis, and
@@ -1590,6 +1675,13 @@ def record_repairs(solver, repairs):
     solver._mg_merged_coarse_unknowns = {
         "levels": {int(level): int(n) for level, n in sorted(repairs)},
         "installs_with_merges": installs}
+    # the split-level fault-copy repair's leftovers (#1120): per coarse level,
+    # the fault copies still weak after it, the same on every rank. The coarse
+    # level of transfer l is level l - 1.
+    stats = getattr(hierarchy, "level_parent_rows", None) or []
+    solver._mg_unrepaired_fault_copies = {
+        int(l) - 1: int(rec["remaining"]) for l, rec in enumerate(stats)
+        if rec and rec.get("remaining")}
 
 
 def restrict_unreached(Ps, comm, repairs=None):
@@ -1716,7 +1808,7 @@ def rotated_split_transfers(solver, hierarchy, Ps, Q, normal_rows):
         kept[l] = adm
         out[l] = T
     Qv.destroy()                    # only the products are kept
-    record_repairs(solver, repairs)
+    record_repairs(solver, repairs, hierarchy)
     hierarchy.level_kept = kept
     # The restriction renumbers every coarse level, so any FAC patch rows the
     # builder recorded for them (keyed to the unrestricted layouts) no longer
