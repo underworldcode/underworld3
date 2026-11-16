@@ -37,14 +37,37 @@ A, B = np.array([0.30, 0.45]), np.array([0.70, 0.55])
 N_RUNGS = 80
 
 
-def _ribbon_solve():
+def _ribbon_solve(empty_last_rank=False):
     """A placed fault ribbon with the custom hierarchy set, whose finest level
     carries the structural FAC patch (the fixture of test_1147, one fault)."""
     S = float(np.linalg.norm(B - A)) / N_RUNGS
     trace = A + (np.arange(N_RUNGS + 1) * S)[:, None] * (B - A) / np.linalg.norm(B - A)
-    base = uw.meshing.UnstructuredSimplexBox(minCoords=(0, 0), maxCoords=(1, 1),
-                                             cellSize=1 / 8, regular=False, qdegree=2,
-                                             refinement=2)
+    dmod = uw.discretisation.discretisation_mesh
+    original = dmod._from_plexh5
+    if empty_last_rank:
+        from petsc4py import PETSc
+
+        def load(*a, **k):
+            res = original(*a, **k)
+            if not isinstance(res, tuple):
+                return res
+            sf0, dm = res
+            cS, cE = dm.getHeightStratum(0)
+            # every cell on the ranks before the last: the last holds none
+            owner = np.arange(cE - cS) % max(uw.mpi.size - 1, 1)
+            part = dm.getPartitioner()
+            part.setType(PETSc.Partitioner.Type.SHELL)
+            part.setShellPartition(uw.mpi.size,
+                                   sizes=np.bincount(owner, minlength=uw.mpi.size).astype(np.int32),
+                                   points=np.argsort(owner, kind="stable").astype(np.int32))
+            return sf0, dm
+        dmod._from_plexh5 = load
+    try:
+        base = uw.meshing.UnstructuredSimplexBox(minCoords=(0, 0), maxCoords=(1, 1),
+                                                 cellSize=1 / 8, regular=False, qdegree=2,
+                                                 refinement=2)
+    finally:
+        dmod._from_plexh5 = original
     levels = base._coarse_level_meshes()[:-1] + [base]
     mesh = place_fault_ribbon_2d(base, [("Fault", trace)], 2 * S, spines=[("Fault", trace)],
                                  margin_rings=1, clearance=0.7, split=True,
@@ -65,7 +88,7 @@ def _ribbon_solve():
     stokes.solve()
 
 
-def _captured_split_call():
+def _captured_split_call(empty_last_rank=False):
     calls = []
     original = custom_mg._fac_patch_split_parallel
 
@@ -76,7 +99,7 @@ def _captured_split_call():
 
     custom_mg._fac_patch_split_parallel = spy
     try:
-        _ribbon_solve()
+        _ribbon_solve(empty_last_rank)
     finally:
         custom_mg._fac_patch_split_parallel = original
     assert uw.mpi.comm.allreduce(len(calls)) == uw.mpi.size, "no FAC patch split built"
@@ -85,16 +108,83 @@ def _captured_split_call():
     return args, kwargs
 
 
-def _raises_everywhere(call, message):
+class _CountingVerdicts:
+    """The verdict communicator, counting its exchanges (the agreement calls)."""
+
+    def __init__(self, comm):
+        self._comm = comm
+        self.allgathers = 0          # every exchange: the flag and the messages
+
+    def allreduce(self, value, **kwargs):
+        self.allgathers += 1
+        return self._comm.allreduce(value, **kwargs)
+
+    def allgather(self, value):
+        self.allgathers += 1
+        return self._comm.allgather(value)
+
+    def __getattr__(self, name):
+        return getattr(self._comm, name)
+
+
+class _CheckedComm:
+    """The build's mpi4py communicator, checking at run time that every
+    collective made inside an active agreed_build follows an agreement (W1's
+    review: the static rule cannot see a collective inside a helper)."""
+
+    def __init__(self, comm, verdicts):
+        self._comm = comm
+        self._verdicts = verdicts
+        self._seen = -1
+        self.unagreed = []
+
+    def _check(self, name):
+        from underworld3.utilities import agreed_build
+        if agreed_build._active:
+            if self._verdicts.allgathers <= self._seen:
+                self.unagreed.append(name)
+            self._seen = self._verdicts.allgathers
+
+    def allreduce(self, *a, **k):
+        self._check("allreduce")
+        return self._comm.allreduce(*a, **k)
+
+    def allgather(self, *a, **k):
+        self._check("allgather")
+        return self._comm.allgather(*a, **k)
+
+    def bcast(self, *a, **k):
+        self._check("bcast")
+        return self._comm.bcast(*a, **k)
+
+    def __getattr__(self, name):
+        return getattr(self._comm, name)
+
+
+def _counting(call, monkeypatch):
+    """Run ``call``; return (the error message or None, the agreement calls
+    made on each rank, gathered)."""
+    counter = _CountingVerdicts(uw.mpi.verdict_comm)
+    monkeypatch.setattr(uw.mpi, "verdict_comm", counter)
     caught = None
     try:
         call()
     except RuntimeError as err:
         assert isinstance(err, CollectiveBuildError), type(err)
         caught = str(err)
+    finally:
+        monkeypatch.setattr(uw.mpi, "verdict_comm", counter._comm)
+    return caught, uw.mpi.comm.allgather(counter.allgathers)
+
+
+def _raises_everywhere(call, message, monkeypatch):
+    caught, counts = _counting(call, monkeypatch)
     messages = uw.mpi.comm.allgather(caught)
     assert all(m is not None and message in m for m in messages), messages
     assert len(set(messages)) == 1, messages
+    # every rank made the same number of agreement calls: the failed rank's
+    # one exit agreement paired with the others' next agreement point
+    assert len(set(counts)) == 1, counts
 
 
 def _on_last_rank(message):
@@ -102,8 +192,20 @@ def _on_last_rank(message):
         raise IndexError(f"{message} (forced on one rank)")
 
 
-def test_the_split_still_gives_the_same_answer():
+def test_the_split_still_gives_the_same_answer(monkeypatch):
     args, kwargs = _captured_split_call()
+    counter = _CountingVerdicts(uw.mpi.verdict_comm)
+    checked = _CheckedComm(args[6], counter)
+    monkeypatch.setattr(uw.mpi, "verdict_comm", counter)
+    try:
+        custom_mg._fac_patch_split_parallel(*(args[:6] + (checked,) + args[7:]), **kwargs)
+    finally:
+        monkeypatch.setattr(uw.mpi, "verdict_comm", counter._comm)
+    counts = uw.mpi.comm.allgather(counter.allgathers)
+    # the healthy path: paired agreement counts, and every collective of the
+    # build's communicator inside the context came after an agreement
+    assert len(set(counts)) == 1 and counts[0] > 0, counts
+    assert not checked.unagreed, checked.unagreed
     first = custom_mg._fac_patch_split_parallel(*args, **kwargs)
     second = custom_mg._fac_patch_split_parallel(*args, **kwargs)
     assert (first is None) == (second is None)
@@ -121,7 +223,7 @@ def test_a_failure_before_the_helper_is_raised_on_every_rank(monkeypatch):
 
     monkeypatch.setattr(custom_mg, "_append_remote_coarse_nodes", failing)
     _raises_everywhere(lambda: custom_mg._fac_patch_split_parallel(*args, **kwargs),
-                       "Before the fetch")
+                       "Before the fetch", monkeypatch)
 
 
 def test_a_failure_between_the_helper_s_collectives_is_raised_on_every_rank(monkeypatch):
@@ -139,7 +241,7 @@ def test_a_failure_between_the_helper_s_collectives_is_raised_on_every_rank(monk
     proxy.IS = _IS
     monkeypatch.setattr(custom_mg, "PETSc", proxy)
     _raises_everywhere(lambda: custom_mg._fac_patch_split_parallel(*args, **kwargs),
-                       "Inside the fetch")
+                       "Inside the fetch", monkeypatch)
 
 
 def test_a_failure_after_the_last_collective_is_raised_on_every_rank(monkeypatch):
@@ -153,4 +255,23 @@ def test_a_failure_after_the_last_collective_is_raised_on_every_rank(monkeypatch
 
     monkeypatch.setattr(custom_mg, "_patch_links", failing)
     _raises_everywhere(lambda: custom_mg._fac_patch_split_parallel(*args, **kwargs),
-                       "After the gate")
+                       "After the gate", monkeypatch)
+
+
+@pytest.mark.skipif(uw.mpi.size < 3, reason=(
+    "at np 2 the placed ribbon refuses a base with all its cells on one rank "
+    "(addon_partition: not co-partitioned), collectively, before the split"))
+def test_a_failure_on_a_rank_with_no_cells_is_raised_on_every_rank(monkeypatch):
+    """The base is dealt to every rank but the last, so the last holds no cell
+    of the base (a placed level may give it some); the failure is forced there,
+    before the fetch."""
+    args, kwargs = _captured_split_call(empty_last_rank=True)
+    original = custom_mg._append_remote_coarse_nodes
+
+    def failing(*a, **k):
+        _on_last_rank("On the empty rank")
+        return original(*a, **k)
+
+    monkeypatch.setattr(custom_mg, "_append_remote_coarse_nodes", failing)
+    _raises_everywhere(lambda: custom_mg._fac_patch_split_parallel(*args, **kwargs),
+                       "On the empty rank", monkeypatch)

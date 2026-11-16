@@ -507,3 +507,127 @@ def test_accepted_list_has_no_stale_entries():
         "delete them:\n"
         + "\n".join(f"  {path}::{function}" for path, function in stale)
     )
+
+
+# --------------------------------------------------------------------------- #
+#  agreed_build: every collective has an agreement point in front (#874)
+# --------------------------------------------------------------------------- #
+#: PETSc calls that are collective on the object's communicator, by method name,
+#: for the agreed-build rule. ``create`` counts only on a ``Scatter()`` / ``SF()``.
+AGREED_PETSC = {
+    "createMPI", "createAIJ", "assemble", "assemblyBegin", "assemblyEnd", "setUp",
+    "scatter", "createSubDM", "createSubMatrix", "localToGlobal", "globalToLocal",
+    "bcastBegin", "bcastEnd", "reduceBegin", "reduceEnd", "computeDegree",
+    "setGraph", "matMult", "transposeMatMult", "PtAP", "getGlobalSection",
+}
+AGREE_CALLS = {"agree", "agreed_allreduce"}
+
+
+def _call_name(call):
+    f = call.func
+    return f.attr if isinstance(f, ast.Attribute) else (f.id if isinstance(f, ast.Name) else None)
+
+
+def _agreed_collective(call):
+    """A collective by the agreed-build rule: an MPI one (as the scan above
+    reads them), or a PETSc one by method name."""
+    if is_collective(call):
+        return True
+    name = _call_name(call)
+    if name in AGREED_PETSC:
+        return True
+    if name == "create" and isinstance(call.func, ast.Attribute) and isinstance(
+            call.func.value, ast.Call) and _call_name(call.func.value) in ("Scatter", "SF"):
+        return True
+    return False
+
+
+def _flatten(statements):
+    """The statements of a block in execution order, nested blocks inline."""
+    for st in statements:
+        yield st
+        for field in ("body", "orelse", "finalbody"):
+            inner = getattr(st, field, None)
+            if isinstance(inner, list) and not isinstance(st, (ast.FunctionDef, ast.ClassDef)):
+                yield from _flatten(inner)
+        for handler in getattr(st, "handlers", []) or []:
+            yield from _flatten(handler.body)
+
+
+def _statement_calls(st):
+    """The calls a statement makes itself (not those of a nested block)."""
+    if isinstance(st, (ast.If, ast.While)):
+        nodes = [st.test]
+    elif isinstance(st, ast.For):
+        nodes = [st.iter]
+    elif isinstance(st, ast.With):
+        nodes = [item.context_expr for item in st.items]
+    elif isinstance(st, (ast.Try, ast.FunctionDef, ast.ClassDef)):
+        nodes = []
+    else:
+        nodes = [st]
+    return [n for node in nodes for n in ast.walk(node) if isinstance(n, ast.Call)]
+
+
+def agreed_build_findings(source, filename="<source>"):
+    """Collectives inside an ``agreed_build`` block, or inside a function that
+    calls ``agree()``, with a statement that can raise (one with a call or a
+    subscript) between them and the last agreement point. Returns
+    ``(line, function, collective)``."""
+    tree = ast.parse(source, filename=filename)
+    findings = []
+    for fn in [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]:
+        blocks = [st.body for st in ast.walk(fn) if isinstance(st, ast.With) and any(
+            isinstance(item.context_expr, ast.Call)
+            and _call_name(item.context_expr) == "agreed_build" for item in st.items)]
+        if any(isinstance(n, ast.Call) and _call_name(n) == "agree" for n in ast.walk(fn)) \
+                and not blocks:
+            blocks = [fn.body]
+        for body in blocks:
+            agreed = True                       # the context's entry is agreed
+            for st in _flatten(body):
+                calls = _statement_calls(st)
+                if any(_call_name(c) in AGREE_CALLS for c in calls):
+                    agreed = True
+                    continue
+                coll = [c for c in calls if _agreed_collective(c)]
+                if coll:
+                    if not agreed:
+                        findings.append((st.lineno, fn.name, _call_name(coll[0])))
+                    agreed = True               # a collective agrees what precedes it
+                    continue
+                risky = calls or any(isinstance(n, ast.Subscript) for n in ast.walk(st))
+                if risky and not isinstance(st, (ast.Try, ast.FunctionDef, ast.ClassDef)):
+                    agreed = False
+    return findings
+
+
+def test_agreed_build_rule_flags_a_planted_collective():
+    planted = (
+        "def f(comm, a):\n"
+        "    with agreed_build('x'):\n"
+        "        y = a[0]\n"
+        "        n = comm.allreduce(y)\n"
+        "    return n\n")
+    fixed = planted.replace("        n = comm.allreduce(y)\n",
+                            "        agree()\n        n = comm.allreduce(y)\n")
+    petsc = (
+        "def g(comm, a):\n"
+        "    agree()\n"
+        "    v = PETSc.Vec().createMPI(4, comm=comm)\n"
+        "    w = a[1]\n"
+        "    s = PETSc.Scatter().create(v, None, v, None)\n")
+    assert agreed_build_findings(planted) == [(4, "f", "allreduce")]
+    assert agreed_build_findings(fixed) == []
+    assert agreed_build_findings(petsc) == [(5, "g", "create")]
+
+
+def test_every_collective_in_an_agreed_build_has_an_agreement_point():
+    findings = []
+    for path in sorted(SRC.rglob("*.py")):
+        text = path.read_text()
+        if "agreed_build" not in text and "agree()" not in text:
+            continue
+        for line, fn, call in agreed_build_findings(text, str(path)):
+            findings.append(f"{path.relative_to(SRC).as_posix()}:{line} {fn}: {call}")
+    assert not findings, "collectives with no agreement point in front:\n" + "\n".join(findings)

@@ -72,13 +72,24 @@ def _collective_raise(problem, error=RuntimeError, **error_kwargs):
     ``error`` (with ``error_kwargs``) is the class raised: a hierarchy build
     passes ``custom_mg.CollectiveBuildError`` so the ranks retry or degrade
     together, as its other checks do.
+
+    Every rank raises the class of the FIRST failing rank's call, with that
+    rank's message: two calls that pair can pass different classes (an
+    ``agreed_build`` exit and a guard inside the build), and the ranks must
+    still raise one class, or a caller that catches one of them parts the
+    ranks (#874, W1's review of #1218).
+
+    The exchange is a one-integer flag first, and the messages are gathered
+    only when some rank failed, so a healthy path costs one small allreduce.
+    World-collective: the verdict communicator is a duplicate of the world.
     """
-    if mpi.size > 1:
-        # on the verdict communicator: a rank still inside a collective of
-        # the path cannot be paired with this exchange
-        gathered = mpi.verdict_comm.allgather(problem)
-        problems = [p for p in gathered if p is not None]
-        problem = problems[0] if problems else None
+    # on the verdict communicator (mpi.first_verdict): a rank still inside a
+    # collective of the path cannot be paired with this exchange
+    first = mpi.first_verdict(None if problem is None
+                              else (problem, error, error_kwargs))
+    if first is None:
+        return
+    problem, error, error_kwargs = first
     if problem is not None:
         exc = error(problem, **error_kwargs)
         # every rank raises this one together: an agreed_build context passes

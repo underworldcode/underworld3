@@ -10,11 +10,19 @@ agreement point, and every rank raises the same
 :class:`~underworld3.utilities.custom_mg.CollectiveBuildError`, carrying the
 failing rank's message.
 
-The agreement point is :func:`fault_contact._collective_raise` (an allgather on
-the verdict communicator, so it cannot pair with the build's own collectives).
+The agreement point is :func:`fault_contact._collective_raise`, which goes
+through :func:`underworld3.mpi.first_verdict`: a one-integer flag allreduce on
+the verdict communicator (so it cannot pair with the build's own collectives),
+and the messages gathered only on a failure. Every rank raises the class and
+the message of the first failing rank. Builds are WORLD-collective: the verdict
+communicator duplicates the world, as every solver's communicator in the
+library is.
+
 :func:`agree` makes one: it is placed before every collective of the build that
 cannot itself agree (a PETSc collective, a mesh method that is collective
-inside), and :func:`allreduce` agrees and then reduces. Outside an
+inside). The wrappers :func:`allreduce`, :func:`allgather` and :func:`bcast`
+agree and then communicate, and are preferred over a separate ``agree()``
+line before an mpi4py collective. Outside an
 :class:`agreed_build`, :func:`agree` does nothing, so a helper can carry it
 whoever calls it.
 
@@ -78,3 +86,15 @@ def allreduce(comm, value, **kwargs):
     """``comm.allreduce`` with an agreement point in front (mpi4py communicator)."""
     agree()
     return comm.allreduce(value, **kwargs)
+
+
+def allgather(comm, value):
+    """``comm.allgather`` with an agreement point in front."""
+    agree()
+    return comm.allgather(value)
+
+
+def bcast(comm, value, root=0):
+    """``comm.bcast`` with an agreement point in front."""
+    agree()
+    return comm.bcast(value, root=root)

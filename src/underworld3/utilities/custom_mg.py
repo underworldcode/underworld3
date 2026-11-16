@@ -1124,7 +1124,7 @@ def _fac_patch_split_parallel(P, coords_c, coords_f, lay_c, lay_f, nc, comm,
             node_in_sub[node_of_row[halo_rows]] = True
         sub_local = np.flatnonzero(node_in_sub[node_of_row]) if n else np.zeros(0, dtype=np.int64)
         n_sub = agreed_allreduce(comm, int(sub_local.size), op=MPI.SUM)
-        n_all = comm.allreduce(int(n), op=MPI.SUM)
+        n_all = agreed_allreduce(comm, int(n), op=MPI.SUM)
         taken = n_sub <= cover_max * n_all
         if gate is not None:
             gate.update(rows=int(n_all), subdomain_rows=int(n_sub), taken=bool(taken))

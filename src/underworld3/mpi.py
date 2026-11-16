@@ -63,6 +63,22 @@ rank = comm.rank
 # that never reaches it leaves the others waiting at a known place (#886).
 verdict_comm = comm.Dup()
 
+
+def first_verdict(verdict):
+    """The first rank's ``verdict`` (anything but None means a failure), the same
+    on every rank, or None when no rank failed. COLLECTIVE on ``verdict_comm``.
+
+    Every verdict exchange in the library goes through this one call, so any
+    two of them that pair (a failed rank at one site, the others at another)
+    make the same sequence of calls: a one-integer flag allreduce, and only when
+    it is set an allgather of the verdicts. A healthy path pays the small
+    allreduce alone (#874)."""
+    if size == 1:
+        return verdict
+    if not verdict_comm.allreduce(int(verdict is not None), op=_MPI.MAX):
+        return None
+    return next(v for v in verdict_comm.allgather(verdict) if v is not None)
+
 # State tracking for selective execution
 _in_selective_ranks = False
 _selective_executing_ranks = None
