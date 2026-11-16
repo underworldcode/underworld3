@@ -411,6 +411,8 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   # Shell Inner/Outer cell labels follow the Internal surface, not a radius test:
   # the same assertions hold on one rank, so the file also runs serially.
   batch 3 tests/parallel/test_1175_shell_region_labels.py
+  # So is a failed JIT build, raised on every rank with the compiler's output (#842).
+  batch 3 tests/parallel/test_0842_jit_build_failure_collective_parallel.py
   # So is points_in_domain by the exact locator, a swarm's claims agreeing with global_evaluate.
   batch 3 tests/parallel/test_1213_points_in_domain_exact_parallel.py
   # So is the adjoint dual on a field in a Dirichlet datum, the same at any rank count (#787).
