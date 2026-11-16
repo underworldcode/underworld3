@@ -3,9 +3,11 @@
 On a strongly sheared 3-D simplex mesh the old locator tested only the 50 cells
 with the nearest centroids, and the containing cell can rank farther down: points
 1e-8 to 1e-4 from interior edges were classified exterior and filled by RBF, wrong
-by up to 0.18 for a field the element represents exactly (10 to 18 of about 1260
-points at each distance). The walk crosses the face a point fails worst until a
-cell contains it, so the containing cell is found whatever its centroid's rank.
+for a field the element represents exactly. On the fixture here (sheared_box_fixture:
+a structured, gmsh-independent box that cannot tangle), development before #1175
+classified 116 to 125 inside points exterior at each distance. The walk crosses the
+face a point fails worst until a cell contains it, so the containing cell is found
+whatever its centroid's rank.
 
 A point several cells contain gets the lowest-numbered local cell in the star of
 the entity it lies on, whatever cell the walk started from.
@@ -16,6 +18,11 @@ import numpy as np
 import pytest
 
 import underworld3 as uw
+
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent / "parallel"))
+import sheared_box_fixture  # noqa: E402  the same fixture as the parallel files
 
 pytestmark = [pytest.mark.level_1, pytest.mark.tier_b]
 
@@ -41,15 +48,7 @@ def _min_barycentric(P, V):
 
 @pytest.fixture(scope="module")
 def sheared_box():
-    mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0., 0., 0.), maxCoords=(1., 1., 1.),
-                                             cellSize=1 / 6, qdegree=3)
-    X = np.asarray(mesh.X.coords).copy()
-    A = np.array([[1.0, 1.2, 0.3], [0.1, 0.7, 0.5], [0.0, 0.2, 0.5]])
-    Y = X @ A.T
-    Y[:, 0] += 0.03 * np.sin(2 * np.pi * X[:, 1])
-    Y[:, 1] += 0.03 * np.sin(2 * np.pi * X[:, 2])
-    Y[:, 2] += 0.03 * np.sin(2 * np.pi * X[:, 0])
-    mesh.deform(Y)
+    mesh = sheared_box_fixture.sheared_box()
     T = uw.discretisation.MeshVariable("T1123", mesh, 1, degree=1)
     T.array[:, 0, 0] = _linear(np.asarray(T.coords))
     return mesh, T
@@ -107,7 +106,7 @@ def test_the_walk_finds_every_contained_point_on_a_non_convex_boundary(sheared_b
     """On #1123's mesh the most violated face of a cell near the wavy boundary can
     be a boundary face although the point is inside, further along the wall. The
     walk crosses the most violated face that has a neighbour instead, and finds
-    every contained point from its start cell alone (it lost 7 of 2e5 when it left
+    every contained point from its start cell alone (it lost 7 of 2e5 on the old gmsh fixture when it left
     through the boundary)."""
     if uw.mpi.size > 1:
         pytest.skip("serial: local cells")
