@@ -3944,6 +3944,10 @@ class Mesh(Stateful, uw_object):
         # spherical shell in SERIAL — see :meth:`boundary_normal`. It also cannot
         # be made to agree across ranks, because each rank's tree is built from
         # its own local coordinates.)
+        # A facet on a partition seam lies between two ranks' cells: interior,
+        # even where this rank holds only one of them. Read on every rank,
+        # before the rank-local walk, since it is collective (#1135).
+        seam = self._seam_points()
         indexset, subdm = dm.createSubDM(var.field_id)
         try:
             try:
@@ -3957,6 +3961,14 @@ class Mesh(Stateful, uw_object):
                     # requested for an INTERNAL boundary comes back zero.
                     # (rotated_bc keeps the raw PETSc normal there instead;
                     # neither is a supported use of this routine today.)
+                    # In parallel an internal boundary's facet on a seam has one
+                    # LOCAL cell, so ``exterior`` alone took it for an outer
+                    # facet: an Internal surface then claimed the vertices where
+                    # it meets the walls on that rank, and the slip normal there
+                    # was refused (#1135). The seam test is topological, from
+                    # the point star forest.
+                    if int(f) in seam:
+                        continue
                     measure, nrm, exterior = facet_measure_and_normal(dm, f)
                     if not exterior:
                         continue
@@ -4663,6 +4675,22 @@ class Mesh(Stateful, uw_object):
             numpy.asarray(coords, dtype=float),
             numpy.asarray(reference, dtype=float))
 
+    def _seam_points(self):
+        """The mesh points this rank shares with another through the point star
+        forest: a leaf here, or a root with leaves elsewhere. A facet among them
+        lies between two ranks' cells, so it is interior to the mesh even when
+        this rank holds only one of its cells. Empty in serial. Collective (the
+        root degrees are an SF reduction)."""
+        dm = self.dm
+        if dm.getComm().getSize() == 1:
+            return set()
+        sf = dm.getPointSF()
+        _nroots, leaves, _remote = sf.getGraph()
+        degree = numpy.asarray(sf.computeDegree())               # collective
+        shared = set(int(p) for p in (leaves if leaves is not None else []))
+        shared.update(int(p) for p in numpy.flatnonzero(degree > 0))
+        return shared
+
     def _drop_seam_facets(self, facets):
         """``facets`` without those on a partition seam. Collective.
 
@@ -4676,11 +4704,7 @@ class Mesh(Stateful, uw_object):
         the mesh point, not coordinates: a split fault's Plus and Minus
         replicas coincide by design, and a coordinate key dropped both."""
         dm = self.dm
-        sf = dm.getPointSF()
-        _nroots, leaves, _remote = sf.getGraph()
-        degree = numpy.asarray(sf.computeDegree())               # collective
-        shared = set(int(p) for p in (leaves if leaves is not None else []))
-        shared.update(int(p) for p in numpy.flatnonzero(degree > 0))
+        shared = self._seam_points()                             # collective
         if facets is None or not len(facets):
             return facets
         vS = dm.getDepthStratum(0)[0]
@@ -10140,8 +10164,12 @@ class Mesh(Stateful, uw_object):
             the on-rank imbalance). Each level re-marks against the metric.
         node_budget : int or None
             Optional cap on the number of *seed* cells marked per level (highest-
-            metric first). **Caveat:** this caps the marked seeds, *not* the
-            resulting DOFs — SBR's conforming closure re-refines the whole
+            metric first). The cap is for the whole mesh, not per rank, so the
+            cells marked do not depend on the partition. Ties, including a flat
+            metric, go to the smallest x, then y, then z, so on a plateau the
+            budget is spent from the low-x end of the feature first. ``0`` marks
+            nothing. **Caveat:** this caps the marked seeds, *not* the resulting
+            DOFs — SBR's conforming closure re-refines the whole
             connected patch from any seed in it, so a seed cap does not bound the
             added DOFs and cannot, on its own, concentrate the finest level near a
             feature. To make the **finest level hug a feature** (a funnel) with
@@ -10439,6 +10467,19 @@ class Mesh(Stateful, uw_object):
 
             return numpy.clip(eval_metric(centroids), 1e-30, None)
 
+        def budget_cut(sel, M, centroids):
+            """The ``node_budget`` cells of highest metric among the candidates
+            ``sel``, over the whole mesh. Collective when a budget is set.
+
+            One budget for the mesh, not one per rank: cut per rank, P ranks
+            marked up to P budgets, and which cells depended on the seams
+            (#1122). Ties go to the smaller centroid, which no partition moves.
+            """
+            if node_budget is None:
+                return sel
+            from underworld3.utilities import edge_split
+            return sel[edge_split.top_over_ranks(M[sel], centroids[sel], node_budget)]
+
         def cell_geometry(dm):
             """Per-cell centroid and size for every cell of a simplicial DM.
 
@@ -10660,11 +10701,10 @@ class Mesh(Stateful, uw_object):
                 if M is not None and cur_h.size:
                     h_target = 1.0 / numpy.sqrt(M)
                     sel = numpy.where(cur_h > h_target)[0]
-                    if node_budget is not None and sel.size > node_budget:
-                        order = numpy.argsort(M[sel])[::-1]
-                        sel = sel[order[:node_budget]]
                 else:
                     sel = numpy.empty(0, dtype=int)   # rank owns no cells this level
+                if M is not None:
+                    sel = budget_cut(sel, M, centroids)
 
                 # Collective stop: refine while ANY rank still has cells to split
                 # (a rank with none may still bisect via the cross-rank closure).
@@ -10756,12 +10796,10 @@ class Mesh(Stateful, uw_object):
                     diameter, _edge_tables = edge_split.cell_diameters(
                         current_dm, return_tables=True)
                     sel = numpy.where(diameter > h_target)[0]
-                    if node_budget is not None and sel.size > node_budget:
-                        order = numpy.argsort(M[sel])[::-1]
-                        sel = sel[order[:node_budget]]
                 else:
                     sel = numpy.empty(0, dtype=int)   # rank owns no cells
                 if M is not None:
+                    sel = budget_cut(sel, M, centroids)
                     # The marking pass has just measured this dm, and the MG
                     # level selection sizes each generation from the same
                     # diameters, so the size is taken here rather than by
@@ -10877,9 +10915,7 @@ class Mesh(Stateful, uw_object):
                     if verbose:
                         uw.pprint(0, f"[adapt] nvb gen {level}: nothing to refine")
                     break
-                if node_budget is not None and sel.size > node_budget:
-                    order = numpy.argsort(M[sel])[::-1]
-                    sel = sel[order[:node_budget]]
+                sel = budget_cut(sel, M, centroids)   # serial path (see above)
                 marked = [int(cids[j]) for j in sel]
                 markers_per_level.append(marked)
                 _n_coarse_verts = len(nvb.coords)   # before this generation
@@ -10954,10 +10990,7 @@ class Mesh(Stateful, uw_object):
                         uw.pprint(0, f"[adapt] level {level}: no cells need refinement")
                     break
 
-                if node_budget is not None and refine.size > node_budget:
-                    # keep the highest-metric (finest-demand) cells first
-                    order = numpy.argsort(M[refine])[::-1]
-                    refine = refine[order[:node_budget]]
+                refine = budget_cut(refine, M, centroids)
 
                 cell_ids = [int(cs + j) for j in refine]
                 markers_per_level.append(cell_ids)

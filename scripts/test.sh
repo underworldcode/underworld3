@@ -411,6 +411,8 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   # Shell Inner/Outer cell labels follow the Internal surface, not a radius test:
   # the same assertions hold on one rank, so the file also runs serially.
   batch 3 tests/parallel/test_1175_shell_region_labels.py
+  # So is a failed JIT build, raised on every rank with the compiler's output (#842).
+  batch 3 tests/parallel/test_0842_jit_build_failure_collective_parallel.py
   # So is points_in_domain by the exact locator, a swarm's claims agreeing with global_evaluate.
   batch 3 tests/parallel/test_1213_points_in_domain_exact_parallel.py
   # So is the adjoint dual on a field in a Dirichlet datum, the same at any rank count (#787).
@@ -429,6 +431,8 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   batch 3 tests/parallel/test_1177_mg_levels_same_at_any_rank_count_parallel.py
   # So is the monotone clamp by the containing cell, the same bound at any rank count for a point inside a cell (#682).
   batch 3 tests/parallel/test_0682_clamp_by_containing_cell_parallel.py
+  # So is adapt's node_budget, one cut for the whole mesh at any rank count (#1122).
+  batch 3 tests/parallel/test_1122_adapt_node_budget_global_parallel.py
   # test_106*/test_107* were held back pending "a triage/deselect decision". That
   # decision is made: the band is not the unit of exclusion. Of the 243 tests in
   # the deferred bands only 26 are level_3 or tier_c; 55 are level_1 AND tier_a —
@@ -598,6 +602,12 @@ if [ $PARALLEL_RANKS -gt 0 ] && shard_owns 4; then
     OMPI_MCA_rmaps_base_oversubscribe=1 $SUPERVISE mpirun -n 3 python -m pytest --with-mpi \
       tests/parallel/test_1084_rotated_datum_collectives.py || status=1
 
+    # An internal boundary's facet on a partition seam once took a normal at
+    # three ranks and more, never at two (seeds 1 to 12 measured): this file
+    # runs at np 3 always (#1135).
+    OMPI_MCA_rmaps_base_oversubscribe=1 $SUPERVISE mpirun -n 3 python -m pytest --with-mpi \
+      tests/parallel/test_1135_internal_boundary_normal_on_a_seam_parallel.py || status=1
+
     # At two ranks the triangle of cells in this file is skipped (one cell, nothing
     # to solve for), so the solve on it with a rank without cells runs at np 3 always.
     OMPI_MCA_rmaps_base_oversubscribe=1 $SUPERVISE mpirun -n 3 python -m pytest --with-mpi \
@@ -606,6 +616,10 @@ if [ $PARALLEL_RANKS -gt 0 ] && shard_owns 4; then
     # empty does so from np 3 (at np 2 the test skips), so it runs at np 3 always.
     OMPI_MCA_rmaps_base_oversubscribe=1 $SUPERVISE mpirun -n 3 python -m pytest --with-mpi \
       tests/parallel/test_1189_adapt_nvb_rank_without_cells_parallel.py || status=1
+    # A free surface with a rank without cells: the shell partition empties a rank
+    # from np 3 (at np 2 it would leave one rank holding every cell), so np 3 always.
+    OMPI_MCA_rmaps_base_oversubscribe=1 $SUPERVISE mpirun -n 3 python -m pytest --with-mpi \
+      tests/parallel/test_1074_free_surface_on_an_empty_rank_parallel.py || status=1
 
     # Four ranks give a rank that shares an interface vertex and holds none of the
     # interface's facets, which the pressure split must still be told about: with
