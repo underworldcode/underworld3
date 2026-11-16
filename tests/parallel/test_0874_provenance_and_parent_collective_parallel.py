@@ -193,3 +193,66 @@ def test_base_parent_location_failure_is_raised_on_every_rank():
     assert np.array_equal(located, np.asarray(out._addon_parent))
     _same_error_everywhere(lambda: ap._base_parent_addresses(below, hidden, comm),
                            "locate_in_cells_exhaustive", "No recorded cell")
+
+
+# --------------------------------------------------------------------------- #
+#  The record itself (#874, finding 4 of the #1165 review)
+# --------------------------------------------------------------------------- #
+def _with_record(args, record_on_last_rank):
+    """The captured provenance call with ``pre``'s record replaced on the last
+    rank only (every other rank keeps its own)."""
+    coarse, fine, pre = args[:3]
+    record = np.asarray(pre._addon_parent)
+    if uw.mpi.rank == uw.mpi.size - 1:
+        record = record_on_last_rank(record)
+    return (coarse, fine, _Hidden(pre, _addon_parent=record)) + tuple(args[3:])
+
+
+def _raised_everywhere(call, message):
+    caught = None
+    try:
+        call()
+    except CollectiveBuildError as err:
+        caught = str(err)
+    messages = uw.mpi.comm.allgather(caught)
+    assert all(m is not None and message in m for m in messages), messages
+    assert len(set(messages)) == 1, messages
+
+
+@pytest.mark.parametrize("damage, message", [
+    (lambda r: r[: max(len(r) // 2, 0)], "does not describe this mesh"),
+    (lambda r: np.column_stack([np.full(len(r), 10 ** 6), r[:, 1]]),
+     "name a rank or a cell that does not exist"),
+    (lambda r: np.column_stack([r[:, 0], np.full(len(r), 10 ** 9)]),
+     "name a rank or a cell that does not exist"),
+], ids=["short", "no-such-rank", "no-such-cell"])
+def test_a_damaged_record_on_one_rank_is_refused_on_every_rank(damage, message):
+    args, kwargs = _captured_provenance_call()
+    damaged = _with_record(args, damage)
+    _raised_everywhere(lambda: fault_mg.provenance_transfer_parallel(*damaged, **kwargs),
+                       message)
+
+
+def test_a_cell_table_failure_before_the_parent_location_is_raised_on_every_rank():
+    child = adapted_2d(K)
+    tail = child._custom_mg_coarse_meshes
+    levels = [tail[i] for i in addon_level_indices(tail)] + [child]
+    original = ap._cell_centroids
+
+    def failing(mesh):
+        if uw.mpi.rank == uw.mpi.size - 1:
+            raise IndexError("cell table (forced on one rank)")
+        return original(mesh)
+
+    ap._cell_centroids = failing
+    try:
+        caught = None
+        try:
+            ap._parent_cells_local(levels[0], levels[1])
+        except RuntimeError as err:
+            caught = str(err)
+    finally:
+        ap._cell_centroids = original
+    messages = uw.mpi.comm.allgather(caught)
+    assert all(m is not None and "cell table" in m for m in messages), messages
+    assert len(set(messages)) == 1, messages

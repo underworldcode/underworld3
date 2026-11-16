@@ -12413,10 +12413,6 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
             self._attach_stokes_nullspace()
 
-        # Apply region DS if active_region was set
-        if hasattr(self, '_inactive_region_label') and self._inactive_region_label is not None:
-            self._setup_region_ds()
-
         self.is_setup = True
         self._form_facts = None     # forms (re)built: cached symbolic facts are stale
         self.constitutive_model._solver_is_setup = True
@@ -12451,51 +12447,6 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             "discrete systems are not supported (the solve segfaulted inside PETSc, "
             "and the region value was never applied: #1154). Solve on the region's "
             "own mesh instead: sub = mesh.extract_region(...), with a solver on sub.")
-
-    def _setup_region_ds(self):
-        """Register a trivial DS for the inactive region.
-
-        After _setup_solver populates the default DS with Stokes weak forms,
-        this creates an empty DS for cells in the inactive region. PETSc's
-        DMGetCellDS dispatches per-cell: inactive cells get the empty DS
-        (zero volume contributions), active cells get the default DS.
-        """
-        cdef DM c_dm = self.dm
-        cdef DS ds_default = self.dm.getDS()
-        cdef DMLabel c_label
-
-        # Get the inactive region label
-        label_name = self._inactive_region_label
-        # dm.getLabel never returns None for a missing name (#1163): hasLabel
-        # is the test, and it answers the same on every rank.
-        if not self.dm.hasLabel(label_name):
-            raise ValueError(f"DM label '{label_name}' not found")
-        bc_label = self.dm.getLabel(label_name)
-        c_label = bc_label
-
-        # Create a new DS with the same fields but no weak forms
-        cdef DS air_ds = PETSc.DS().create(comm=self.dm.comm)
-
-        # Copy field discretisations from the DM's fields
-        cdef PetscInt nfields
-        nfields = self.dm.getNumFields()
-
-        for f in range(nfields):
-            fe, _ = self.dm.getField(f)
-            air_ds.setDiscretisation(f, fe)
-
-        # Set coordinate dimension to match the default DS
-        CHKERRQ( PetscDSSetCoordinateDimension(air_ds.ds, self.mesh.dim) )
-
-        # Register the empty DS for the inactive region
-        CHKERRQ( DMSetRegionDS(c_dm.dm, c_label.dmlabel, NULL, air_ds.ds, NULL) )
-
-        # Copy to coarse levels too
-        for coarse_dm in self.dm_hierarchy:
-            self.dm.copyDS(coarse_dm)
-
-        if uw.mpi.rank == 0 and self.verbose:
-            print(f"Region DS: inactive region '{label_name}' gets trivial DS", flush=True)
 
     def compute_volume_residual_fields(
         self,
@@ -12994,7 +12945,15 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         # Function to get index set for a field
         def get_local_field_is(section, field, unconstrained=False):
             """
-            This function returns the index set of unconstrained points if True, or all points if False.
+            The local indices of ``field``'s unknowns: all of them, or with
+            ``unconstrained`` only those not constrained.
+
+            Every unknown of each point is taken. The test used to read the
+            PRESSURE's continuity whatever field it was asked for, and to take
+            one index per point: right only for a field with one unknown per
+            point. A discontinuous pressure then sent the multipliers through
+            the unconstrained branch, which leaves out their pinned interior
+            unknowns, and the velocity's complement grew by them (#1167).
             """
             pStart, pEnd = section.getChart()
             indices = []
@@ -13002,8 +12961,8 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                 dof = section.getFieldDof(p, field)
                 if dof > 0:
                     offset = section.getFieldOffset(p, field)
-                    if not unconstrained and self.Unknowns.p.continuous:
-                        indices.append(offset)
+                    if not unconstrained:
+                        indices.extend(range(offset, offset + dof))
                     else:
                         cind = section.getFieldConstraintIndices(p, field)
                         constrained = set(cind) if cind is not None else set()
