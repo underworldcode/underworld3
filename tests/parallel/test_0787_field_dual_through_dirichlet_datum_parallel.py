@@ -136,3 +136,71 @@ def test_a_field_on_another_space_in_a_datum_is_refused():
         message = str(error)
     messages = uw.mpi.comm.allgather(message)
     assert len(set(messages)) == 1 and "needs a projection" in messages[0], messages
+
+
+def _poisson_with(top=None, left=None, tag="x"):
+    mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0, 0), maxCoords=(1, 1), cellSize=1 / 6)
+    T = uw.discretisation.MeshVariable(f"T0787{tag}", mesh, 1, degree=2)
+    f = uw.discretisation.MeshVariable(f"f0787{tag}", mesh, 1, degree=2)
+    X = np.asarray(f.coords)
+    f.array[:, 0, 0] = 1.0 + np.sin(np.pi * X[:, 0])
+    poisson = uw.systems.Poisson(mesh, u_Field=T)
+    poisson.constitutive_model = uw.constitutive_models.DiffusionModel
+    poisson.constitutive_model.Parameters.diffusivity = 1.0
+    poisson.f = 1.0
+    poisson.petsc_options.delValue("ksp_monitor")
+    poisson.add_dirichlet_bc(0.0, "Bottom")
+    poisson.add_dirichlet_bc(sympy.Matrix([top(f)]), "Top")
+    if left is not None:
+        poisson.add_natural_bc(sympy.Matrix([left(f)]), "Left")
+    poisson.solve()
+    return T, f, poisson
+
+
+def _same_refusal_on_every_rank(call, expected):
+    message = ""
+    try:
+        call()
+    except NotImplementedError as error:
+        message = str(error)
+    messages = uw.mpi.comm.allgather(message)
+    assert len(set(messages)) == 1 and expected in messages[0], messages
+
+
+@pytest.mark.parametrize("top", [lambda f: f.sym.diff(f.mesh.X[0])[0],
+                                 lambda f: f.sym[0] + f.sym.diff(f.mesh.X[0])[0]],
+                         ids=["df/dx", "f + df/dx"])
+def test_a_datum_reading_the_fields_gradient_is_refused(top):
+    """The reaction maps onto the field's nodal VALUES; a datum through the
+    field's gradient reads its neighbours too. Measured on the first version:
+    dual 0 against a central difference of -0.896 (df/dx), 22 % off (f + df/dx)."""
+    T, f, poisson = _poisson_with(top=top, tag="g")
+    _same_refusal_on_every_rank(lambda: poisson.gradient(T.sym[0] ** 2 / 2, fields=[f]),
+                                "gradient")
+
+
+def test_a_field_in_a_datum_and_a_natural_condition_is_refused():
+    """The natural condition's facet term is not assembled on this route; it was
+    dropped because only the first kind of read was reported (7 % off)."""
+    T, f, poisson = _poisson_with(top=lambda f: f.sym[0], left=lambda f: f.sym[0], tag="n")
+    _same_refusal_on_every_rank(lambda: poisson.gradient(T.sym[0] ** 2 / 2, fields=[f]),
+                                "natural")
+
+
+def test_the_dual_array_is_consistent_on_ghost_nodes():
+    """The datum part was written on owned nodes only; a ghost copy now holds
+    its owner's value, so the local array is the same as the field's own
+    global-to-local scatter of it."""
+    T, f, poisson = _poisson_with(top=lambda f: f.sym[0], tag="h")
+    dual = np.asarray(poisson.gradient(T.sym[0] ** 2 / 2, fields=[f])["fields"][f]).reshape(-1)
+    _is, subdm = f.mesh.dm.createSubDM(f.field_id)
+    local = subdm.getLocalVec()
+    glob = subdm.getGlobalVec()
+    local.array[:] = dual
+    subdm.localToGlobal(local, glob)
+    subdm.globalToLocal(glob, local)
+    gap = float(np.abs(local.array - dual).max(initial=0.0))
+    subdm.restoreLocalVec(local)
+    subdm.restoreGlobalVec(glob)
+    from mpi4py import MPI
+    assert uw.mpi.comm.allreduce(gap, op=MPI.MAX) == 0.0
