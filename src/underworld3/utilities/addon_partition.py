@@ -368,15 +368,17 @@ def _parent_cells_local(coarse, fine):
     from underworld3.utilities.fault_mg import (locate_in_cells_exhaustive,
                                                 reference_vertices)
     comm = fine.dm.getComm().tompi4py()
-    fcent, _vf, cvf = _cell_centroids(fine)
     reference = reference_vertices(fine, coarse)
-    _cc, vxy_c, cv_c = _cell_centroids(coarse)
-    n_f, n_c = cvf.shape[0], cv_c.shape[0]
-    cell = np.full(n_f, -1, dtype=np.int64)
-    # A rank-local failure is raised on every rank (#874): a rank that raised
-    # alone left the others waiting in the allreduce below.
+    n_f = n_c = 0
+    cell = np.zeros(0, dtype=np.int64)
+    # Every rank-local step, the cell tables included, is under the guard, and
+    # a failure is raised on every rank together (#874).
     problem = None
     try:
+        fcent, _vf, cvf = _cell_centroids(fine)
+        _cc, vxy_c, cv_c = _cell_centroids(coarse)
+        n_f, n_c = cvf.shape[0], cv_c.shape[0]
+        cell = np.full(n_f, -1, dtype=np.int64)
         if reference is not None:
             fcent = reference[cvf].mean(axis=1)
         if n_f and n_c:
