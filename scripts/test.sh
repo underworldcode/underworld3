@@ -620,6 +620,11 @@ if [ $PARALLEL_RANKS -gt 0 ] && shard_owns 4; then
     # from np 3 (at np 2 it would leave one rank holding every cell), so np 3 always.
     OMPI_MCA_rmaps_base_oversubscribe=1 $SUPERVISE mpirun -n 3 python -m pytest --with-mpi \
       tests/parallel/test_1074_free_surface_on_an_empty_rank_parallel.py || status=1
+    # Integration-point variables on a rank without cells: at two ranks the
+    # fixture keeps a rank empty only with a one-cell mesh, so the case of two
+    # populated ranks beside an empty one runs at np 3 always.
+    OMPI_MCA_rmaps_base_oversubscribe=1 $SUPERVISE mpirun -n 3 python -m pytest --with-mpi \
+      tests/parallel/test_1222_integration_point_variable_on_an_empty_rank_parallel.py || status=1
 
     # Four ranks give a rank that shares an interface vertex and holds none of the
     # interface's facets, which the pressure split must still be told about: with
