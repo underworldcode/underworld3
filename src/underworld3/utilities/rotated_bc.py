@@ -2512,7 +2512,7 @@ def _build_rotated_custom_Pl(solver, Q, normal_rows):
         from underworld3.utilities.fault_mg import record_repairs, restrict_unreached
         repairs = []
         Pl = restrict_unreached(Pl, solver.dm.comm, repairs)
-        record_repairs(solver, repairs)
+        record_repairs(solver, repairs, h)
         rows = getattr(h, "level_patch_rows", None)
         if rows is not None:
             h.level_patch_rows = [None] * (len(rows) - 1) + [rows[-1]]

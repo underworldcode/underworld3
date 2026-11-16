@@ -60,9 +60,31 @@ def test_a_cut_of_a_moved_child_solves(axis, amplitude):
     assert s.snes.getConvergedReason() > 0
     its = max(s._rotated_freeslip_info["vel_its_last"])
     if (axis, amplitude) == (1, 0.002):
-        assert its == 6, its
-    # the merge is reported as a build note, never as a preconditioner fallback
+        # the last velocity application's count. At np 4 it went from 6 to 7
+        # when every coarse fault copy got a fine image (#1120); the total
+        # over the solve's 18 applications is 140 before and 142 after
+        assert its == (7 if uw.mpi.size == 4 else 6), its
+    # the repairs are reported as build notes, never as preconditioner fallbacks
     assert "custom_mg.dependent_columns" not in s.pc_fallbacks
-    merged = s.solve_report.config.get("multigrid_hierarchy")
-    if amplitude >= 0.005:
-        assert merged is not None and sum(merged["merged_coarse_unknowns"].values()) > 0, merged
+    note = s.solve_report.config.get("multigrid_hierarchy") or {}
+    merged = sum(note.get("merged_coarse_unknowns", {}).values())
+    unrepaired = sum(note.get("unrepaired_fault_copies", {}).values())
+    # Only the child moves here; the add-on levels stay where they were built.
+    # A small move leaves every coarse fault copy a fine image (#1120): nothing
+    # to merge and nothing left weak. Before #1120 its empty copies were merged
+    # (#1101), so a copy that loses its fine images again fails here.
+    if amplitude < 0.005:
+        assert merged == 0 and unrepaired == 0, note
+    else:
+        # the coarse levels do not follow a move this large, so some copies keep
+        # no fine image; the build must say so rather than pass in silence
+        assert unrepaired > 0, note
+    if (axis, amplitude) == (0, 0.005) and uw.mpi.size > 1:
+        # In parallel the recorded parent repairs every copy the merge used to
+        # take (4 merged unknowns before #1120). Not in serial: there the moved
+        # child is its own host and is nested on its as-built geometry, while
+        # in parallel the add-on partition's copy of it, made after the move,
+        # is nested where it stands. The repair then differs (serial here: 4
+        # merged, 7 unrepaired), which is required case 2a of the design note
+        # on coarse levels following the fine mesh, and goes when they do.
+        assert merged == 0, note
