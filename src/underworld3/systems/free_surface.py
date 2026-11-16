@@ -20,6 +20,11 @@ import warnings
 from mpi4py import MPI
 
 import underworld3 as uw
+
+
+def _global_abs_max(a):
+    """The largest |a| over every rank; a rank may hold none of ``a``."""
+    return uw.mpi.comm.allreduce(float(np.abs(a).max()) if np.size(a) else 0.0, op=MPI.MAX)
 from underworld3 import function
 from underworld3.function._function import diff_wrt_field
 from underworld3.coordinates import CoordinateSystemType
@@ -1011,9 +1016,18 @@ class FreeSurface:
         # edges, #432). Row identities survive deformation; matched once here.
         tree = uw.kdtree.KDTree(np.ascontiguousarray(self._carry.coords_nd))
         dist, rows = tree.query(np.ascontiguousarray(self._mesh_coords_nd()), k=1)
+        # Every rank reads the displacement the same way, so they agree on it:
+        # the direct read holds where every rank's nodes coincide, and a rank
+        # that holds no nodes has nothing against it.
+        # TODO(BUG): the carrier and the mesh coordinates are both P1 on the
+        # same DM, so whether their nodes coincide is topological (the
+        # sections' offsets); this absolute 1e-12 in model units is a stand-in
+        # for that (Charter section 12).
+        dist = np.asarray(dist).ravel()
+        coincide = uw.mpi.comm.allreduce(
+            bool(dist.size == 0 or float(dist.max()) < 1.0e-12), op=MPI.LAND)
         self._carry_rows_at_mesh_nodes = (
-            np.asarray(rows).flatten()
-            if float(np.max(dist)) < 1.0e-12 else None)   # exotic geometry: fall back
+            np.asarray(rows).flatten() if coincide else None)   # exotic geometry: fall back
         self._base = self._opposite_boundary()
         self._diffuser.add_essential_bc(self._carry_bc.sym, self.surface)
         if self._base is not None:
@@ -1494,8 +1508,7 @@ class FreeSurface:
             dt_advect = self._velocity_cfl()
         dt_advect *= float(advect_scale)
         u_n = self._surface_normal_velocity()
-        speed = uw.mpi.comm.allreduce(float(np.abs(u_n).max()) if u_n.size else 0.0,
-                                      op=MPI.MAX)
+        speed = _global_abs_max(u_n)
         h_cell = self.mesh.get_min_radius()
         dt_surface = np.inf if speed == 0.0 else self.max_surface_cfl * h_cell / speed
         return float(min(dt_advect, dt_surface))
@@ -1586,10 +1599,8 @@ class FreeSurface:
             # the viscosity are built from).
             self._sync_swarm_after_deform()
         if self.verbose:
-            uw.pprint(
-                f"FreeSurface: |increment|={np.abs(increment).max():.3e} "
-                f"h_max={np.abs(shape_new).max():.3e}"
-            )
+            uw.pprint(f"FreeSurface: |increment|={_global_abs_max(increment):.3e} "
+                      f"h_max={_global_abs_max(shape_new):.3e}")
 
     # -- step internals -------------------------------------------------------
 
@@ -1755,12 +1766,11 @@ class FreeSurface:
         h_inf_up = self._ring_scatter(self._launch_interp(s, hinf_g, s_dep, period))
         u_n_up = self._ring_scatter(self._launch_interp(s, un_g, s_dep, period))
         if self.verbose:
-            comm = uw.mpi.comm
-            h_scale = comm.allreduce(float(np.abs(shape).max() if shape.size else 0.0), op=MPI.MAX) + 1e-300
-            u_scale = comm.allreduce(float(np.abs(u_n).max() if u_n.size else 0.0), op=MPI.MAX) + 1e-300
-            dshape = comm.allreduce(float(np.abs(shape_up - shape).max() if shape.size else 0.0), op=MPI.MAX)
-            dhinf = comm.allreduce(float(np.abs(h_inf_up - h_inf).max() if shape.size else 0.0), op=MPI.MAX)
-            dun = comm.allreduce(float(np.abs(u_n_up - u_n).max() if u_n.size else 0.0), op=MPI.MAX)
+            h_scale = _global_abs_max(shape) + 1e-300
+            u_scale = _global_abs_max(u_n) + 1e-300
+            dshape = _global_abs_max(shape_up - shape)
+            dhinf = _global_abs_max(h_inf_up - h_inf)
+            dun = _global_abs_max(u_n_up - u_n)
             uw.pprint("FreeSurface tangential correction: "
                       f"shape {dshape / h_scale:.2e}, h_inf {dhinf / h_scale:.2e}, "
                       f"u_n {dun / u_scale:.2e}  (relative)")

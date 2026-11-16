@@ -614,6 +614,10 @@ if [ $PARALLEL_RANKS -gt 0 ] && shard_owns 4; then
     # empty does so from np 3 (at np 2 the test skips), so it runs at np 3 always.
     OMPI_MCA_rmaps_base_oversubscribe=1 $SUPERVISE mpirun -n 3 python -m pytest --with-mpi \
       tests/parallel/test_1189_adapt_nvb_rank_without_cells_parallel.py || status=1
+    # A free surface with a rank without cells: the shell partition empties a rank
+    # from np 3 (at np 2 it would leave one rank holding every cell), so np 3 always.
+    OMPI_MCA_rmaps_base_oversubscribe=1 $SUPERVISE mpirun -n 3 python -m pytest --with-mpi \
+      tests/parallel/test_1074_free_surface_on_an_empty_rank_parallel.py || status=1
 
     # Four ranks give a rank that shares an interface vertex and holds none of the
     # interface's facets, which the pressure split must still be told about: with
