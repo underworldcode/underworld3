@@ -146,3 +146,61 @@ def test_log_conformation_history_follows_the_recurrence(transport, integrator):
     (xy, xy_exact), (n1, n1_exact) = _shear_startup(transport, integrator)
     assert abs(xy - xy_exact) < 1.0e-5 * abs(xy_exact), (transport, integrator, xy, xy_exact)
     assert abs(n1 - n1_exact) < 1.0e-5 * abs(n1_exact), (transport, integrator, n1, n1_exact)
+
+
+def _shear_box(speed, tag):
+    """A Maxwell shear box with a log-conformation history; its stress is uniform."""
+    mesh = uw.meshing.StructuredQuadBox(elementRes=(4, 2), minCoords=(-1.0, -0.5),
+                                        maxCoords=(1.0, 0.5))
+    v = uw.discretisation.MeshVariable(f"U1065{tag}", mesh, mesh.dim, degree=2)
+    p = uw.discretisation.MeshVariable(f"P1065{tag}", mesh, 1, degree=1)
+    stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p, verbose=False)
+    stokes.constitutive_model = uw.constitutive_models.ViscoElasticPlasticFlowModel(
+        stokes.Unknowns, order=1, integrator="etd", objective_rate="upper_convected",
+        stress_history="log_conformation")
+    cm = stokes.constitutive_model
+    cm.Parameters.shear_viscosity_0 = 1.0
+    cm.Parameters.shear_modulus = 1.0
+    cm.Parameters.dt_elastic = 0.1
+    stokes.add_dirichlet_bc((speed, 0.0), "Top")
+    stokes.add_dirichlet_bc((-speed, 0.0), "Bottom")
+    stokes.add_dirichlet_bc((sympy.oo, 0.0), "Left")
+    stokes.add_dirichlet_bc((sympy.oo, 0.0), "Right")
+    stokes.tolerance = 1.0e-8
+    return mesh, stokes
+
+
+def test_the_decoded_stress_is_the_carried_stress():
+    """``Stokes.tau`` decodes a log-conformation history by projecting the
+    carried stress G (exp(psi*) - I) onto a tensor variable of the history's
+    degree. Tensor_Projection built its scalar work variable at degree 2
+    whatever the tensor's degree, so on this degree-1 history the copy between
+    them raised ("could not broadcast ... (15,) into (45,)"). The stress here is
+    uniform, so the projection is exact."""
+    mesh, stokes = _shear_box(0.5, "one")
+    stokes.solve(timestep=0.1)
+    origin = np.array([[0.0, 0.0]])
+    decoded = stokes.tau
+    carried = stokes.constitutive_model._carried_stress_sym(0)
+    for i, j in ((0, 0), (0, 1), (1, 1)):
+        got = float(np.asarray(uw.function.evaluate(decoded.sym[i, j], origin)).ravel()[0])
+        want = float(np.asarray(uw.function.evaluate(carried[i, j], origin)).ravel()[0])
+        assert got == pytest.approx(want, rel=1e-8, abs=1e-12)
+    assert abs(float(np.asarray(uw.function.evaluate(decoded.sym[0, 1], origin)).ravel()[0])) > 1e-3
+
+
+def test_tensor_projection_works_on_a_degree_one_tensor():
+    """Each component is copied into the scalar work variable and back node
+    for node, so the work variable takes the tensor's degree. A linear tensor
+    field projects onto degree 1 exactly."""
+    mesh = uw.meshing.StructuredQuadBox(elementRes=(4, 4))
+    t = uw.discretisation.MeshVariable("t1065", mesh, (2, 2), vtype=uw.VarType.SYM_TENSOR, degree=1)
+    projection = uw.systems.Tensor_Projection(mesh, t)
+    x, y = mesh.X
+    projection.uw_function = sympy.Matrix([[1 + x, y], [y, 2 - x]])
+    projection.smoothing = 0.0
+    projection.tolerance = 1.0e-12
+    projection.solve()
+    X = np.asarray(t.coords)
+    np.testing.assert_allclose(np.asarray(t.array)[:, 0, 1], X[:, 1], atol=1e-10)
+    np.testing.assert_allclose(np.asarray(t.array)[:, 0, 0], 1 + X[:, 0], atol=1e-10)
