@@ -2187,6 +2187,9 @@ class CustomMGHierarchy:
         self.patch_summary = None
         # per level, the parallel cell-located transfer's hit-rate record
         self.level_transfer_stats = [None] * nlev
+        # per level, what the split-level transfer's fault-copy repair did
+        # (fault_mg.last_parent_rows, #1120); None where it did not run
+        self.level_parent_rows = [None] * nlev
         comm = solver.dm.comm
         # TODO(MEASURE): the env flag is an A/B affordance for the #629 campaign;
         # remove when settled. A move since the patch was built kills it, or on a
@@ -2233,6 +2236,7 @@ class CustomMGHierarchy:
             if self.has_split_levels and (
                     fault_mg.is_split_level(self.level_meshes[l - 1])
                     or fault_mg.is_split_level(self.level_meshes[l])):
+                fault_mg.last_parent_rows = None
                 if pre is not None:
                     P = provenance_transfer()
                 elif parallel:
@@ -2249,6 +2253,7 @@ class CustomMGHierarchy:
                         fine_vertices=built_vertices[l])
                     P = _to_petsc_aij(
                         _reduced_from_node_transfer(Pn, maps[l - 1], maps[l], nc))
+                self.level_parent_rows[l] = fault_mg.last_parent_rows
                 Ps.append(P)
                 continue
             if parallel:
@@ -2657,7 +2662,7 @@ class CustomMGHierarchy:
             from underworld3.utilities.fault_mg import record_repairs, restrict_unreached
             repairs = []
             restricted = restrict_unreached(Ps, solver.dm.comm, repairs)
-            record_repairs(solver, repairs)
+            record_repairs(solver, repairs, self)
             if patch_rows is not None:
                 patch_rows = [
                     None if level < len(Ps)

@@ -2236,8 +2236,15 @@ class SurfaceCollection:
         ... )
     """
 
+    # Collections are numbered in creation order, the same on every rank; the
+    # number names the mesh variables a collection makes by default, so two
+    # collections on one mesh do not share them.
+    _instances = 0
+
     def __init__(self):
         """Create an empty surface collection."""
+        self._number = SurfaceCollection._instances
+        SurfaceCollection._instances += 1
         self.surfaces: Dict[str, Surface] = {}
         self._distance_var: Optional[uw.discretisation.MeshVariable] = None
         self._distance_stale = True
@@ -2316,14 +2323,15 @@ class SurfaceCollection:
         self,
         mesh: "Mesh",
         distance_var: "MeshVariable" = None,
-        variable_name: str = "surface_distance",
+        variable_name: str = None,
     ) -> "MeshVariable":
         """Compute minimum distance from mesh points to any surface.
 
         Args:
             mesh: The mesh to compute distances on
             distance_var: Optional existing MeshVariable to store results
-            variable_name: Name for new variable if distance_var is None
+            variable_name: Name for new variable if distance_var is None;
+                by default ``surface_distance_<n>``, numbered for this collection
 
         Returns:
             MeshVariable with distance values (scalar)
@@ -2345,7 +2353,8 @@ class SurfaceCollection:
         if distance_var is None:
             if self._distance_var is None or self._distance_stale:
                 self._distance_var = uw.discretisation.MeshVariable(
-                    variable_name, mesh, 1, degree=mesh.degree
+                    variable_name or f"surface_distance_{self._number}", mesh, 1,
+                    degree=mesh.degree
                 )
             distance_var = self._distance_var
 
@@ -2377,7 +2386,7 @@ class SurfaceCollection:
         mesh: "Mesh",
         coords: np.ndarray = None,
         normal_var: "MeshVariable" = None,
-        variable_name: str = "surface_normals",
+        variable_name: str = None,
     ) -> "MeshVariable":
         """Transfer surface normals to mesh points via nearest-neighbor.
 
@@ -2389,7 +2398,8 @@ class SurfaceCollection:
             coords: Optional coordinates to query. If None, uses the mesh's
                 own vertex coordinates (model space)
             normal_var: Optional existing MeshVariable
-            variable_name: Name for new variable
+            variable_name: Name for new variable; by default
+                ``surface_normals_<n>``, numbered for this collection
 
         Returns:
             MeshVariable with normal vectors (``mesh.cdim`` components)
@@ -2415,7 +2425,7 @@ class SurfaceCollection:
         cdim = mesh.cdim
         if normal_var is None:
             normal_var = uw.discretisation.MeshVariable(
-                variable_name, mesh, cdim, degree=mesh.degree
+                variable_name or f"surface_normals_{self._number}", mesh, cdim, degree=mesh.degree
             )
 
         # The nearest SURFACE by its exact distance, then that surface's
@@ -2489,7 +2499,7 @@ class SurfaceCollection:
         h_far,
         width=None,
         profile: str = "linear",
-        variable_name: str = "fault_metric",
+        variable_name: str = None,
     ) -> "MeshVariable":
         r"""Create a combined refinement metric for mesh adaptation.
 
@@ -2512,8 +2522,9 @@ class SurfaceCollection:
         profile : str
             ``"linear"``, ``"smoothstep"``, ``"gaussian"``, or
             ``"hyperbolic"``.
-        variable_name : str
-            Name for the metric MeshVariable.
+        variable_name : str, optional
+            Name for the metric MeshVariable; by default ``fault_metric_<n>``,
+            numbered for this collection.
 
         Returns
         -------
@@ -2527,7 +2538,8 @@ class SurfaceCollection:
         # Compute (or reuse) the collection-wide minimum unsigned distance
         distance_var = self.compute_distance_field(mesh)
 
-        metric = uw.discretisation.MeshVariable(variable_name, mesh, 1, degree=1)
+        metric = uw.discretisation.MeshVariable(
+            variable_name or f"fault_metric_{self._number}", mesh, 1, degree=1)
 
         dist_values = np.abs(distance_var.data[:, 0])
         h_values = _profile_to_edge_lengths(dist_values, h_near, h_far, width, profile)
@@ -2539,10 +2551,10 @@ class SurfaceCollection:
         self,
         mesh: "Mesh",
         fault_width=None,
-        normal_var_name: str = "fault_n",
-        id_var_name: str = "fault_id",
-        distance_var_name: str = "d_faults",
-        weight_var_name: str = "fault_w",
+        normal_var_name: str = None,
+        id_var_name: str = None,
+        distance_var_name: str = None,
+        weight_var_name: str = None,
     ) -> dict:
         """Compute per-node nearest-surface fields for rheology.
 
@@ -2564,8 +2576,10 @@ class SurfaceCollection:
         fault_width : float or quantity, optional
             Gaussian half-width for the weight field.  If ``None``, the
             weight field is omitted from the returned dict.
-        normal_var_name, id_var_name, distance_var_name, weight_var_name : str
-            Names for the output MeshVariables.
+        normal_var_name, id_var_name, distance_var_name, weight_var_name : str, optional
+            Names for the output MeshVariables. By default ``fault_n_<n>``,
+            ``fault_id_<n>``, ``d_faults_<n>`` and ``fault_w_<n>``, numbered for
+            this collection so that two collections on one mesh do not share them.
 
         Returns
         -------
@@ -2611,11 +2625,11 @@ class SurfaceCollection:
         # --- Create output MeshVariables ---
         dim = mesh.dim
         fault_normal = uw.discretisation.MeshVariable(
-            normal_var_name, mesh, dim, degree=1,
+            normal_var_name or f"fault_n_{self._number}", mesh, dim, degree=1,
             varsymbol=r"\hat{\mathbf{n}}_f",
         )
         fault_id_var = uw.discretisation.MeshVariable(
-            id_var_name, mesh, 1, degree=1,
+            id_var_name or f"fault_id_{self._number}", mesh, 1, degree=1,
             varsymbol=r"f_{id}",
         )
 
@@ -2625,7 +2639,7 @@ class SurfaceCollection:
 
         # --- Distance field (reuse collection's cached distance) ---
         distance_var = self.compute_distance_field(
-            mesh, variable_name=distance_var_name,
+            mesh, variable_name=distance_var_name or f"d_faults_{self._number}",
         )
 
         result = {
@@ -2640,7 +2654,7 @@ class SurfaceCollection:
             dist_values = np.abs(distance_var.data[:, 0])
 
             weight_var = uw.discretisation.MeshVariable(
-                weight_var_name, mesh, 1, degree=1,
+                weight_var_name or f"fault_w_{self._number}", mesh, 1, degree=1,
                 varsymbol=r"w_f",
             )
             weight_var.data[:, 0] = np.exp(-0.5 * (dist_values / fw_nd) ** 2)
