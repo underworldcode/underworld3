@@ -598,6 +598,12 @@ if [ $PARALLEL_RANKS -gt 0 ] && shard_owns 4; then
     OMPI_MCA_rmaps_base_oversubscribe=1 $SUPERVISE mpirun -n 3 python -m pytest --with-mpi \
       tests/parallel/test_1084_rotated_datum_collectives.py || status=1
 
+    # An internal boundary's facet on a partition seam once took a normal at
+    # three ranks and more, never at two (seeds 1 to 12 measured): this file
+    # runs at np 3 always (#1135).
+    OMPI_MCA_rmaps_base_oversubscribe=1 $SUPERVISE mpirun -n 3 python -m pytest --with-mpi \
+      tests/parallel/test_1135_internal_boundary_normal_on_a_seam_parallel.py || status=1
+
     # At two ranks the triangle of cells in this file is skipped (one cell, nothing
     # to solve for), so the solve on it with a rank without cells runs at np 3 always.
     OMPI_MCA_rmaps_base_oversubscribe=1 $SUPERVISE mpirun -n 3 python -m pytest --with-mpi \

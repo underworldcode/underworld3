@@ -3944,6 +3944,10 @@ class Mesh(Stateful, uw_object):
         # spherical shell in SERIAL — see :meth:`boundary_normal`. It also cannot
         # be made to agree across ranks, because each rank's tree is built from
         # its own local coordinates.)
+        # A facet on a partition seam lies between two ranks' cells: interior,
+        # even where this rank holds only one of them. Read on every rank,
+        # before the rank-local walk, since it is collective (#1135).
+        seam = self._seam_points()
         indexset, subdm = dm.createSubDM(var.field_id)
         try:
             try:
@@ -3957,6 +3961,14 @@ class Mesh(Stateful, uw_object):
                     # requested for an INTERNAL boundary comes back zero.
                     # (rotated_bc keeps the raw PETSc normal there instead;
                     # neither is a supported use of this routine today.)
+                    # In parallel an internal boundary's facet on a seam has one
+                    # LOCAL cell, so ``exterior`` alone took it for an outer
+                    # facet: an Internal surface then claimed the vertices where
+                    # it meets the walls on that rank, and the slip normal there
+                    # was refused (#1135). The seam test is topological, from
+                    # the point star forest.
+                    if int(f) in seam:
+                        continue
                     measure, nrm, exterior = facet_measure_and_normal(dm, f)
                     if not exterior:
                         continue
@@ -4663,6 +4675,22 @@ class Mesh(Stateful, uw_object):
             numpy.asarray(coords, dtype=float),
             numpy.asarray(reference, dtype=float))
 
+    def _seam_points(self):
+        """The mesh points this rank shares with another through the point star
+        forest: a leaf here, or a root with leaves elsewhere. A facet among them
+        lies between two ranks' cells, so it is interior to the mesh even when
+        this rank holds only one of its cells. Empty in serial. Collective (the
+        root degrees are an SF reduction)."""
+        dm = self.dm
+        if dm.getComm().getSize() == 1:
+            return set()
+        sf = dm.getPointSF()
+        _nroots, leaves, _remote = sf.getGraph()
+        degree = numpy.asarray(sf.computeDegree())               # collective
+        shared = set(int(p) for p in (leaves if leaves is not None else []))
+        shared.update(int(p) for p in numpy.flatnonzero(degree > 0))
+        return shared
+
     def _drop_seam_facets(self, facets):
         """``facets`` without those on a partition seam. Collective.
 
@@ -4676,11 +4704,7 @@ class Mesh(Stateful, uw_object):
         the mesh point, not coordinates: a split fault's Plus and Minus
         replicas coincide by design, and a coordinate key dropped both."""
         dm = self.dm
-        sf = dm.getPointSF()
-        _nroots, leaves, _remote = sf.getGraph()
-        degree = numpy.asarray(sf.computeDegree())               # collective
-        shared = set(int(p) for p in (leaves if leaves is not None else []))
-        shared.update(int(p) for p in numpy.flatnonzero(degree > 0))
+        shared = self._seam_points()                             # collective
         if facets is None or not len(facets):
             return facets
         vS = dm.getDepthStratum(0)[0]
