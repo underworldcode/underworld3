@@ -10,7 +10,7 @@ contains it, or when development's face tolerance near the boundary claims it.
 
 The truth is a brute-force barycentric test over every local cell, in numpy.
 
-    python scripts/mpi_supervisor.py --silence 300 -- mpirun -n 2 python -m pytest --with-mpi tests/parallel/test_1209_points_in_domain_exact_parallel.py
+    python scripts/mpi_supervisor.py --silence 300 -- mpirun -n 2 python -m pytest --with-mpi tests/parallel/test_1213_points_in_domain_exact_parallel.py
 """
 import numpy as np
 import pytest
