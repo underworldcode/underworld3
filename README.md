@@ -141,3 +141,9 @@ There is a [publication in the Journal of Open Source Software](https://joss.the
 ([doi:10.21105/joss.07831](https://doi.org/10.21105/joss.07831)) that can be cited when using the software. 
 
 [![status](https://joss.theoj.org/papers/4f7a1ed76bde560968c246fa8eff778d/status.svg)](https://joss.theoj.org/papers/4f7a1ed76bde560968c246fa8eff778d)
+
+## Acknowledgements
+
+The Underworld project is supported by AuScope and the Australian Government through the National Collaborative Research Infrastructure Strategy (NCRIS).
+
+This research was supported by the Australian Government's National Collaborative Research Infrastructure Strategy (NCRIS), with access to computational resources provided by the National Computational Infrastructure (NCI Australia) through the National Computational Merit Allocation Scheme and the ANU Merit Allocation Scheme (2025 and 2026 allocations).
