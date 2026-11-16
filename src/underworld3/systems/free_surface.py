@@ -968,9 +968,14 @@ class FreeSurface:
         # edges, #432). Row identities survive deformation; matched once here.
         tree = uw.kdtree.KDTree(np.ascontiguousarray(self._carry.coords))
         dist, rows = tree.query(np.ascontiguousarray(self.mesh.X.coords), k=1)
+        # Every rank reads the displacement the same way, so they agree on it:
+        # the direct read holds where every rank's nodes coincide, and a rank
+        # that holds no nodes has nothing against it.
+        dist = np.asarray(dist).ravel()
+        coincide = uw.mpi.comm.allreduce(
+            bool(dist.size == 0 or float(dist.max()) < 1.0e-12), op=uw.MPI.LAND)
         self._carry_rows_at_mesh_nodes = (
-            np.asarray(rows).flatten()
-            if float(np.max(dist)) < 1.0e-12 else None)   # exotic geometry: fall back
+            np.asarray(rows).flatten() if coincide else None)   # exotic geometry: fall back
         self._base = self._opposite_boundary()
         self._diffuser.add_essential_bc(self._carry_bc.sym, self.surface)
         if self._base is not None:
@@ -1540,10 +1545,11 @@ class FreeSurface:
             # the viscosity are built from).
             self._sync_swarm_after_deform()
         if self.verbose:
-            uw.pprint(
-                f"FreeSurface: |increment|={np.abs(increment).max():.3e} "
-                f"h_max={np.abs(shape_new).max():.3e}"
-            )
+            # over every rank's surface nodes; a rank may hold none
+            largest = lambda a: uw.mpi.comm.allreduce(
+                float(np.abs(a).max()) if np.size(a) else 0.0, op=uw.MPI.MAX)
+            increment_max, shape_max = largest(increment), largest(shape_new)
+            uw.pprint(f"FreeSurface: |increment|={increment_max:.3e} h_max={shape_max:.3e}")
 
     # -- step internals -------------------------------------------------------
 
