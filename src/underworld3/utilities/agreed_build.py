@@ -16,7 +16,9 @@ the verdict communicator (so it cannot pair with the build's own collectives),
 and the messages gathered only on a failure. Every rank raises the class and
 the message of the first failing rank. Builds are WORLD-collective: the verdict
 communicator duplicates the world, as every solver's communicator in the
-library is.
+library is. The error class a verdict carries must be importable at module
+level (it is pickled by reference through the allgather): a local or nested
+class cannot be sent.
 
 :func:`agree` makes one: it is placed before every collective of the build that
 cannot itself agree (a PETSc collective, a mesh method that is collective
@@ -85,8 +87,14 @@ class agreed_build:
             return False
         if getattr(err, "agreed", False) or not issubclass(kind, Exception):
             return False               # already agreed on every rank, or an interrupt
+        # An error that already says whether another builder could change it
+        # (a CollectiveBuildError from a check on allreduced counts, raised on
+        # every rank but not through an agreement point) keeps its own verdict:
+        # forcing builder_failure=True onto a check that said False would
+        # trigger a futile rebuild before degrading (H1, round 3)
+        builder_failure = getattr(err, "builder_failure", self.builder_failure)
         try:
-            _raise_agreed(f"{self.what}: {kind.__name__}: {err}", self.builder_failure)
+            _raise_agreed(f"{self.what}: {kind.__name__}: {err}", builder_failure)
         except Exception as agreed:
             raise agreed from err
         return False

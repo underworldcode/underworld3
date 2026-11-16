@@ -37,7 +37,7 @@ A, B = np.array([0.30, 0.45]), np.array([0.70, 0.55])
 N_RUNGS = 80
 
 
-def _ribbon_solve(empty_last_rank=False, explicit=True):
+def _ribbon_solve(empty_last_rank=False, explicit=True, bodyforce=(0.0, 0.0)):
     """A placed fault ribbon with the custom hierarchy set, whose finest level
     carries the structural FAC patch (the fixture of test_1147, one fault)."""
     S = float(np.linalg.norm(B - A)) / N_RUNGS
@@ -78,7 +78,7 @@ def _ribbon_solve(empty_last_rank=False, explicit=True):
     stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
     stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
     stokes.constitutive_model.Parameters.shear_viscosity_0 = 1.0
-    stokes.bodyforce = [0.0, 0.0]
+    stokes.bodyforce = list(bodyforce)
     for wall in ("Bottom", "Top", "Left", "Right"):
         stokes.add_dirichlet_bc((y - 0.5, 0.0), wall)
     stokes.add_fault_bc(0, boundary="Fault")
@@ -299,9 +299,14 @@ def test_a_failure_inside_the_build_takes_the_rbf_retry(monkeypatch):
     monkeypatch.setattr(custom_mg, "_patch_links", failing_once)
     # the mesh-owned hierarchy (no set_custom_fmg): an explicit registration
     # surfaces a build error by design, the automatic pickup retries
+    # a body force, so the retried hierarchy has work to do (H1, round 3: the
+    # walls' shear alone converged at the first iteration)
     with pytest.warns(UserWarning, match="retrying with the 'rbf' builder"):
-        stokes = _ribbon_solve(explicit=False)
-    assert stokes.snes.getConvergedReason() > 0 or stokes._rotated_freeslip_info is None
+        stokes = _ribbon_solve(explicit=False, bodyforce=(0.0, -1.0))
+    assert stokes.snes.getConvergedReason() > 0
+    # the fault takes the rotated path, whose own KSP the solver reports
+    info = stokes._rotated_freeslip_info
+    assert info is not None and max(info["vel_its_last"]) > 0, info
     record = stokes.pc_fallbacks.get("custom_mg.transfer_builder")
     assert record is not None and "Once in the build" in record["detail"], record
 
@@ -364,10 +369,11 @@ def test_two_kinds_of_verdict_that_pair_are_refused_on_every_rank():
         else:
             uw.mpi.first_verdict(None, site="snapshot._agreed_problem")
     except RuntimeError as err:
-        caught = str(err).split(" (rank")[0]
+        caught = str(err)
     messages = uw.mpi.comm.allgather(caught)
     assert all(m is not None and "verdict exchange mismatch" in m for m in messages), messages
-    assert len(set(messages)) == 1, messages
+    # one text on every rank, carrying the failing rank's message
+    assert len(set(messages)) == 1 and "a failure" in messages[0], messages
 
 
 def test_reraise_agreed_passes_only_agreed_errors():
@@ -378,3 +384,21 @@ def test_reraise_agreed_passes_only_agreed_errors():
     agreed.agreed = True
     with pytest.raises(CollectiveBuildError):
         reraise_agreed(agreed)
+
+
+def test_an_all_rank_check_keeps_its_own_builder_failure():
+    """A CollectiveBuildError every rank raises from a check on agreed counts
+    (not through an agreement point) keeps builder_failure=False through the
+    context's exit: a check another builder cannot change must not trigger an
+    RBF rebuild (H1, round 3)."""
+    from underworld3.utilities.agreed_build import agreed_build
+    caught = None
+    try:
+        with agreed_build("a check"):
+            raise CollectiveBuildError("counts disagree", builder_failure=False)
+    except CollectiveBuildError as err:
+        caught = (str(err), err.builder_failure)
+    gathered = uw.mpi.comm.allgather(caught)
+    assert all(g is not None and g[1] is False and "counts disagree" in g[0]
+               for g in gathered), gathered
+    assert len(set(gathered)) == 1, gathered

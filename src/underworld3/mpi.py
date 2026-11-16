@@ -96,8 +96,12 @@ def first_verdict(message, *, site, error=RuntimeError, kwargs=None):
     A healthy path pays the small allreduce alone. When it is set, every rank
     sends its envelope, healthy ones too, with their ``site``; if two kinds of
     exchange have paired (a rank at one site, another at a different one),
-    every rank raises the same mismatch error naming both, rather than reading
-    one site's payload as another's (#874, H1's review of #1218)."""
+    every rank raises the same mismatch error naming both, with the first
+    failing rank's message, rather than reading one site's payload as
+    another's (#874, H1's review of #1218).
+
+    ``error`` must be importable at module level: the envelope is pickled
+    through the allgather, and a class is pickled by reference."""
     mine = Verdict(message, error, kwargs, site)
     if size == 1:
         return mine if message is not None else None
@@ -105,12 +109,15 @@ def first_verdict(message, *, site, error=RuntimeError, kwargs=None):
         return None
     every = verdict_comm.allgather(mine)
     sites = sorted({v.site for v in every})
+    first = next(v for v in every if v.message is not None)
     if len(sites) > 1:
+        # the same text on every rank, with the failing rank's message
+        failing = next(r for r, v in enumerate(every) if v.message is not None)
         raise RuntimeError(
             f"verdict exchange mismatch: ranks paired at different kinds of "
-            f"agreement point {sites}; the collective path has parted "
-            f"(rank {rank} was at {site!r})")
-    return next(v for v in every if v.message is not None)
+            f"agreement point {sites}; the collective path has parted. The "
+            f"first failure (rank {failing}, at {first.site!r}): {first.message}")
+    return first
 
 
 # State tracking for selective execution
