@@ -3,8 +3,9 @@
 ``UWexpression.units`` asked ``hasattr(self._sym, 'units')`` and then read
 ``self._sym.units``: two evaluations of the inner expression's property per
 level, so ``uw.get_units`` doubled with each level of nesting (1.0 s at depth
-20). ``dimensionality`` had the same pattern. The test counts the property's
-calls rather than timing them.
+20). ``dimensionality``, ``value``, ``data``, ``is_extended_real`` and
+``is_finite`` had the same pattern (9.7 s at depth 20 for ``is_extended_real``).
+The test counts the properties' calls rather than timing them.
 """
 import pytest
 
@@ -23,7 +24,8 @@ def test_units_of_a_nested_expression_visit_each_level_once(monkeypatch):
     for k in range(depth):
         e = uw.expression(rf"n_{{1080,{k}}}", e, "nested")
 
-    calls = {"units": 0, "dimensionality": 0}
+    calls = {"units": 0, "dimensionality": 0, "value": 0, "data": 0,
+             "is_extended_real": 0, "is_finite": 0}
     for name in calls:
         prop = getattr(UWexpression, name)
 
@@ -33,7 +35,7 @@ def test_units_of_a_nested_expression_visit_each_level_once(monkeypatch):
 
         monkeypatch.setattr(UWexpression, name, property(counted))
 
-    e.units
-    e.dimensionality
-    assert calls["units"] <= 2 * depth, calls
-    assert calls["dimensionality"] <= 2 * depth, calls
+    for name in calls:
+        getattr(e, name)
+    for name, n in calls.items():
+        assert n <= 2 * depth, (name, calls)
