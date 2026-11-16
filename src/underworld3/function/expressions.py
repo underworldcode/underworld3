@@ -424,9 +424,16 @@ def extract_meshes(fn):
             if var is not None and hasattr(var, 'mesh') and var.mesh is not None:
                 meshes.add(var.mesh)
 
-    # Check coordinate base scalars (N.x, N.y, Gamma.x, etc.)
+    # Coordinates identify a mesh only as UWCoordinates (mesh.X). A raw coordinate
+    # BaseScalar is the same object for every mesh in effect: two meshes'
+    # coordinate systems are both "N" with equal arguments, so their raw scalars
+    # compare equal (#501), and an expression rebuilt on a second mesh can come
+    # back from SymPy's cache holding the first mesh's scalars. Their .mesh is
+    # whichever mesh made the cached object, not evidence of which mesh an
+    # expression belongs to.
+    from underworld3.coordinates import UWCoordinate
     for atom in fn.atoms(sympy.vector.scalar.BaseScalar):
-        if hasattr(atom, 'mesh'):
+        if isinstance(atom, UWCoordinate) and hasattr(atom, 'mesh'):
             meshes.add(atom.mesh)
 
     return meshes
