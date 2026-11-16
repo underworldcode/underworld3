@@ -8570,11 +8570,11 @@ class Mesh(Stateful, uw_object):
         if (
             not hasattr(self, "_domain_kdtree")
             or self._domain_kdtree is None
-            or getattr(self, "_domain_kdtree_version", -1) != self._mesh_version
+            or getattr(self, "_domain_kdtree_geometry_version", -1) != self._geometry_version
         ):
             centroids = self._get_domain_centroids()
             self._domain_kdtree = uw.kdtree.KDTree(centroids)
-            self._domain_kdtree_version = self._mesh_version
+            self._domain_kdtree_geometry_version = self._geometry_version
         return self._domain_kdtree
 
     @uw.collective_operation

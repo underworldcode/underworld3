@@ -102,6 +102,14 @@ SWEEP = {
         {"R0": 3.0, "eta": 0.25},
         {"U0": 1.3, "R0": 2.0, "eta": 0.7, "tip": (0.3, -0.2)},
     ],
+    # The default is a density sheet at r_int (a stress jump, no body force);
+    # the smooth radial density is the case that carries a body force.
+    "KramerSphericalStokes": [
+        {"density": "smooth"},
+        {"density": "smooth", "ell": 3, "m": 1, "k": 1, "normalization": "real_orthonormal"},
+        {"ell": 3, "m": 2, "boundary": "zero", "normalization": "real_orthonormal",
+         "component": "sin"},
+    ],
 }
 
 # Defaults first, then every off-default case.
@@ -217,6 +225,12 @@ FORCE_FREE = {"EllipticalInclusion", "FaultedMedium"}
 
 FORCED = [n for n in STOKES if n not in FORCE_FREE]
 
+# The case each forced solution flips: its defaults, except where the default
+# carries no body force. KramerSphericalStokes defaults to a density sheet,
+# whose load is a stress jump at r_int rather than a body force, so its smooth
+# radial density is flipped instead.
+FLIP_CASE = {"KramerSphericalStokes": {"density": "smooth"}}
+
 
 @pytest.mark.parametrize("name", FORCED)
 def test_flipping_the_body_force_breaks_the_momentum_balance(cache, meshes, name):
@@ -229,7 +243,7 @@ def test_flipping_the_body_force_breaks_the_momentum_balance(cache, meshes, name
     have no body force to flip — asserted below rather than skipped silently.
     """
 
-    sol = _built(cache, meshes, name, {})
+    sol = _built(cache, meshes, name, FLIP_CASE.get(name, {}))
     points = sol.sample_points(count=8)
 
     assert _validation.momentum_residual(sol, points) < 1.0e-8
