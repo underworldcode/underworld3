@@ -7683,7 +7683,9 @@ class Mesh(Stateful, uw_object):
             Coordinate array in any physical unit system (will be auto-converted).
             Plain numbers are assumed to be in model coordinates.
         strict_validation : bool
-            Whether to perform strict validation near boundaries
+            Whether to perform strict validation near boundaries. Only other
+            meshes read it: on a straight-sided simplex mesh the claim is
+            containment (or the face tolerance near the boundary) either way.
 
         """
         return self._classify_points_in_domain(points, strict_validation)[0]
@@ -7702,21 +7704,29 @@ class Mesh(Stateful, uw_object):
             Coordinate array in any physical unit system (will be
             auto-converted).
         strict_validation : bool
-            Whether to perform strict validation near boundaries.
+            Whether to perform strict validation near boundaries. Ignored on a
+            straight-sided simplex mesh, where the claim is containment either
+            way.
+        exact_location : bool
+            Evaluation's classification (passed by ``evaluate_nd``): on a
+            simplex mesh in serial, the face tolerance is tested against the
+            cell the walk left the mesh through.
 
         Returns
         -------
         in_or_not : numpy.ndarray of bool
             Exactly what :meth:`points_in_domain` returns.
         cells : numpy.ndarray of int
-            Owning cell for the points the classification actually located,
-            at the evaluation face tolerance (:meth:`_robust_owning_cells`).
-            ``-1`` everywhere else — for an EXTERIOR point that means "not in
-            the local mesh"; for an INTERIOR point it means "not looked up",
-            because the boundary-sign test settled it without a search. A
-            caller that needs a cell for every interior point locates the
-            ``-1`` entries itself, and only when it needs them: nothing here
-            searches on the classifier's behalf.
+            On a straight-sided simplex mesh, every point is located, so this
+            holds the owning cell of every claimed point (the containing cell,
+            or the one the face tolerance claimed it for) and ``-1`` exactly
+            where ``in_or_not`` is False; a caller need not locate those points
+            again. On other meshes, the owning cell for the points the
+            classification actually located, at the evaluation face tolerance
+            (:meth:`_robust_owning_cells`), and ``-1`` everywhere else: for an
+            EXTERIOR point that means "not in the local mesh"; for an INTERIOR
+            point it means "not looked up", because the boundary-sign test
+            settled it without a search.
         """
         # Convert points to model coordinates using the unified conversion function
         # This handles all coordinate formats: plain numbers, unit-aware coordinates, lists, tuples, arrays
