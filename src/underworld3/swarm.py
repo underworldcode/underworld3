@@ -256,19 +256,30 @@ def _validate_index_proxy_sampling(proxy_location, proxy_sampling):
     return proxy_sampling
 
 
-def _unshared_name(mesh, name, numbered, own=None):
-    """The name for a mesh variable a swarm variable owns: ``name``, unless a
-    variable of another owner already holds it on ``mesh``, then ``numbered``
-    (which carries the swarm's number). Two swarms on one mesh with variables
-    of the same name keep their proxies apart, and a single swarm keeps the
-    plain name. ``own`` is the variable's previous proxy, which may hold the
-    name. ``mesh.vars`` is the same on every rank, so the choice is too."""
-    import re
+def _unshared_name(mesh, name, numbered, owner):
+    """The name for a mesh variable that ``owner`` (a swarm variable) makes:
+    ``name``, unless a variable another owner made already holds it on
+    ``mesh``, then ``numbered`` (which carries the swarm's number). Two swarms
+    on one mesh with variables of the same name keep their proxies apart, and
+    a single swarm keeps the plain name, also when it comes back to a mesh it
+    held a proxy on. ``mesh.vars`` is the same on every rank, so the choice
+    is too."""
+    from underworld3.discretisation.discretisation_mesh_variables import _clean_name
 
-    held = mesh.vars.get(re.sub(r"[^a-zA-Z0-9_]", "", name))
-    if held is None or held is getattr(own, "_base_var", own):
+    held = mesh.vars.get(_clean_name(name))
+    if held is None:
+        return name
+    made_by = getattr(held, "_made_by_swarm_variable", None)
+    if made_by is not None and made_by() is owner:
         return name
     return numbered
+
+
+def _mark_made_by(variable, owner):
+    """Record on ``variable``'s base, which ``mesh.vars`` holds, the swarm
+    variable that made it (weakly: the mesh owns the variable)."""
+    base = getattr(variable, "_base_var", variable)
+    base._made_by_swarm_variable = weakref.ref(owner)
 
 
 class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object):
@@ -1360,7 +1371,7 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
         if self._proxy:
             proxy_name = _unshared_name(
                 self.swarm.mesh, "proxy_" + self.clean_name,
-                f"proxy_{self.swarm.instance_number}_{self.clean_name}", own=old_meshVar)
+                f"proxy_{self.swarm.instance_number}_{self.clean_name}", self)
 
             # REINIT policy: a swarm proxy is re-projected from the
             # *particles* on next access, so a mesh adapt should NOT
@@ -1414,6 +1425,7 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
                     # (issue #439). Stored data stays non-dimensional either way.
                     units=self._units,
                 )
+            _mark_made_by(self._meshVar, self)
             # The remesh helper calls this on REINIT vars after an
             # adapt. It holds the SwarmVariable weakly: the proxy's mesh
             # owns the proxy, and a strong capture made that mesh keep the
@@ -2818,9 +2830,11 @@ class IndexSwarmVariable(SwarmVariable):
         self._meshLevelSetVars = [None] * self.indices
 
         for i in range(indices):
+            # "_<swarm>_" keeps its trailing separator through cleaning, so the
+            # numbered names of different swarms and indices cannot coincide.
             lname = _unshared_name(
                 self.swarm.mesh, name + R"^{[" + str(i) + R"]}",
-                f"{name}_{self.swarm.instance_number}" + R"^{[" + str(i) + R"]}")
+                f"{name}_{self.swarm.instance_number}_" + R"^{[" + str(i) + R"]}", self)
             if proxy_location == "integration_points":
                 self._meshLevelSetVars[i] = uw.discretisation.IntegrationPointVariable(
                     lname, self.swarm.mesh,
@@ -2835,6 +2849,7 @@ class IndexSwarmVariable(SwarmVariable):
                     lname, self.swarm.mesh, num_components=1,
                     degree=proxy_degree, continuous=proxy_continuous,
                 )
+            _mark_made_by(self._meshLevelSetVars[i], self)
             self._MaskArray[0, i] = self._meshLevelSetVars[i].sym[0, 0]
 
         # Initialize lazy evaluation state

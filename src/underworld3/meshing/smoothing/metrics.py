@@ -469,8 +469,12 @@ def metric_density_from_gradient(
     pStart, pEnd = dm.getDepthStratum(0)
     cStart, cEnd = dm.getHeightStratum(0)
     tag = name or "mdg"
-    key = (id(mesh), int(degree), tag,
-           pEnd - pStart, cEnd - cStart)
+    # The same on every rank, so every rank hits or misses together: a miss
+    # builds projection solvers, which number themselves. The global point
+    # and cell counts catch a topology change in place; a move keeps them.
+    counts = tuple(uw.mpi.comm.allreduce(
+        np.array([pEnd - pStart, cEnd - cStart], dtype=np.int64)).tolist())
+    key = (mesh.instance_number, int(degree), tag, counts)
 
     cache = _MDG_CACHE.get(key)
     if cache is None:

@@ -147,6 +147,14 @@ def extend_enum(inherited):
     return wrapper
 
 
+def _clean_name(name):
+    """The name a mesh variable is held under in ``mesh.vars``: its letters,
+    digits and underscores."""
+    import re
+
+    return re.sub(r"[^a-zA-Z0-9_]", "", name)
+
+
 def _declared_layout(mesh, num_components, vtype):
     """The ``(vtype, shape, num_components)`` a declaration asks for on ``mesh``.
 
@@ -251,9 +259,7 @@ class _BaseMeshVariable(Stateful, uw_object):
             name = varname
 
         ## Check if already defined (return existing object)
-        import re
-
-        clean_name = re.sub(r"[^a-zA-Z0-9_]", "", name)
+        clean_name = _clean_name(name)
 
         if clean_name in mesh.vars.keys():
             existing = mesh.vars[clean_name]
