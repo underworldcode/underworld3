@@ -432,7 +432,10 @@ def _datum_reads_gradient(solver, var):
 
 
 def _refuse_boundary_fields(solver, reads, where, why):
-    names = ", ".join(f"'{v.name}' (in a {kind} condition)" for v, kind in reads)
+    where_read = {"essential": "in an essential condition",
+                  "natural": "in a natural condition",
+                  "essential-gradient": "in an essential condition, through its gradient"}
+    names = ", ".join(f"'{v.name}' ({where_read.get(kind, kind)})" for v, kind in reads)
     raise NotImplementedError(
         f"{where}: {type(solver).__name__}({solver.u.name}) reads {names}, {why}. "
         f"The field route does not assemble the derivative through a boundary "
@@ -601,7 +604,7 @@ def gradient(solver, misfit, parameters=(), fields=(), scratch=None, boundary=No
         # The reaction maps onto the field's nodal VALUES. A datum through the
         # field's gradient reads its neighbours' values too, and that map is not
         # built: refused (measured: dual 0 against -0.896 for df/dx).
-        through_gradient = [(v, "essential, through its gradient,") for v in in_datum
+        through_gradient = [(v, "essential-gradient") for v in in_datum
                             if _datum_reads_gradient(solver, v)]
         if through_gradient:
             _refuse_boundary_fields(solver, through_gradient, "gradient", "which was asked for")
