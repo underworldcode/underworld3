@@ -66,6 +66,15 @@ def initialise(jupyter_backend):
     return
 
 
+def _cell_table(cell_points_list, cell_num_points):
+    """The cells' vertex lists as an ``(n_cells, cell_num_points)`` array. On a
+    rank that holds no cells the list is empty, and ``np.array`` alone would
+    give shape ``(0,)``, which pyvista refuses."""
+    import numpy as np
+
+    return np.array(cell_points_list, dtype=np.int64).reshape(-1, cell_num_points)
+
+
 def mesh_to_pv_mesh(mesh, jupyter_backend=None):
     """Convert Underworld mesh to PyVista unstructured grid.
 
@@ -160,7 +169,8 @@ def mesh_to_pv_mesh(mesh, jupyter_backend=None):
         mesh_units = mesh.units if mesh.units is not None else uw.units.dimensionless
 
         mmesh = meshio.Mesh(
-            points=mesh_coordinates_nd, cells=[(meshio_cell_type, np.array(cell_points_list))]
+            points=mesh_coordinates_nd,
+            cells=[(meshio_cell_type, _cell_table(cell_points_list, cell_num_points))],
         )
 
         pv_mesh = pv.from_meshio(mmesh)
@@ -182,7 +192,7 @@ def mesh_to_pv_mesh(mesh, jupyter_backend=None):
             case (False, 3):
                 vtk_cell_type = pv.cell.CellType.HEXAHEDRON
 
-        cells_array = np.array(cell_points_list, dtype=int)
+        cells_array = _cell_table(cell_points_list, cell_num_points)
         cells_size = np.full((cells_array.shape[0], 1), cell_num_points, dtype=int)
         cells_type = np.full((cells_array.shape[0], 1), vtk_cell_type, dtype=int)
 
@@ -1389,6 +1399,11 @@ def plot_scalar(
 
     pvmesh = mesh_to_pv_mesh(mesh)
     pvmesh.point_data[scalar_name] = scalar_fn_to_pv_points(pvmesh, scalar)
+    if pvmesh.n_cells == 0:
+        # A rank that holds no cells has taken part in the evaluation above,
+        # which is collective, and has nothing to draw: pyvista refuses an
+        # empty mesh.
+        return
 
     # Build scalar bar label with units if available
     scalar_bar_title = scalar_name
@@ -1569,6 +1584,11 @@ def plot_vector(
 
     velocity_points = meshVariable_to_pv_cloud(vector)
     velocity_points.point_data[vector_name] = vector_fn_to_pv_points(velocity_points, vector.sym)
+    if pvmesh.n_cells == 0:
+        # A rank that holds no cells has taken part in the evaluations above,
+        # which are collective, and has nothing to draw: pyvista refuses an
+        # empty mesh.
+        return
 
     pl = pv.Plotter(window_size=window_size)
     if clip_angle != 0.0:
