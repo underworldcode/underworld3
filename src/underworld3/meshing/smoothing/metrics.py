@@ -265,6 +265,17 @@ def mesh_metric_mismatch(mesh, metric, resolution_ratio=None):
 _MDG_CACHE: dict = {}
 
 
+def _density_variable(mesh, degree=1, tag="mdg"):
+    """The density variable :func:`metric_density_from_gradient` keeps for
+    ``mesh`` at ``degree`` and ``tag`` (its ``name``, or "mdg"), or None before
+    the first call. For tests and diagnostics, which need not know the
+    cache's key."""
+    for key, (g, gp, rho0, f_smooth, fp) in _MDG_CACHE.items():
+        if key[:3] == (mesh.instance_number, int(degree), tag):
+            return rho0
+    return None
+
+
 def _owned_dof_rows(var):
     """The local rows of a scalar MeshVariable that this rank owns, from the
     field's global section (a negative offset marks a point another rank
