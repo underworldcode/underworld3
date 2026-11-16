@@ -353,7 +353,9 @@ def test_global_evaluate_of_a_proxy_derivative_uses_the_cell_fit():
     X = np.asarray(swarm._particle_coordinates.data)
     M.data[:, 0] = X[:, 0] ** 2 + X[:, 1]
     pts = np.array([[0.31, 0.4], [0.62, 0.3], [0.5, 0.5]])
-    local = np.asarray(uw.function.evaluate(M.sym[0].diff(x), pts)).reshape(-1)
     glob = np.asarray(uw.function.global_evaluate(M.sym[0].diff(x), pts)).reshape(-1)
-    assert glob == pytest.approx(local, rel=1e-6, abs=1e-8)
     assert glob == pytest.approx(2.0 * pts[:, 0], abs=0.02)
+    if uw.mpi.size == 1:
+        # evaluate is rank-local, so it is the serial comparison only.
+        local = np.asarray(uw.function.evaluate(M.sym[0].diff(x), pts)).reshape(-1)
+        assert glob == pytest.approx(local, rel=1e-6, abs=1e-8)
