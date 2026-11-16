@@ -411,6 +411,14 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   # Shell Inner/Outer cell labels follow the Internal surface, not a radius test:
   # the same assertions hold on one rank, so the file also runs serially.
   batch 3 tests/parallel/test_1175_shell_region_labels.py
+  # So is points_in_domain by the exact locator, a swarm's claims agreeing with global_evaluate.
+  batch 3 tests/parallel/test_1213_points_in_domain_exact_parallel.py
+  # So is the adjoint dual on a field in a Dirichlet datum, the same at any rank count (#787).
+  batch 3 tests/parallel/test_0787_field_dual_through_dirichlet_datum_parallel.py
+  # So is Stokes.set_active_region's refusal (#1154).
+  batch 3 tests/parallel/test_1154_stokes_active_region_refused_parallel.py
+  # So is a constrained Stokes solve with a discontinuous pressure (#1167).
+  batch 3 tests/parallel/test_1167_constrained_stokes_discontinuous_pressure_parallel.py
   # So is #1123's sheared mesh: every inside point owned at any rank count, exact serially.
   batch 3 tests/parallel/test_1123_exact_locator_parallel.py
   # So are the contained points the walk misses on that mesh, found by the exact fallback (#1183).

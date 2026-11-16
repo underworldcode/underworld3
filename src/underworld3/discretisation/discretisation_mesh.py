@@ -7670,10 +7670,12 @@ class Mesh(Stateful, uw_object):
 
     def points_in_domain(self, points, strict_validation=True):
         """
-        Determine if the given points lie in this domain.
-        Uses a mesh-boundary skeletonization array to determine whether the point is
-        inside the boundary or outside. If close to the boundary, it checks if points
-        are in a cell.
+        Determine if the given points lie in this rank's part of the domain.
+        On a straight-sided simplex mesh, a point is in it when a local cell
+        contains it (the exact locator), or lies within the evaluation face
+        tolerance of a local cell. Other meshes use a mesh-boundary
+        skeletonization array to decide inside from outside, and check the
+        points close to the boundary against the cells.
 
         Parameters
         ----------
@@ -7681,7 +7683,9 @@ class Mesh(Stateful, uw_object):
             Coordinate array in any physical unit system (will be auto-converted).
             Plain numbers are assumed to be in model coordinates.
         strict_validation : bool
-            Whether to perform strict validation near boundaries
+            Whether to perform strict validation near boundaries. Only other
+            meshes read it: on a straight-sided simplex mesh the claim is
+            containment (or the face tolerance near the boundary) either way.
 
         """
         return self._classify_points_in_domain(points, strict_validation)[0]
@@ -7700,21 +7704,29 @@ class Mesh(Stateful, uw_object):
             Coordinate array in any physical unit system (will be
             auto-converted).
         strict_validation : bool
-            Whether to perform strict validation near boundaries.
+            Whether to perform strict validation near boundaries. Ignored on a
+            straight-sided simplex mesh, where the claim is containment either
+            way.
+        exact_location : bool
+            Evaluation's classification (passed by ``evaluate_nd``): on a
+            simplex mesh in serial, the face tolerance is tested against the
+            cell the walk left the mesh through.
 
         Returns
         -------
         in_or_not : numpy.ndarray of bool
             Exactly what :meth:`points_in_domain` returns.
         cells : numpy.ndarray of int
-            Owning cell for the points the classification actually located,
-            at the evaluation face tolerance (:meth:`_robust_owning_cells`).
-            ``-1`` everywhere else — for an EXTERIOR point that means "not in
-            the local mesh"; for an INTERIOR point it means "not looked up",
-            because the boundary-sign test settled it without a search. A
-            caller that needs a cell for every interior point locates the
-            ``-1`` entries itself, and only when it needs them: nothing here
-            searches on the classifier's behalf.
+            On a straight-sided simplex mesh, every point is located, so this
+            holds the owning cell of every claimed point (the containing cell,
+            or the one the face tolerance claimed it for) and ``-1`` exactly
+            where ``in_or_not`` is False; a caller need not locate those points
+            again. On other meshes, the owning cell for the points the
+            classification actually located, at the evaluation face tolerance
+            (:meth:`_robust_owning_cells`), and ``-1`` everywhere else: for an
+            EXTERIOR point that means "not in the local mesh"; for an INTERIOR
+            point it means "not looked up", because the boundary-sign test
+            settled it without a search.
         """
         # Convert points to model coordinates using the unified conversion function
         # This handles all coordinate formats: plain numbers, unit-aware coordinates, lists, tuples, arrays
@@ -7751,17 +7763,49 @@ class Mesh(Stateful, uw_object):
         # surface-mesh contract, query points are assumed to lie on
         # the manifold; the closest-local-cell test is the right
         # filter, not an inside/outside split.
-        if exact_location and self._simplex_locator() is not None:
-            # For evaluation (``exact_location``, passed by evaluate_nd only):
-            # a point is interior when a local cell contains it, or the face
-            # tolerance of _robust_owning_cells claims it. The boundary-sign
-            # test below can call a contained point exterior on a strongly
-            # sheared mesh (#1123). points_in_domain, which the swarm's
-            # migration reads, keeps the boundary-sign test, so no swarm claim
-            # changes here; making the two agree is the follow-up that passes a
-            # particle's previous cell to the walk.
-            cells = numpy.asarray(self._robust_owning_cells(model_points, for_evaluation=True),
-                                  dtype=numpy.int64)
+        if self._simplex_locator() is not None:
+            # On a simplex mesh the exact locator decides, for evaluation and for
+            # points_in_domain alike: a point is interior when a local cell
+            # contains it, or the face tolerance of _robust_owning_cells claims
+            # it. The boundary-face sign test below stood in for containment far
+            # from the local boundary, and on a strongly sheared mesh it called a
+            # contained point exterior (#1123): a swarm's migration then put that
+            # particle on no rank, while global_evaluate's ownership had it.
+            # Style Charter section 12: containment, not a sign test.
+            if exact_location:
+                # evaluation: the serial exit-cell tolerance test (#1175)
+                cells = numpy.asarray(
+                    self._robust_owning_cells(model_points, for_evaluation=True),
+                    dtype=numpy.int64)
+                return cells >= 0, cells
+            # Claims: exact containment first. A point no local cell contains
+            # takes the face tolerance development applied near the boundary,
+            # so claims change only by contained points: in parallel the
+            # evaluation tolerance (_robust_owning_cells), in serial the
+            # cell-wall test's own (_get_closest_local_cells_internal).
+            locator = self._simplex_locator()
+            cells, _, _ = self._walk_to_owning_cells(locator, model_points)
+            lost = numpy.flatnonzero(cells < 0)
+            # Only near the local boundary, as development applied it: the face
+            # tolerance cannot claim a point farther away, and testing every
+            # point outside the domain cost 7.6 of 11 s on 1e6 points.
+            if lost.shape[0] > 0 and self.boundary_face_control_points_kdtree is not None:
+                dist2, _ = self.boundary_face_control_points_kdtree.query(
+                    model_points[lost], k=1, sqr_dists=True)
+                lost = lost[numpy.asarray(dist2).ravel() < 2 * max_radius ** 2]
+            if lost.shape[0] > 0:
+                if self._eval_use_robust_location():
+                    # _robust_owning_cells' own tolerance search, without walking
+                    # these points a second time
+                    cells[lost] = numpy.asarray(
+                        self._get_closest_local_cells_internal(
+                            model_points[lost], tol=self._EVAL_FACE_TOL),
+                        dtype=numpy.int64)
+                else:
+                    near = numpy.asarray(
+                        self._get_closest_local_cells_internal(model_points[lost]),
+                        dtype=numpy.int64)
+                    cells[lost] = near
             return cells >= 0, cells
         if self.boundary_face_control_points_kdtree is None:
             in_or_not = self._get_closest_local_cells_internal(model_points) != -1
@@ -8595,11 +8639,11 @@ class Mesh(Stateful, uw_object):
         if (
             not hasattr(self, "_domain_kdtree")
             or self._domain_kdtree is None
-            or getattr(self, "_domain_kdtree_version", -1) != self._mesh_version
+            or getattr(self, "_domain_kdtree_geometry_version", -1) != self._geometry_version
         ):
             centroids = self._get_domain_centroids()
             self._domain_kdtree = uw.kdtree.KDTree(centroids)
-            self._domain_kdtree_version = self._mesh_version
+            self._domain_kdtree_geometry_version = self._geometry_version
         return self._domain_kdtree
 
     @uw.collective_operation
