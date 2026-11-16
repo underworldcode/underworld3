@@ -614,20 +614,50 @@ def provenance_transfer_parallel(coarse, fine, pre, degree, continuous,
         raise CollectiveBuildError(
             f"fault_mg: {n_out} fine node(s) lie in no cell of the level as the "
             f"add-on partition left it; the surgery was not rank-local.")
-    parent = np.asarray(pre._addon_parent, dtype=np.int32)[pcell]   # (nm, 2)
-
-    # one fetch per distinct parent: node columns, node coordinates and
-    # vertex coordinates, packed as doubles (indices exact below 2**53)
-    uniq, inv = np.unique(parent, axis=0, return_inverse=True)
-    inv = inv.ravel()
+    # The record is read, and each address checked, before the star forest is
+    # built on it: one cell per cell of ``pre``, each a (rank, local cell) that
+    # exists. A short or stale record on one rank raised an IndexError there
+    # alone, or built an SF with an address out of range, while the other
+    # ranks waited (#874). Every rank-local step up to the SF is under the
+    # guard, and a failure is raised on every rank together.
     width = nb * ncomp + nb * dim + nv * dim
     nc_loc = cv_c.shape[0]
-    root = np.empty((nc_loc, width))
-    # explicit widths: a rank can own no cell of the coarse level, and
-    # reshape(0, -1) cannot infer one
-    root[:, : nb * ncomp] = l2g_c[cn].reshape(nc_loc, nb * ncomp)
-    root[:, nb * ncomp: nb * ncomp + nb * dim] = Xc[cn].reshape(nc_loc, nb * dim)
-    root[:, nb * ncomp + nb * dim:] = vxy_c[cv_c].reshape(nc_loc, nv * dim)
+    coarse_cells = np.asarray(m4.allgather(int(nc_loc)), dtype=np.int64)
+    uniq = np.zeros((0, 2), dtype=np.int32)
+    inv = np.zeros(0, dtype=np.int64)
+    root = np.zeros((nc_loc, width))
+    problem = None
+    try:
+        record = np.asarray(pre._addon_parent)
+        if record.ndim != 2 or record.shape != (cv_p.shape[0], 2):
+            problem = (f"fault_mg: the add-on record of the level holds "
+                       f"{tuple(record.shape)} entries for {cv_p.shape[0]} cells; "
+                       f"it does not describe this mesh")
+        else:
+            parent = record.astype(np.int64)[pcell]                      # (nm, 2)
+            rank_ok = (parent[:, 0] >= 0) & (parent[:, 0] < m4.size)
+            cell_ok = rank_ok & (parent[:, 1] >= 0) & (
+                parent[:, 1] < coarse_cells[np.where(rank_ok, parent[:, 0], 0)])
+            if not cell_ok.all():
+                problem = (f"fault_mg: {int((~cell_ok).sum())} recorded parent(s) "
+                           f"name a rank or a cell that does not exist")
+            else:
+                # one fetch per distinct parent: node columns, node coordinates
+                # and vertex coordinates, packed as doubles (indices exact
+                # below 2**53)
+                uniq, inv = np.unique(parent.astype(np.int32), axis=0,
+                                      return_inverse=True)
+                inv = inv.ravel()
+                # explicit widths: a rank can own no cell of the coarse
+                # level, and reshape(0, -1) cannot infer one
+                root[:, : nb * ncomp] = l2g_c[cn].reshape(nc_loc, nb * ncomp)
+                root[:, nb * ncomp: nb * ncomp + nb * dim] = (
+                    Xc[cn].reshape(nc_loc, nb * dim))
+                root[:, nb * ncomp + nb * dim:] = vxy_c[cv_c].reshape(nc_loc, nv * dim)
+    except Exception as err:   # sanctioned: raised on every rank just below
+        problem = (f"fault_mg: the provenance transfer failed to read the "
+                   f"add-on record: {type(err).__name__}: {err}")
+    _collective_raise(problem, error=CollectiveBuildError)
     sf = PETSc.SF().create(comm=comm)
     sf.setGraph(nc_loc, None, np.ascontiguousarray(uniq, dtype=np.int32))
     sf.setUp()
