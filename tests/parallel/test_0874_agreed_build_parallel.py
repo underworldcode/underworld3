@@ -37,7 +37,7 @@ A, B = np.array([0.30, 0.45]), np.array([0.70, 0.55])
 N_RUNGS = 80
 
 
-def _ribbon_solve(empty_last_rank=False):
+def _ribbon_solve(empty_last_rank=False, explicit=True):
     """A placed fault ribbon with the custom hierarchy set, whose finest level
     carries the structural FAC patch (the fixture of test_1147, one fault)."""
     S = float(np.linalg.norm(B - A)) / N_RUNGS
@@ -84,8 +84,10 @@ def _ribbon_solve(empty_last_rank=False):
     stokes.add_fault_bc(0, boundary="Fault")
     stokes.petsc_use_pressure_nullspace = True
     stokes.tolerance = 1.0e-6
-    set_custom_fmg(stokes, levels, field_id=0)
+    if explicit:
+        set_custom_fmg(stokes, levels, field_id=0)
     stokes.solve()
+    return stokes
 
 
 def _captured_split_call(empty_last_rank=False):
@@ -275,3 +277,104 @@ def test_a_failure_on_a_rank_with_no_cells_is_raised_on_every_rank(monkeypatch):
     monkeypatch.setattr(custom_mg, "_append_remote_coarse_nodes", failing)
     _raises_everywhere(lambda: custom_mg._fac_patch_split_parallel(*args, **kwargs),
                        "On the empty rank", monkeypatch)
+
+
+# --------------------------------------------------------------------------- #
+#  H1's round 2: the retry, the swallows, the envelope
+# --------------------------------------------------------------------------- #
+def test_a_failure_inside_the_build_takes_the_rbf_retry(monkeypatch):
+    """A failure in the FAC split, on one rank and once, is a builder failure:
+    the mesh-owned build is retried with the RBF builder
+    (custom_mg.build_transfers), on every rank, rather than degrading to the
+    default preconditioner."""
+    original = custom_mg._patch_links
+    fired = []
+
+    def failing_once(*a, **k):
+        if not fired:
+            fired.append(True)
+            _on_last_rank("Once in the build")
+        return original(*a, **k)
+
+    monkeypatch.setattr(custom_mg, "_patch_links", failing_once)
+    # the mesh-owned hierarchy (no set_custom_fmg): an explicit registration
+    # surfaces a build error by design, the automatic pickup retries
+    with pytest.warns(UserWarning, match="retrying with the 'rbf' builder"):
+        stokes = _ribbon_solve(explicit=False)
+    assert stokes.snes.getConvergedReason() > 0 or stokes._rotated_freeslip_info is None
+    record = stokes.pc_fallbacks.get("custom_mg.transfer_builder")
+    assert record is not None and "Once in the build" in record["detail"], record
+
+
+def test_an_agreed_error_is_not_swallowed_by_the_build(monkeypatch):
+    """build's sanctioned swallow around snes.setUp() re-raises an error every
+    rank raised together: swallowed there, the healthy ranks would go on while
+    a failed rank had left. The setUp is a stand-in that raises an agreed
+    CollectiveBuildError on every rank."""
+    calls = []
+    original = custom_mg.CustomMGHierarchy.build
+
+    def spy(self, solver):
+        if not calls:
+            calls.append((self, solver))
+        return original(self, solver)
+
+    monkeypatch.setattr(custom_mg.CustomMGHierarchy, "build", spy)
+    _ribbon_solve()
+    monkeypatch.setattr(custom_mg.CustomMGHierarchy, "build", original)
+    hierarchy, solver = calls[0]
+
+    class _Snes:
+        def __init__(self, snes):
+            self._snes = snes
+
+        def setUp(self):
+            err = CollectiveBuildError("Agreed in setUp")
+            err.agreed = True
+            raise err
+
+        def __getattr__(self, name):
+            return getattr(self._snes, name)
+
+    class _Solver:
+        def __init__(self, s):
+            self.__dict__["_s"] = s
+            self.__dict__["snes"] = _Snes(s.snes)
+
+        def __getattr__(self, name):
+            return getattr(self._s, name)
+
+    caught = None
+    try:
+        hierarchy.build(_Solver(solver))
+    except CollectiveBuildError as err:
+        caught = str(err)
+    messages = uw.mpi.comm.allgather(caught)
+    assert all(m == "Agreed in setUp" for m in messages), messages
+
+
+def test_two_kinds_of_verdict_that_pair_are_refused_on_every_rank():
+    """One rank at a _collective_raise, the others at a snapshot verdict: the
+    envelope's site tells them apart, and every rank raises the same mismatch
+    error rather than reading one payload as the other."""
+    caught = None
+    try:
+        if uw.mpi.rank == 0:
+            uw.mpi.first_verdict("a failure", site="fault_contact._collective_raise")
+        else:
+            uw.mpi.first_verdict(None, site="snapshot._agreed_problem")
+    except RuntimeError as err:
+        caught = str(err).split(" (rank")[0]
+    messages = uw.mpi.comm.allgather(caught)
+    assert all(m is not None and "verdict exchange mismatch" in m for m in messages), messages
+    assert len(set(messages)) == 1, messages
+
+
+def test_reraise_agreed_passes_only_agreed_errors():
+    from underworld3.utilities.agreed_build import reraise_agreed
+    plain = ValueError("rank-local")
+    reraise_agreed(plain)                         # not agreed: returns
+    agreed = CollectiveBuildError("everyone")
+    agreed.agreed = True
+    with pytest.raises(CollectiveBuildError):
+        reraise_agreed(agreed)

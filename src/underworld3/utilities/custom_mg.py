@@ -2115,7 +2115,10 @@ class CustomMGHierarchy:
         # paths call it again).
         try:
             solver.snes.setUp()
-        except Exception:
+        except Exception as err:
+            # an error every rank raised together is not swallowed (#874)
+            from underworld3.utilities.agreed_build import reraise_agreed
+            reraise_agreed(err)
             # Sanctioned swallow: setUp can fail on a not-yet-fully-configured
             # SNES (pre-solve injection). The install paths call setUp again;
             # the finest map then reads the DM's current global section. The
@@ -2602,7 +2605,9 @@ class CustomMGHierarchy:
         DM section could be stale relative to the freshly assembled operator."""
         try:
             op_n = int(solver.snes.getJacobian()[0].getSize()[0])
-        except Exception:
+        except Exception as err:
+            from underworld3.utilities.agreed_build import reraise_agreed
+            reraise_agreed(err)        # an agreed error is not swallowed (#874)
             # Sanctioned: no readable operator to check against — record the
             # skipped guard rather than silently waiving it (#484).
             solver._record_pc_fallback(
@@ -3086,7 +3091,9 @@ def auto_inject_custom_mg(solver, field_id=None):
                     "skipping the auto-pickup (using the default preconditioner). "
                     "set_custom_fmg() an explicit hierarchy to override.")
                 return
-        except Exception:
+        except Exception as err:
+            from underworld3.utilities.agreed_build import reraise_agreed
+            reraise_agreed(err)        # an agreed error is not swallowed (#874)
             # Sanctioned: an unreadable operator must not block working cases —
             # but the skipped guard is on the record.
             solver._record_pc_fallback(

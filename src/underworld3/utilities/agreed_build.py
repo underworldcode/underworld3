@@ -41,11 +41,23 @@ makes the same number of agreement calls.
 _active = []
 
 
-def _raise_agreed(problem):
+def _raise_agreed(problem, builder_failure=True):
     from underworld3.utilities.custom_mg import CollectiveBuildError
     from underworld3.utilities.fault_contact import _collective_raise
 
-    _collective_raise(problem, error=CollectiveBuildError)
+    _collective_raise(problem, error=CollectiveBuildError,
+                      builder_failure=builder_failure)
+
+
+def reraise_agreed(err):
+    """Inside a handler that would swallow an exception: re-raise ``err`` if it
+    is an agreed error (one every rank raised together). A broad ``except``
+    around an agreement point would otherwise swallow it on the healthy ranks,
+    while the failed rank left: those then wait in their next agreement (H1's
+    review of #1218). Call it first in every sanctioned swallow that can see
+    an agreement point."""
+    if getattr(err, "agreed", False):
+        raise err
 
 
 class agreed_build:
@@ -53,8 +65,14 @@ class agreed_build:
     raised on every rank, as the same ``CollectiveBuildError``. ``what`` names
     the build in the message. COLLECTIVE: every rank enters and leaves it."""
 
-    def __init__(self, what):
+    def __init__(self, what, builder_failure=True):
+        # A failure inside a hierarchy build is the builder's (the one case
+        # another builder can change), so by default the build retries with
+        # the next builder rather than degrading at once
+        # (custom_mg.build_transfers); a context that is not a transfer build
+        # passes False
         self.what = what
+        self.builder_failure = builder_failure
 
     def __enter__(self):
         _active.append(self)
@@ -63,12 +81,12 @@ class agreed_build:
     def __exit__(self, kind, err, tb):
         _active.remove(self)
         if kind is None:
-            _raise_agreed(None)        # the final agreement: a failed rank meets it
+            _raise_agreed(None, self.builder_failure)   # the final agreement
             return False
         if getattr(err, "agreed", False) or not issubclass(kind, Exception):
             return False               # already agreed on every rank, or an interrupt
         try:
-            _raise_agreed(f"{self.what}: {kind.__name__}: {err}")
+            _raise_agreed(f"{self.what}: {kind.__name__}: {err}", self.builder_failure)
         except Exception as agreed:
             raise agreed from err
         return False
@@ -79,7 +97,7 @@ def agree():
     has failed. Place it before a collective that cannot agree by itself. A
     no-op outside an :class:`agreed_build`. COLLECTIVE inside one."""
     if _active:
-        _raise_agreed(None)
+        _raise_agreed(None, _active[-1].builder_failure)
 
 
 def allreduce(comm, value, **kwargs):

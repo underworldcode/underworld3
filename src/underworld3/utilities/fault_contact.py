@@ -85,11 +85,11 @@ def _collective_raise(problem, error=RuntimeError, **error_kwargs):
     """
     # on the verdict communicator (mpi.first_verdict): a rank still inside a
     # collective of the path cannot be paired with this exchange
-    first = mpi.first_verdict(None if problem is None
-                              else (problem, error, error_kwargs))
+    first = mpi.first_verdict(problem, site="fault_contact._collective_raise",
+                              error=error, kwargs=error_kwargs)
     if first is None:
         return
-    problem, error, error_kwargs = first
+    problem, error, error_kwargs = first.message, first.error, first.kwargs
     if problem is not None:
         exc = error(problem, **error_kwargs)
         # every rank raises this one together: an agreed_build context passes

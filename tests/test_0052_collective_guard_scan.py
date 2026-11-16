@@ -512,34 +512,22 @@ def test_accepted_list_has_no_stale_entries():
 # --------------------------------------------------------------------------- #
 #  agreed_build: every collective has an agreement point in front (#874)
 # --------------------------------------------------------------------------- #
-#: PETSc calls that are collective on the object's communicator, by method name,
-#: for the agreed-build rule. ``create`` counts only on a ``Scatter()`` / ``SF()``.
-AGREED_PETSC = {
-    "createMPI", "createAIJ", "assemble", "assemblyBegin", "assemblyEnd", "setUp",
-    "scatter", "createSubDM", "createSubMatrix", "localToGlobal", "globalToLocal",
-    "bcastBegin", "bcastEnd", "reduceBegin", "reduceEnd", "computeDegree",
-    "setGraph", "matMult", "transposeMatMult", "PtAP", "getGlobalSection",
-}
-AGREE_CALLS = {"agree", "agreed_allreduce"}
+# What this static rule can and cannot see. It checks DIRECT mpi4py collectives
+# (as the scan above reads them) inside an ``agreed_build`` block, and inside
+# any function that calls ``agree()`` (a helper: its entry is NOT agreed). It
+# cannot see a collective inside a called helper, a PETSc collective, or a
+# mesh method that is collective inside, and it does not reason about an
+# ``agree()`` on one branch only or inside a broad ``except``. Those are left
+# to the run-time check in tests/parallel/test_0874_agreed_build_parallel.py,
+# which wraps the build's communicator and asserts that every collective made
+# inside an active context follows an agreement (W1's and H1's reviews of
+# #1218).
+AGREE_CALLS = {"agree", "agreed_allreduce", "agreed_allgather", "agreed_bcast"}
 
 
 def _call_name(call):
     f = call.func
     return f.attr if isinstance(f, ast.Attribute) else (f.id if isinstance(f, ast.Name) else None)
-
-
-def _agreed_collective(call):
-    """A collective by the agreed-build rule: an MPI one (as the scan above
-    reads them), or a PETSc one by method name."""
-    if is_collective(call):
-        return True
-    name = _call_name(call)
-    if name in AGREED_PETSC:
-        return True
-    if name == "create" and isinstance(call.func, ast.Attribute) and isinstance(
-            call.func.value, ast.Call) and _call_name(call.func.value) in ("Scatter", "SF"):
-        return True
-    return False
 
 
 def _flatten(statements):
@@ -570,27 +558,26 @@ def _statement_calls(st):
 
 
 def agreed_build_findings(source, filename="<source>"):
-    """Collectives inside an ``agreed_build`` block, or inside a function that
-    calls ``agree()``, with a statement that can raise (one with a call or a
-    subscript) between them and the last agreement point. Returns
-    ``(line, function, collective)``."""
+    """Direct mpi4py collectives inside an ``agreed_build`` block, or inside a
+    function that calls ``agree()``, with a statement that can raise (a call or
+    a subscript) between them and the last agreement point. A context's entry
+    is agreed; a helper's is not. Returns ``(line, function, collective)``."""
     tree = ast.parse(source, filename=filename)
     findings = []
     for fn in [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]:
-        blocks = [st.body for st in ast.walk(fn) if isinstance(st, ast.With) and any(
+        blocks = [(st.body, True) for st in ast.walk(fn) if isinstance(st, ast.With) and any(
             isinstance(item.context_expr, ast.Call)
             and _call_name(item.context_expr) == "agreed_build" for item in st.items)]
-        if any(isinstance(n, ast.Call) and _call_name(n) == "agree" for n in ast.walk(fn)) \
-                and not blocks:
-            blocks = [fn.body]
-        for body in blocks:
-            agreed = True                       # the context's entry is agreed
+        if not blocks and any(isinstance(n, ast.Call) and _call_name(n) == "agree"
+                              for n in ast.walk(fn)):
+            blocks = [(fn.body, False)]
+        for body, agreed in blocks:
             for st in _flatten(body):
                 calls = _statement_calls(st)
                 if any(_call_name(c) in AGREE_CALLS for c in calls):
                     agreed = True
                     continue
-                coll = [c for c in calls if _agreed_collective(c)]
+                coll = [c for c in calls if is_collective(c)]
                 if coll:
                     if not agreed:
                         findings.append((st.lineno, fn.name, _call_name(coll[0])))
@@ -611,15 +598,17 @@ def test_agreed_build_rule_flags_a_planted_collective():
         "    return n\n")
     fixed = planted.replace("        n = comm.allreduce(y)\n",
                             "        agree()\n        n = comm.allreduce(y)\n")
-    petsc = (
+    wrapped = planted.replace("comm.allreduce(y)", "agreed_allreduce(comm, y)")
+    helper = (
         "def g(comm, a):\n"
+        "    n = comm.allreduce(len(a))\n"
         "    agree()\n"
-        "    v = PETSc.Vec().createMPI(4, comm=comm)\n"
-        "    w = a[1]\n"
-        "    s = PETSc.Scatter().create(v, None, v, None)\n")
+        "    return comm.allgather(n)\n")
     assert agreed_build_findings(planted) == [(4, "f", "allreduce")]
     assert agreed_build_findings(fixed) == []
-    assert agreed_build_findings(petsc) == [(5, "g", "create")]
+    assert agreed_build_findings(wrapped) == []
+    # a helper's entry is not agreed: its first collective needs a point too
+    assert agreed_build_findings(helper) == [(2, "g", "allreduce")]
 
 
 def test_every_collective_in_an_agreed_build_has_an_agreement_point():

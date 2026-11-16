@@ -64,20 +64,54 @@ rank = comm.rank
 verdict_comm = comm.Dup()
 
 
-def first_verdict(verdict):
-    """The first rank's ``verdict`` (anything but None means a failure), the same
-    on every rank, or None when no rank failed. COLLECTIVE on ``verdict_comm``.
+class Verdict(tuple):
+    """One rank's failure verdict: ``(message, error, kwargs, site)``. ``site``
+    names the kind of exchange, so a verdict of one kind never pairs silently
+    with another (#874)."""
+
+    __slots__ = ()
+
+    def __new__(cls, message, error=RuntimeError, kwargs=None, site=""):
+        return super().__new__(cls, (message, error, dict(kwargs or {}), site))
+
+    def __getnewargs__(self):
+        # the allgather pickles it: rebuild from the four fields, not from the
+        # tuple as one argument
+        return tuple(self)
+
+    message = property(lambda self: self[0])
+    error = property(lambda self: self[1])
+    kwargs = property(lambda self: self[2])
+    site = property(lambda self: self[3])
+
+
+def first_verdict(message, *, site, error=RuntimeError, kwargs=None):
+    """The first failing rank's :class:`Verdict`, the same on every rank, or None
+    when no rank failed. ``message`` is None on a rank with nothing to report.
+    COLLECTIVE on ``verdict_comm``.
 
     Every verdict exchange in the library goes through this one call, so any
-    two of them that pair (a failed rank at one site, the others at another)
-    make the same sequence of calls: a one-integer flag allreduce, and only when
-    it is set an allgather of the verdicts. A healthy path pays the small
-    allreduce alone (#874)."""
+    two that pair make the same sequence of calls: a one-integer flag
+    allreduce, and only when it is set an allgather of every rank's envelope.
+    A healthy path pays the small allreduce alone. When it is set, every rank
+    sends its envelope, healthy ones too, with their ``site``; if two kinds of
+    exchange have paired (a rank at one site, another at a different one),
+    every rank raises the same mismatch error naming both, rather than reading
+    one site's payload as another's (#874, H1's review of #1218)."""
+    mine = Verdict(message, error, kwargs, site)
     if size == 1:
-        return verdict
-    if not verdict_comm.allreduce(int(verdict is not None), op=_MPI.MAX):
+        return mine if message is not None else None
+    if not verdict_comm.allreduce(int(message is not None), op=_MPI.MAX):
         return None
-    return next(v for v in verdict_comm.allgather(verdict) if v is not None)
+    every = verdict_comm.allgather(mine)
+    sites = sorted({v.site for v in every})
+    if len(sites) > 1:
+        raise RuntimeError(
+            f"verdict exchange mismatch: ranks paired at different kinds of "
+            f"agreement point {sites}; the collective path has parted "
+            f"(rank {rank} was at {site!r})")
+    return next(v for v in every if v.message is not None)
+
 
 # State tracking for selective execution
 _in_selective_ranks = False

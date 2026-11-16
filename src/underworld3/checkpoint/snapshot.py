@@ -469,7 +469,8 @@ def _agreed_problem(problem):
     restore refused anywhere is refused everywhere. COLLECTIVE."""
     import underworld3 as uw
 
-    return uw.mpi.first_verdict(problem)
+    verdict = uw.mpi.first_verdict(problem, site="snapshot._agreed_problem")
+    return None if verdict is None else verdict.message
 
 
 def _build_mesh_payload(snap: Snapshot, mesh_name: str) -> dict:
