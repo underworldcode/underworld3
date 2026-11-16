@@ -46,3 +46,28 @@ def test_the_record_equals_the_field_at_rest(units_model, monotone):
     lo = uw.mpi.comm.allreduce(float(ps.min(initial=np.inf)), op=MPI.MIN)
     hi = uw.mpi.comm.allreduce(float(ps.max(initial=-np.inf)), op=MPI.MAX)
     assert lo == pytest.approx(0.5) and hi == pytest.approx(0.5)
+
+
+@pytest.mark.parametrize("monotone", [None, "clamp"])
+def test_the_record_of_a_vector_equals_the_field_at_rest(units_model, monotone):
+    """The direct copy covers vectors too: each component is its storage column."""
+    mesh = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.125
+    )
+    W = uw.discretisation.MeshVariable("W_992", mesh, 2, degree=1,
+                                       vtype=uw.VarType.VECTOR, units="cm/yr")
+    W.data[:, 0] = 0.5
+    W.data[:, 1] = -0.25
+    V = uw.discretisation.MeshVariable("Vv_992", mesh, 2, degree=1,
+                                       vtype=uw.VarType.VECTOR, units="cm/yr")
+    V.data[:] = 0.0
+    kw = dict(monotone_mode=monotone) if monotone else {}
+    sl = uw.systems.ddt.SemiLagrangian(mesh, W.sym, V.sym, vtype=uw.VarType.VECTOR,
+                                       degree=1, continuous=True, order=1,
+                                       units="cm/yr", **kw)
+    sl.update_pre_solve(0.01)
+    ps = np.asarray(sl.psi_star[0].data)
+    for column, expected in ((0, 0.5), (1, -0.25)):
+        lo = uw.mpi.comm.allreduce(float(ps[:, column].min(initial=np.inf)), op=MPI.MIN)
+        hi = uw.mpi.comm.allreduce(float(ps[:, column].max(initial=-np.inf)), op=MPI.MAX)
+        assert lo == pytest.approx(expected) and hi == pytest.approx(expected), (column, lo, hi)

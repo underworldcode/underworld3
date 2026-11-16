@@ -25,6 +25,18 @@ from underworld3.function._function import diff_wrt_field
 from underworld3.coordinates import CoordinateSystemType
 
 
+def _comparable(value, unwrap, rebind):
+    """A parameter's value in the form the derived-solver check compares:
+    unwrapped, and rebound onto a derived solver's unknowns when it is still an
+    expression. A constant (a plain number once unwrapped) is returned as is."""
+    if not hasattr(value, "subs"):
+        return value
+    value = unwrap(value, keep_constants=True, return_self=True)
+    if rebind and hasattr(value, "subs"):
+        value = value.subs(rebind)
+    return value
+
+
 def _model_time(dt):
     """A step from a solver's ``estimate_dt`` as a plain number in model time.
 
@@ -834,20 +846,13 @@ class FreeSurface:
                 for attr, descriptor in cls.__dict__.items():
                     if not isinstance(descriptor, ExpressionDescriptor):
                         continue
-                    try:
-                        expected = getattr(free_params, attr)
-                        if hasattr(expected, "subs"):
-                            expected = unwrap(
-                                expected, keep_constants=True, return_self=True
-                            ).subs(rebind)
-                        actual = getattr(their_params, attr)
-                        if hasattr(actual, "subs"):
-                            actual = unwrap(
-                                actual, keep_constants=True, return_self=True
-                            )
-                        note(name, f"Parameters.{attr}", expected, actual)
-                    except Exception:
-                        pass
+                    # No swallow: a check that can fail silently is not a check.
+                    # In a units model a constant unwraps to a plain number,
+                    # which has nothing to rebind, so only an expression is
+                    # rebound (H1's review of #1205).
+                    expected = _comparable(getattr(free_params, attr), unwrap, rebind)
+                    actual = _comparable(getattr(their_params, attr), unwrap, None)
+                    note(name, f"Parameters.{attr}", expected, actual)
             # `held` carries its own body force when driving_buoyancy was given;
             # otherwise both are meant to be the free solve's.
             if not (name == "held" and self._driving_buoyancy_given):
@@ -1781,8 +1786,12 @@ class FreeSurface:
         # tangent at physical strain rates — a cold start puts it at the
         # regularisation floor, where the Newton line search stalls at O(0.1)
         # relative residual (measured, power-law annulus acceptance run).
-        self.consistent.u.array[...] = self.free.u.array
-        self.consistent.p.array[...] = self.free.p.array
+        # A raw variable-to-variable copy inside the non-dimensional boundary:
+        # .data on both sides. Through .array a velocity with units (cm/yr) went
+        # into a field without them and was stored 100 times too large (H1's
+        # review of #1205); ddt.py copies histories the same way.
+        self.consistent.u.data[...] = self.free.u.data
+        self.consistent.p.data[...] = self.free.p.data
         self.consistent.solve(zero_init_guess=False)
 
     def _conserve_composition(self):

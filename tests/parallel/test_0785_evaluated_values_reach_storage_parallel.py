@@ -19,6 +19,7 @@ parallel route only from np 2.
     python scripts/mpi_supervisor.py --silence 300 -- mpirun -n 3 python -m pytest --with-mpi tests/parallel/test_0785_evaluated_values_reach_storage_parallel.py
 """
 import numpy as np
+import numpy
 import pytest
 import sympy
 from mpi4py import MPI
@@ -212,9 +213,13 @@ def _units_refinement_pair(tag, parent_units="K", child_units="K", shape=1,
     base = uw.meshing.UnstructuredSimplexBox(
         minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.25, regular=True, qdegree=3,
         refinement=1)
+    # adapt reads a metric M = 1/h^2: 400 asks for h = 0.05, finer than the base,
+    # so the child is a real refinement (0.1, an h of 3.2, refined nothing).
     size_field = uw.discretisation.MeshVariable(f"h_{tag}", base, 1, degree=1)
-    size_field.array[:, 0, 0] = 0.1
+    size_field.array[:, 0, 0] = 400.0
     child = base.adapt(size_field, max_levels=1, engine="sbr")
+    cells = lambda m: uw.mpi.comm.allreduce(int(numpy.subtract(*m.dm.getHeightStratum(0)[::-1])))
+    assert cells(child) > cells(base), (cells(base), cells(child))
 
     def units(u):
         return {"units": u} if u else {}
