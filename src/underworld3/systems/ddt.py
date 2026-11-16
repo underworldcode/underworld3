@@ -2447,7 +2447,7 @@ class EulerianSUPG(Eulerian):
         solver._manager = self
         solver.constitutive_model = uw.constitutive_models.Constitutive_Model
         if self._inflow_value is not None:
-            # The inflow condition, weakly: on every boundary with faces, the term is the
+            # The inflow condition, weakly: on each exterior face once, the term is the
             # NEGATIVE part of u.n, so it is active exactly where the flow enters
             # and vanishes where it leaves. Walls (u.n = 0) contribute nothing,
             # so no boundary needs naming and a migrating inflow patch is covered.
@@ -2463,7 +2463,7 @@ class EulerianSUPG(Eulerian):
             condition = sympy.Matrix([[
                 -entering * (self._transport_flat.sym[0, k] - incoming[i, j])
                 for k, (i, j) in enumerate(indices)]])
-            for boundary in self.mesh._boundaries_that_mark_points():
+            for boundary in self.mesh._boundaries_covering_the_exterior_once():
                 solver.add_natural_bc(condition, boundary.name)
         solver.petsc_options["snes_rtol"] = 1.0e-8
         solver.petsc_options["ksp_rtol"] = 1.0e-9

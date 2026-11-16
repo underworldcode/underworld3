@@ -147,27 +147,32 @@ def test_a_rewire_replaces_the_boundary_kernels(tmp_path):
     np.testing.assert_allclose(np.asarray(T.array), np.asarray(T_fresh.array), rtol=0, atol=1e-9)
 
 
-# Library code that puts one condition on every boundary of the mesh loops over
-# the boundaries that mark points: an Annulus lists Centre and has no faces for
-# it, and a condition on Centre is refused (review of #1211).
+# Library code that puts one condition on the whole boundary loops over the
+# boundaries that cover the exterior once: an Annulus lists Centre and has no
+# faces for it, so a condition on Centre is refused, and it lists Lower, Upper
+# and All_Boundaries, which share every exterior face (review of #1211).
 
 def _annulus():
     return uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.3, cellSize=0.1, qdegree=3)
 
 
 @pytest.mark.tier_b
-def test_the_boundaries_that_mark_points_leave_out_centre_on_an_annulus():
+def test_the_boundaries_covering_the_exterior_once_on_an_annulus():
     mesh = _annulus()
     assert [b.name for b in mesh.boundaries] == ["Lower", "Upper", "Centre", "All_Boundaries"]
-    assert [b.name for b in mesh._boundaries_that_mark_points()] == ["Lower", "Upper", "All_Boundaries"]
+    assert [b.name for b in mesh._boundaries_that_mark_faces()] == ["Lower", "Upper", "All_Boundaries"]
+    assert [b.name for b in mesh._boundaries_covering_the_exterior_once()] == ["All_Boundaries"]
 
 
-@pytest.mark.tier_b
-def test_the_eulerian_inflow_value_on_an_annulus():
-    # Radial outflow from the inner circle: the inflow value 1 enters at Lower,
-    # and nothing reaches Upper in one step. INNER_MEAN is this build's value.
-    INNER_MEAN = 0.8387282881471909
+def _inflow_after_two_steps(names=None):
+    """The Eulerian history of a zero field under radial outflow, inflow value 1.
+
+    ``names``, when given, replaces the mesh's choice of boundaries for the
+    inflow condition."""
     mesh = _annulus()
+    if names is not None:
+        chosen = [b for b in mesh.boundaries if b.name in names]
+        mesh._boundaries_covering_the_exterior_once = lambda: chosen
     x, y = mesh.X
     T = uw.discretisation.MeshVariable("T1069in", mesh, 1, degree=2)
     T.array[...] = 0.0
@@ -175,11 +180,25 @@ def test_the_eulerian_inflow_value_on_an_annulus():
                                           degree=2, continuous=True, order=1, transport_on_update=True)
     manager.inflow_value = sympy.Matrix([[1.0]])
     manager.initialise_history()
-    manager.update_pre_solve(0.05)
+    for _ in range(2):
+        manager.update_pre_solve(0.05)
     value = np.asarray(manager.psi_star[0].array).ravel()
     r = np.hypot(*np.asarray(manager.psi_star[0].coords).T)
-    assert float(value[r < 0.31].mean()) == pytest.approx(INNER_MEAN, rel=1e-6)
-    assert float(np.abs(value[r > 0.99]).max()) < 1e-8
+    return value, r
+
+
+@pytest.mark.tier_b
+def test_the_eulerian_inflow_is_applied_once_per_face_on_an_annulus():
+    # Lower and Upper hold different faces, so the run on them applies the
+    # term once per face by construction; adding All_Boundaries applies it
+    # twice. The default must be the first and differ from the second.
+    default, r = _inflow_after_two_steps()
+    once, _ = _inflow_after_two_steps(("Lower", "Upper"))
+    twice, _ = _inflow_after_two_steps(("Lower", "Upper", "All_Boundaries"))
+    assert default[r < 0.31].mean() > 0.5            # the inflow value entered at Lower
+    assert np.abs(default[r > 0.99]).max() < 1e-8    # nothing reaches Upper, the outflow
+    np.testing.assert_allclose(default, once, rtol=0, atol=1e-10)
+    assert np.abs(twice - once).max() > 1e-3
 
 
 @pytest.mark.tier_b
@@ -188,10 +207,6 @@ def test_the_level_set_far_field_on_an_annulus(advection):
     # A disc of radius 0.15 at (0.65, 0) turned about the origin for one step.
     # On development this was a segmentation fault (the condition on Centre).
     from underworld3.systems import level_set
-    # The enclosed volume before and after; this build's values (SLCN's mass
-    # correction holds it).
-    VOLUME = {"supg": (0.12945209588661516, 0.1285386733368222),
-              "slcn": (0.12945209588661516, 0.12945209588661508)}[advection]
     mesh = _annulus()
     x, y = mesh.X
     psi = uw.discretisation.MeshVariable(f"psi1069{advection}", mesh, 1, degree=2)
@@ -203,4 +218,14 @@ def test_the_level_set_far_field_on_an_annulus(advection):
                                        reini_frequency=5)
     before = solver.interface_volume()
     solver.solve(0.05)
-    assert (before, solver.interface_volume()) == pytest.approx(VOLUME, rel=1e-6)
+    r = np.hypot(X[:, 0], X[:, 1])
+    on_the_walls = (r < 0.3 + 1e-6) | (r > 1.0 - 1e-6)
+    assert on_the_walls.sum() > 0
+    # The far field holds the walls at 0; SLCN's mass correction then shifts
+    # the whole field by one constant, so its walls hold one value.
+    walls = np.asarray(psi.array).ravel()[on_the_walls]
+    assert walls.max() == walls.min()
+    if not solver.conserve_mass:
+        assert walls.max() == 0.0
+    # SLCN's mass correction holds the volume; SUPG's measured drift is 0.7 %
+    assert solver.interface_volume() == pytest.approx(before, rel=1e-10 if advection == "slcn" else 0.02)
