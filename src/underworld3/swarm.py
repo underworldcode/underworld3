@@ -1519,7 +1519,7 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
             if (
                 projector is None
                 or projector.var is not meshVar
-                or projector.mesh_version != self.swarm.mesh._mesh_version
+                or projector.mesh_version != self.swarm.mesh._coordinate_version
             ):
                 projector = CellPolynomialProjector(meshVar)
                 self._cell_projector = projector
@@ -3100,7 +3100,7 @@ class IndexSwarmVariable(SwarmVariable):
         # "cells": one fit for every index at once (the level sets share a basis)
         projector = self._cell_projector
         if (projector is None or projector.var is not self._meshLevelSetVars[0]
-                or projector.mesh_version != self.swarm.mesh._mesh_version):
+                or projector.mesh_version != self.swarm.mesh._coordinate_version):
             projector = CellPolynomialProjector(self._meshLevelSetVars[0])
             self._cell_projector = projector
         old = np.column_stack([np.asarray(v.data[:, 0]) for v in self._meshLevelSetVars])
@@ -3416,7 +3416,7 @@ class Swarm(Stateful, uw_object):
         self.cdim = mesh.cdim
 
         # Mesh version tracking for coordinate change detection
-        self._mesh_version = mesh._mesh_version
+        self._mesh_version = mesh._coordinate_version
 
         # Informational counter incremented at every particle-population
         # mutation site (populate, migrate, add_particles_*, advection
@@ -3664,14 +3664,14 @@ class Swarm(Stateful, uw_object):
         if global_count == 0:
             return
 
-        # A mesh coordinate change (deform / adaptation) strands particles
+        # A mesh coordinate change (deform, adaptation, a mover) strands particles
         # in cells that moved; nothing re-bins them since the read-trigger
         # on swarm.points was retired (#379 item 1 — a collective on READ
         # was itself a parallel hazard). Solve entry is the collective
         # point that notices the mesh version changed.
-        if getattr(self, "_mesh_version", None) != self.mesh._mesh_version:
+        if getattr(self, "_mesh_version", None) != self.mesh._coordinate_version:
             self._needs_migration = True
-            self._mesh_version = self.mesh._mesh_version
+            self._mesh_version = self.mesh._coordinate_version
 
         if not self._deferred_migration_suspended:
             needs_migration = bool(self._needs_migration)
@@ -3725,14 +3725,15 @@ class Swarm(Stateful, uw_object):
         # handled where it can be detected structurally rather than by a flag
         # someone has to remember to set:
         #
-        #   mesh geometry  -- a deform or adapt bumps _mesh_version. The whole
+        #   mesh geometry  -- any change of the node coordinates (a deform, an
+        #                     adaptation, a mover) changes _coordinate_version. The whole
         #                     cache is dropped, because every entry was built
         #                     against the old node positions. Keying on the
         #                     version instead would keep the dead entries
         #                     forever, one set per mesh generation.
         #   particle motion -- migrate() replaces the kd-tree, so an entry that
         #                     does not carry the current tree is stale.
-        version = self.mesh._mesh_version
+        version = self.mesh._coordinate_version
         if self._proxy_cache_mesh_version != version:
             self._proxy_interpolation_cache.clear()
             self._proxy_cache_mesh_version = version
@@ -3899,7 +3900,7 @@ class Swarm(Stateful, uw_object):
             var._create_proxy_variable()  # Safe for all variables (proxied or not)
 
         # Update mesh version tracking
-        self._mesh_version = new_mesh._mesh_version
+        self._mesh_version = new_mesh._coordinate_version
 
     @property
     def local_size(self):

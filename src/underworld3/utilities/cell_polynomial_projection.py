@@ -47,7 +47,7 @@ class CellPolynomialProjector:
         A discontinuous (``continuous=False``) mesh variable of any degree and
         component count. Its element and the mesh's affine cell maps are
         tabulated once here; rebuild the projector when the mesh moves
-        (``mesh_version`` records the mesh version it was built for).
+        (``mesh_version`` records the mesh's coordinate version it was built for).
     """
 
     def __init__(self, meshVar):
@@ -56,7 +56,7 @@ class CellPolynomialProjector:
             raise ValueError("CellPolynomialProjector needs a discontinuous (cell-local) mesh variable")
         self.mesh = mesh
         self.var = meshVar
-        self.mesh_version = mesh._mesh_version
+        self.mesh_version = mesh._coordinate_version
         self.dim = mesh.dim
         self.num_components = meshVar.num_components
         self.fe = mesh.dm.getField(meshVar.field_id)[0]
