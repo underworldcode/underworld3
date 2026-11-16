@@ -793,15 +793,26 @@ def _recorded_rows_where_weak_parallel(coarse, fine, degree, continuous, Xf, Xc,
     global last_parent_rows
     problem = None
     copy_cols = np.zeros(0, dtype=np.int64)
+    copy_nodes = np.zeros((0, ncomp), dtype=np.int64)
     try:
         copies = _fault_copy_nodes(coarse, degree, continuous)
-        copy_cols = np.unique(l2g_c[copies].ravel())
+        # each copy node by its global columns (one per component): the counts
+        # below are of nodes, as in serial, not of columns (#1206 review)
+        copy_nodes = l2g_c[copies]
+        copy_nodes = copy_nodes[(copy_nodes >= 0).any(axis=1)]
+        copy_cols = np.unique(copy_nodes.ravel())
         copy_cols = copy_cols[copy_cols >= 0]
     except Exception as err:   # sanctioned: raised on every rank just below
         problem = (f"fault_mg: reading the coarse fault copies failed: "
                    f"{type(err).__name__}: {err}")
     _collective_raise(problem, error=CollectiveBuildError)
     every = np.unique(np.concatenate(m4.allgather(copy_cols)))
+    node_table = np.unique(np.vstack(m4.allgather(copy_nodes)), axis=0) \
+        if every.size else np.zeros((0, ncomp), dtype=np.int64)
+
+    def nodes_touching(cols):
+        """How many copy nodes have a column in ``cols`` (every rank agrees)."""
+        return int(np.isin(node_table, cols).any(axis=1).sum()) if cols.size else 0
     if not every.size:
         last_parent_rows = None
         return Wall, Call
@@ -894,7 +905,8 @@ def _recorded_rows_where_weak_parallel(coarse, fine, degree, continuous, Xf, Xc,
         after = np.empty_like(after_local)
         m4.Allreduce(after_local, after)
         bar = _WEAK_COPY * float(np.median(norms))
-        remaining = int((after[weak_mask] < bar).sum())
+        remaining = nodes_touching(every[weak_mask][after[weak_mask] < bar])
+    n_weak = nodes_touching(weak_cols)
     last_parent_rows = dict(
         weak_copies=n_weak,
         rows=int(m4.allreduce(rows_taken)),
