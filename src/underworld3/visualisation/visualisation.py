@@ -392,6 +392,21 @@ _VTK_TENSOR_CELL = {
 }
 
 
+def _corner_weights(ref, simplex):
+    """Each point's position as a combination of the reference cell's corners:
+    ``ref`` is ``(n, dim)`` reference coordinates on ``[0, 1]``, the result
+    ``(n, n_corners)``, corners in PETSc's closure-vertex order. Barycentric on a
+    simplex (``ref`` holds the weights of corners 1..dim), multilinear on a quad
+    or hexahedron."""
+    import numpy as np
+
+    if simplex:
+        return np.column_stack([1.0 - ref.sum(axis=1), ref])
+    corners = np.array(_TENSOR_CORNERS[ref.shape[1]])
+    return np.prod(np.where(corners[None, :, :] == 1, ref[:, None, :], 1.0 - ref[:, None, :]),
+                   axis=2)
+
+
 def _reference_lattice(dim, degree, simplex):
     """The degree-``degree`` node lattice of the reference cell, and its sub-cells.
 
@@ -430,12 +445,9 @@ def _reference_lattice(dim, degree, simplex):
                     subcells.append([index[v] for v in verts])
         weights = np.array(nodes, dtype=float) / k
     else:
-        corners = np.array(_TENSOR_CORNERS[dim])
         nodes = list(itertools.product(range(k + 1), repeat=dim))
         index = {n: i for i, n in enumerate(nodes)}
-        t = np.array(nodes, dtype=float) / k
-        weights = np.prod(np.where(corners[None, :, :] == 1, t[:, None, :], 1.0 - t[:, None, :]),
-                          axis=2)
+        weights = _corner_weights(np.array(nodes, dtype=float) / k, False)
         subcells = [[index[tuple(np.add(base, o))] for o in _VTK_TENSOR_CELL[dim]]
                     for base in itertools.product(range(k), repeat=dim)]
     masks = ((weights > 0) * (1 << np.arange(weights.shape[1]))).sum(axis=1)
@@ -486,15 +498,23 @@ def _orient_subcells_on_surface(conn, X, parent_x, simplex):
     return conn
 
 
-def _fe_reference_nodes(dm, cdim, lattice_ref):
+# A reference coordinate this close to 0 or 1 lies on that face of the
+# reference cell (whose size is 1): it absorbs the round-off in PETSc's nodes.
+_REFERENCE_FACE_TOLERANCE = 1.0e-10
+
+
+def _fe_reference_nodes(dm, cdim, lattice_ref, masks, simplex):
     """The Lagrange nodes of the FE on ``dm``'s field 0, in reference
-    coordinates on ``[0, 1]``, ordered as the equispaced lattice ``lattice_ref``.
+    coordinates on ``[0, 1]``: an ``(n_nodes, dim)`` array ordered as the
+    equispaced lattice ``lattice_ref``, or ``None`` if the FE's nodes do not
+    sit on the lattice's entities in the same numbers.
 
     PETSc places its nodes off the equispaced lattice (``node_endpoints`` is
     off, and from degree 3 the nodes are not equispaced), increasingly so with
-    the degree. Each node is paired with a lattice site by an assignment on the
-    reference cell, where nodes and sites are in the same order along every
-    axis. Returns ``None`` if the FE does not have one node per lattice site.
+    the degree. Each node is first placed on its vertex, edge, face or interior
+    by which corners it has weight on, the same bitmask as ``masks``; only then
+    are the nodes of one entity paired with that entity's lattice sites, by an
+    assignment on the reference cell.
     """
     import numpy as np
     from scipy.optimize import linear_sum_assignment
@@ -503,14 +523,25 @@ def _fe_reference_nodes(dm, cdim, lattice_ref):
     fe = fe[0] if isinstance(fe, tuple) else fe
     dual = fe.getDualSpace()
     dim = lattice_ref.shape[1]
-    # one point functional per node and component; PETSc's reference cell is [-1, 1]
+    # One point functional per node and component, node-major (the section's
+    # layout); PETSc's reference cell is [-1, 1].
     points = np.array([np.asarray(dual.getFunctional(i).getData()[0]).reshape(-1, dim)[0]
                        for i in range(0, dual.getDimension(), cdim)])
     if len(points) != len(lattice_ref):
         return None
     nodes = 0.5 * (points + 1.0)
-    cost = ((lattice_ref[:, None, :] - nodes[None, :, :]) ** 2).sum(-1)
-    return nodes[linear_sum_assignment(cost)[1]]
+    on = _corner_weights(nodes, simplex) > _REFERENCE_FACE_TOLERANCE
+    node_masks = (on * (1 << np.arange(on.shape[1]))).sum(axis=1)
+
+    ordered = np.empty_like(lattice_ref)
+    for slot in np.unique(masks):
+        sites = np.flatnonzero(masks == slot)
+        candidates = np.flatnonzero(node_masks == slot)
+        if len(candidates) != len(sites):
+            return None
+        cost = ((lattice_ref[sites, None, :] - nodes[None, candidates, :]) ** 2).sum(-1)
+        ordered[sites] = nodes[candidates[linear_sum_assignment(cost)[1]]]
+    return ordered
 
 
 def _lagrange_subcell_connectivity(meshVar):
@@ -524,13 +555,12 @@ def _lagrange_subcell_connectivity(meshVar):
     is identified with an entity of the reference lattice by its set of
     corners. Position is used for one thing only: ordering the several nodes
     of a single edge, face or interior, which follow that entity's own
-    orientation. Those are matched to the lattice positions of the same
-    entity in the cell's reference coordinates, where the competing positions
-    are ``1/k`` apart along every axis whatever the cell's aspect ratio, so a
-    node off its equispaced lattice position (PETSc's nodes are not equispaced
-    at high degree) is still matched to the right one.
-    The match is refused, and ``None`` returned, if a node lies ``1/(2k)`` or
-    more from its lattice position in reference coordinates (#1083).
+    orientation. Those are matched to the positions of the same entity's
+    nodes in the FE (PETSc's own, which are not equispaced at high degree),
+    mapped through the cell's corners, with distances measured in reference
+    coordinates, so the cell's aspect ratio does not enter (#1083).
+    The match is refused, and ``None`` returned, if a node lies half the
+    spacing of its entity's nodes or more from its position.
     """
     import itertools
     import numpy as np
@@ -556,12 +586,14 @@ def _lagrange_subcell_connectivity(meshVar):
     X = np.asarray(meshVar.coords_nd, dtype=np.float64)
     dm = mesh._basis_coordinate_dm(k, True)
     try:
-        ref_lattice = _fe_reference_nodes(dm, cdim, weights @ corner_ref)  # (n_nodes, dim)
+        ref_lattice = _fe_reference_nodes(dm, cdim, weights @ corner_ref, masks, simplex)
         if ref_lattice is None:
             return None
         section = dm.getLocalSection()
         cells = np.arange(*dm.getHeightStratum(0))
         nc = len(cells)
+        if nc == 0:
+            return np.zeros((0, subcells.shape[1]), dtype=np.int64)
         corners = closure_points(dm, cells, 0)
         if corners.shape != (nc, n_corners) or (corners < 0).any():
             return None                   # mixed or unexpected cell types
@@ -595,11 +627,14 @@ def _lagrange_subcell_connectivity(meshVar):
     origin_node = corner_nodes[int(np.flatnonzero(~corner_ref.any(axis=1))[0])]
     axis_nodes = [corner_nodes[int(np.flatnonzero((corner_ref == row).all(axis=1))[0])]
                   for row in np.eye(dim)]
-    # The cells are affine (mesh geometry is degree 1; a quad or hexahedron is
-    # mapped through the edges at its first corner), so a position maps back
-    # to reference coordinates through the pseudo-inverse of the edge vectors.
-    # There the spacing between an entity's nodes does not depend on the
-    # cell's aspect ratio.
+    # Each target is PETSc's reference node put through the cell's own map from
+    # its corners (affine on a simplex, multilinear on a quad or hexahedron), so
+    # it is exact on any degree-1 cell. The distance from a node to a target is
+    # measured in reference coordinates, through the pseudo-inverse of the edge
+    # vectors at the first corner, where the spacing between an entity's nodes
+    # does not depend on the cell's aspect ratio. On a cell that is not a
+    # parallelogram that inverse is approximate, which only rescales distances
+    # that are zero for the right pairing.
 
     # Vertices first: their positions place every other lattice node.
     slots = sorted(set(masks.tolist()), key=lambda s: bin(s).count("1"))
@@ -621,12 +656,13 @@ def _lagrange_subcell_connectivity(meshVar):
         if to_ref is None:
             edge = X[nodes[:, axis_nodes]] - X[nodes[:, origin_node]][:, None]   # (nc, dim, cdim)
             to_ref = np.linalg.pinv(np.transpose(edge, (0, 2, 1)))               # (nc, dim, cdim)
-        target = ref_lattice[lattice][None]                              # (1, m, dim)
+        target_ref = ref_lattice[lattice]                                # (m, dim)
         spacing = np.sqrt(np.where(np.eye(m, dtype=bool), np.inf,
-                                   ((target[0, :, None] - target[0, None]) ** 2).sum(-1)).min())
-        actual = np.einsum("nax,nmx->nma", to_ref,
-                           X[rows] - X[nodes[:, origin_node]][:, None])  # (nc, m, dim)
-        cost = ((target[:, :, None, :] - actual[:, None, :, :]) ** 2).sum(-1)
+                                   ((target_ref[:, None] - target_ref[None]) ** 2).sum(-1)).min())
+        target = np.einsum("lc,ncx->nlx", _corner_weights(target_ref, simplex),
+                           X[nodes[:, corner_nodes]])                    # (nc, m, cdim)
+        offset = target[:, :, None, :] - X[rows][:, None, :, :]          # (nc, m, m, cdim)
+        cost = (np.einsum("nax,nijx->nija", to_ref, offset) ** 2).sum(-1)
         if m <= 4:
             perms = np.array(list(itertools.permutations(range(m))))
             total = cost[:, np.arange(m)[None, :], perms].sum(-1)       # (nc, nperm)
@@ -764,6 +800,8 @@ def meshVariable_to_pv_mesh_object(meshVar, alpha=None):
         # This ensures consistency between coordinate scale and alpha parameter
         # mesh.get_max_radius() returns nondimensional values but coords may be
         # dimensional when units are active - causing Delaunay to fail
+        # TODO(BUG): on a rank that holds no cells the cloud is empty and
+        # points.max() raises; reached by a discontinuous variable in parallel.
         points = point_cloud.points
         coord_range = points.max() - points.min()
         # Use a fraction of the coordinate range as a reasonable alpha

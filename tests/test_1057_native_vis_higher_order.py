@@ -220,26 +220,63 @@ def test_spherical_manifold(degree):
     assert ((normals(grid) * parent).sum(axis=1)).min() > 0.0
 
 
-def _stretched(simplex, aspect):
-    """A box whose every cell is exactly affine with the given aspect ratio."""
+def _stretched(dim, simplex, aspect):
+    """A box whose every cell is exactly affine, stretched by ``aspect`` along x."""
     if simplex:
-        mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0),
+        mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0,) * dim, maxCoords=(1.0,) * dim,
                                                  cellSize=0.5, regular=True)
     else:
-        mesh = uw.meshing.StructuredQuadBox(elementRes=(2, 2))
-    mesh.deform(np.asarray(mesh.X.coords) * np.array([float(aspect), 1.0]))
+        mesh = uw.meshing.StructuredQuadBox(elementRes=(2,) * dim)
+    scale = np.ones(dim)
+    scale[0] = aspect
+    mesh.deform(np.asarray(mesh.X.coords) * scale)
     return mesh
 
 
 @pytest.mark.tier_b
-@pytest.mark.parametrize("simplex, degree, aspect",
-                         [(True, 4, 100), (True, 5, 10), (True, 8, 1),
-                          (False, 3, 100), (False, 4, 10)])
-def test_high_aspect_and_high_degree_cells_are_drawn_natively(simplex, degree, aspect):
+@pytest.mark.parametrize("dim, simplex, degree, aspect",
+                         [(2, True, 4, 100), (2, True, 5, 10), (2, True, 8, 1),
+                          (2, False, 3, 100), (2, False, 4, 10),
+                          (3, True, 4, 10), (3, False, 3, 10)])
+def test_high_aspect_and_high_degree_cells_are_drawn_natively(dim, simplex, degree, aspect):
     # Exactly affine cells. The nodes of an edge, face or interior are matched
-    # to the lattice in the cell's reference coordinates, so neither the aspect
-    # ratio nor PETSc's node placement at high degree refuses them (#1083).
-    _check(_stretched(simplex, aspect), degree, exact_volume=float(aspect))
+    # in the cell's reference coordinates, against PETSc's own nodes, so
+    # neither the aspect ratio nor the node placement at high degree refuses
+    # them (#1083). The 3-D cases reach face and interior matching.
+    _check(_stretched(dim, simplex, aspect), degree, exact_volume=float(aspect))
+
+
+@pytest.mark.tier_b
+@pytest.mark.parametrize("dim, degree", [(2, 3), (2, 4), (3, 3)])
+def test_tapered_quads_and_hexahedra_are_drawn_natively(dim, degree):
+    # x -> x (1 + 0.3 z) on the unit square (z = y) or cube: every cell is
+    # bilinear or trilinear, not a parallelogram, and its faces stay planar, so
+    # the sub-cells, whose corners are the variable's nodes, fill the tapered
+    # box exactly. Its volume is 1.15.
+    mesh = uw.meshing.StructuredQuadBox(elementRes=(3,) * dim)
+    x = np.asarray(mesh.X.coords).copy()
+    x[:, 0] *= 1.0 + 0.3 * x[:, dim - 1]
+    mesh.deform(x)
+    T = uw.discretisation.MeshVariable(f"T_taper{dim}{degree}", mesh, 1, degree=degree)
+    grid = vis.meshVariable_to_native_pv_mesh(T)
+    assert grid is not None
+    assert grid.n_cells == _n_cells(mesh) * degree**dim
+    sizes = grid.compute_cell_sizes(length=False, area=dim == 2, volume=dim == 3)
+    size = np.asarray(sizes.cell_data["Area" if dim == 2 else "Volume"])
+    assert size.min() > 0.0
+    assert size.sum() == pytest.approx(1.15, rel=1e-10)
+
+
+@pytest.mark.tier_b
+def test_a_cubed_sphere_is_drawn_natively_at_degree_3():
+    # Hexahedra whose inner face is smaller than the outer one.
+    mesh = uw.meshing.CubedSphere(numElements=2)
+    T = uw.discretisation.MeshVariable("T_cubed3", mesh, 1, degree=3)
+    grid = vis.meshVariable_to_native_pv_mesh(T)
+    assert grid is not None
+    assert grid.n_cells == _n_cells(mesh) * 27
+    size = np.asarray(grid.compute_cell_sizes(length=False, area=False, volume=True).cell_data["Volume"])
+    assert size.min() > 0.0
 
 
 @pytest.mark.tier_b
