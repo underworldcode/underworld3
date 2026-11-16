@@ -4296,9 +4296,20 @@ class _BaseIntegrationPointVariable(_BaseMeshVariable):
 
     def _create_petsc_fe(self, dim, prefix):
         from underworld3.cython.petsc_quadrature_fe import create_delta_fe
-        cStart, _ = self.mesh.dm.getHeightStratum(0)
+        # The reference cell comes from facts every rank agrees on (the dimension
+        # and the reconciled isSimplex, from which the rule itself is built), not
+        # from a local cell: a rank with no cells has none to ask, and it must
+        # build the same element as the others to enter the same collectives.
+        polytope = {
+            (1, True): PETSc.DM.PolytopeType.SEGMENT,
+            (1, False): PETSc.DM.PolytopeType.SEGMENT,
+            (2, True): PETSc.DM.PolytopeType.TRIANGLE,
+            (2, False): PETSc.DM.PolytopeType.QUADRILATERAL,
+            (3, True): PETSc.DM.PolytopeType.TETRAHEDRON,
+            (3, False): PETSc.DM.PolytopeType.HEXAHEDRON,
+        }[(dim, bool(self.mesh.isSimplex))]
         return create_delta_fe(
-            self.mesh.integration_rule, self.mesh.dm.getCellType(cStart),
+            self.mesh.integration_rule, polytope,
             name=f"{prefix}integration_point_fe", num_components=self.num_components,
         )
 
