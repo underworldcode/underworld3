@@ -859,7 +859,11 @@ def scalar_fn_to_pv_points(pv_mesh, uw_fn, dim=None):
     import numpy as np
 
     if dim is None:
-        if pv_mesh.points[:, 2].max() - pv_mesh.points[:, 2].min() < 1.0e-6:
+        if hasattr(pv_mesh, '_coord_array'):
+            # the mesh's own coordinate dimension, which a rank that holds no
+            # points has too
+            dim = np.shape(pv_mesh._coord_array)[1]
+        elif pv_mesh.points[:, 2].max() - pv_mesh.points[:, 2].min() < 1.0e-6:
             dim = 2
         else:
             dim = 3
@@ -1398,12 +1402,13 @@ def plot_scalar(
     import pyvista as pv
 
     pvmesh = mesh_to_pv_mesh(mesh)
-    pvmesh.point_data[scalar_name] = scalar_fn_to_pv_points(pvmesh, scalar)
+    # The evaluation is collective, so every rank makes it. A rank that holds
+    # no cells then has nothing to draw: pyvista refuses an empty array and an
+    # empty mesh.
+    values = scalar_fn_to_pv_points(pvmesh, scalar)
     if pvmesh.n_cells == 0:
-        # A rank that holds no cells has taken part in the evaluation above,
-        # which is collective, and has nothing to draw: pyvista refuses an
-        # empty mesh.
         return
+    pvmesh.point_data[scalar_name] = values
 
     # Build scalar bar label with units if available
     scalar_bar_title = scalar_name
@@ -1568,27 +1573,28 @@ def plot_vector(
     import pyvista as pv
 
     pvmesh = mesh_to_pv_mesh(mesh)
-    pvmesh.point_data[vector_name] = vector_fn_to_pv_points(pvmesh, vector.sym)
+    # The evaluations are collective, so every rank makes all three before a
+    # rank that holds no cells returns: pyvista refuses an empty array and an
+    # empty mesh.
+    vectors = vector_fn_to_pv_points(pvmesh, vector.sym)
     if scalar is None:
         scalar_name = vector_name + "_mag"
-        pvmesh.point_data[scalar_name] = scalar_fn_to_pv_points(
-            pvmesh, sympy.sqrt(vector.sym.dot(vector.sym))
-        )
+        magnitudes = scalar_fn_to_pv_points(pvmesh, sympy.sqrt(vector.sym.dot(vector.sym)))
     else:
-        pvmesh.point_data[scalar_name] = scalar_fn_to_pv_points(pvmesh, scalar.sym)
+        magnitudes = scalar_fn_to_pv_points(pvmesh, scalar.sym)
+    velocity_points = meshVariable_to_pv_cloud(vector)
+    arrows = vector_fn_to_pv_points(velocity_points, vector.sym)
+    if pvmesh.n_cells == 0:
+        return
+    pvmesh.point_data[vector_name] = vectors
+    pvmesh.point_data[scalar_name] = magnitudes
+    velocity_points.point_data[vector_name] = arrows
 
     # Build scalar bar label with units if available
     scalar_bar_title = scalar_name
     if hasattr(pvmesh, '_last_scalar_units') and pvmesh._last_scalar_units:
         scalar_bar_title = f"{scalar_name} ({pvmesh._last_scalar_units})"
 
-    velocity_points = meshVariable_to_pv_cloud(vector)
-    velocity_points.point_data[vector_name] = vector_fn_to_pv_points(velocity_points, vector.sym)
-    if pvmesh.n_cells == 0:
-        # A rank that holds no cells has taken part in the evaluations above,
-        # which are collective, and has nothing to draw: pyvista refuses an
-        # empty mesh.
-        return
 
     pl = pv.Plotter(window_size=window_size)
     if clip_angle != 0.0:

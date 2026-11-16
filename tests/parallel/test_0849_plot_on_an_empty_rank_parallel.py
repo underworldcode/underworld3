@@ -6,8 +6,8 @@ and pyvista raised before the evaluation that the plot functions then make on
 every rank, which is collective: the other ranks waited in it and the job hung
 (measured at np 2 and np 3 on a 96-thread Linux workstation, MPICH).
 
-The mesh is the right triangle of ``empty_rank_fixtures``, with its cells on all
-ranks but the last. Each rank checks that both plot functions return, and that
+The mesh is the right triangle of ``empty_rank_fixtures``, which leaves one rank
+without cells (which one is PETSc's choice). Each rank checks that both plot functions return, and that
 the rank with cells hands its cells to ``add_mesh``, through a recording
 stand-in for ``pyvista.Plotter`` (nothing is rendered, as in ``test_0849``).
 Serial and parallel alike: in serial no rank is empty.
@@ -58,7 +58,7 @@ def test_plot_scalar_and_plot_vector_return_on_a_rank_without_cells(triangle):
     mesh = triangle
     counts = cells_per_rank(mesh)
     if uw.mpi.size > 1:
-        assert counts[-1] == 0                       # the fixture left the last rank empty
+        assert 0 in counts                           # the fixture leaves one rank empty
     T = uw.discretisation.MeshVariable("T_empty_rank", mesh, 1, degree=1)
     V = uw.discretisation.MeshVariable("V_empty_rank", mesh, 2, degree=1)
     X = np.asarray(T.coords)
