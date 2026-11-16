@@ -1,9 +1,10 @@
 """On #1123's sheared 3-D mesh, every point inside the mesh is owned by some rank at
 any rank count, and evaluated exactly in serial.
 
-Development's 50-centroid search missed the containing cell on this mesh: in
-parallel 6 to 52 inside points were owned by no rank (measured by H1 on #1175) and
-came back from extrapolation. The exact locator walks to the containing cell.
+Development's 50-centroid search missed the containing cell on this mesh: before
+#1175, 392, 47 and 10 inside points were owned by no rank at np 1, 2 and 4 on this
+fixture (sheared_box_fixture, structured and gmsh-independent), and came back from
+extrapolation. The exact locator walks to the containing cell.
 
 Inside is decided without the library's locator: each rank tests every point
 against every one of its own cells by barycentric coordinates in numpy, and the
@@ -16,6 +17,8 @@ import pytest
 from mpi4py import MPI
 
 import underworld3 as uw
+
+import sheared_box_fixture
 
 pytestmark = [pytest.mark.level_1, pytest.mark.tier_b, pytest.mark.timeout(300)]
 
@@ -44,15 +47,7 @@ def _inside_some_local_cell(mesh, P):
 
 
 def _sheared_box():
-    mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0., 0., 0.), maxCoords=(1., 1., 1.),
-                                             cellSize=1 / 6, qdegree=3)
-    X = np.asarray(mesh.X.coords).copy()
-    A = np.array([[1.0, 1.2, 0.3], [0.1, 0.7, 0.5], [0.0, 0.2, 0.5]])
-    Y = X @ A.T
-    Y[:, 0] += 0.03 * np.sin(2 * np.pi * X[:, 1])
-    Y[:, 1] += 0.03 * np.sin(2 * np.pi * X[:, 2])
-    Y[:, 2] += 0.03 * np.sin(2 * np.pi * X[:, 0])
-    mesh.deform(Y)
+    mesh = sheared_box_fixture.sheared_box()
     return mesh
 
 
@@ -71,13 +66,11 @@ def _near_interior_edges(mesh):
 
 
 def test_points_in_domain_and_a_swarm_keep_every_inside_point():
-    """Migration reads points_in_domain(strict); in parallel its later stages call
-    the exact locator. Every inside point is owned under it, and a swarm seeded at
-    the inside points keeps every one through migration with lost points deleted.
-    (Serially points_in_domain keeps its boundary-sign test, which still loses some
-    of these points: the swarm follow-up.)"""
-    if uw.mpi.size < 2:
-        pytest.skip("parallel: the serial migration path is unchanged by #1175")
+    """Migration reads points_in_domain(strict), which on a simplex mesh is the
+    exact locator at any rank count (#1213). Every inside point is owned under it,
+    and a swarm seeded at the inside points keeps every one through migration with
+    lost points deleted. (Before #1213, serially, the boundary-sign test left 449
+    of these points in no domain.)"""
     mesh = _sheared_box()
     P = _near_interior_edges(mesh)
     inside = uw.mpi.comm.allreduce(_inside_some_local_cell(mesh, P).astype(np.int64), op=MPI.SUM) > 0
@@ -94,15 +87,7 @@ def test_points_in_domain_and_a_swarm_keep_every_inside_point():
 
 
 def test_every_inside_point_is_owned_and_exact():
-    mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0., 0., 0.), maxCoords=(1., 1., 1.),
-                                             cellSize=1 / 6, qdegree=3)
-    X = np.asarray(mesh.X.coords).copy()
-    A = np.array([[1.0, 1.2, 0.3], [0.1, 0.7, 0.5], [0.0, 0.2, 0.5]])
-    Y = X @ A.T
-    Y[:, 0] += 0.03 * np.sin(2 * np.pi * X[:, 1])
-    Y[:, 1] += 0.03 * np.sin(2 * np.pi * X[:, 2])
-    Y[:, 2] += 0.03 * np.sin(2 * np.pi * X[:, 0])
-    mesh.deform(Y)
+    mesh = sheared_box_fixture.sheared_box()
     T = uw.discretisation.MeshVariable("T1123p", mesh, 1, degree=1)
     T.array[:, 0, 0] = _linear(np.asarray(T.coords))
 

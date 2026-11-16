@@ -3382,25 +3382,6 @@ class Mesh(Stateful, uw_object):
     #  (FE-exact, the quality path); parallel (np>1) falls back to the
     #  partition-agnostic ``global_evaluate`` REMAP (swarm-migration based).
     # ------------------------------------------------------------------ #
-    @staticmethod
-    def _refuse_parallel_refinement_with_units(*variables):
-        """The parallel refinement route reads the coordinates as non-dimensional, so
-        it gets every shape wrong when the model has reference quantities
-        (``uw.get_default_model().has_units()``), whatever the variables carry and
-        whether or not non-dimensional scaling is switched on, and when either
-        variable carries units (#991). Refuse rather than give a wrong value. These
-        facts and the rank count are the same on every rank, so every rank raises
-        together."""
-        if uw.mpi.size == 1:
-            return
-        referenced = uw.get_default_model().has_units()
-        with_units = [v.clean_name for v in variables if getattr(v, "units", None) is not None]
-        if referenced or with_units:
-            reason = ("the model has reference quantities" if referenced
-                      else f"{', '.join(repr(n) for n in with_units)} carry units")
-            raise NotImplementedError(
-                f"Transfers between a parent and its refinement child are not yet "
-                f"right in parallel when {reason}; see #991.")
 
     def _refine_prolongate(self, parent_var, child_var, mode="replace"):
         """Coarse parent -> fine child interpolation (this mesh is the child)."""
@@ -3408,8 +3389,6 @@ class Mesh(Stateful, uw_object):
             raise ValueError("_refine_prolongate requires an adapt() refinement child")
         pv = getattr(parent_var, "_base_var", parent_var)
         cv = getattr(child_var, "_base_var", child_var)
-
-        self._refuse_parallel_refinement_with_units(pv, cv)
 
         if uw.mpi.size > 1:
             from underworld3.discretisation.discretisation_mesh_variables import _evaluated_in_storage_layout
@@ -3445,8 +3424,6 @@ class Mesh(Stateful, uw_object):
             raise ValueError("_refine_restrict requires an adapt() refinement child")
         pv = getattr(parent_var, "_base_var", parent_var)
         cv = getattr(child_var, "_base_var", child_var)
-
-        self._refuse_parallel_refinement_with_units(pv, cv)
 
         if uw.mpi.size > 1:
             from underworld3.discretisation.discretisation_mesh_variables import _evaluated_in_storage_layout
@@ -5192,9 +5169,8 @@ class Mesh(Stateful, uw_object):
         length unit; a unit that is not a length is refused. A plain array is model
         coordinates, as evaluate reads one, and so are dimensionless coordinates. They
         are read in this model's frame: values scaled by another model cannot be told
-        apart. In a units model a plain array the size of
-        the physical domain is refused rather than read as model coordinates and
-        scaled up.
+        apart. In a units model a plain array is refused: it could be metres or model
+        units (#1081).
         """
         from underworld3.utilities.unit_aware_array import UnitAwareArray
 
@@ -5202,11 +5178,10 @@ class Mesh(Stateful, uw_object):
                  if getattr(self.CoordinateSystem, "_scaled", False) else 1.0)
         units = getattr(coords, "units", None)
         if units is not None and not (1.0 * uw.units(str(units))).dimensionality:
-            # Dimensionless coordinates are model coordinates, as a plain array is,
-            # and take the same physical-size check below.
+            # Coordinates marked dimensionless are model coordinates, by the
+            # caller's statement (#1081).
             coords = coords.to("dimensionless")
-            coords = numpy.asarray(getattr(coords, "magnitude", coords), dtype=float)
-            units = None
+            return numpy.asarray(getattr(coords, "magnitude", coords), dtype=float)
         if units is not None:
             if (1.0 * uw.units(str(units))).dimensionality != (1.0 * uw.units("m")).dimensionality:
                 raise ValueError(f"mesh coordinates must be a length, not {units}")
@@ -5215,18 +5190,16 @@ class Mesh(Stateful, uw_object):
             model = uw.non_dimensionalise(coords)
             return numpy.asarray(getattr(model, "magnitude", model), dtype=float)
         model = numpy.asarray(coords, dtype=float)
-        # Collective: a rank with no vertices still enters both reductions.
-        if scale != 1.0:
-            current = numpy.asarray(self._coords).reshape(-1, self.cdim)
-            extent = uw.mpi.comm.allreduce(float(numpy.abs(current).max()) if current.size else 0.0,
-                                           op=uw.MPI.MAX)
-            size = uw.mpi.comm.allreduce(float(numpy.abs(model).max()) if model.size else 0.0,
-                                         op=uw.MPI.MAX)
-            if (extent > 0.0 and size > 0.0
-                    and abs(numpy.log(size / (extent * scale))) < abs(numpy.log(size / extent))):
-                raise ValueError(
-                    "mesh.deform was given a plain array the size of the physical domain. "
-                    "Pass coordinates with units, such as mesh.X.coords, or model coordinates.")
+        # In a model with reference quantities a plain array is ambiguous (metres,
+        # or model units?) and is refused, as a bare number for a dimensional
+        # parameter is (#1081; units ruling, 2026-11-13). The rule depends only on
+        # the model, so every rank decides the same.
+        if uw.get_default_model().has_units():
+            raise ValueError(
+                "mesh.deform: a plain array is ambiguous in a model with reference "
+                "quantities. Pass coordinates with units, e.g. mesh.X.coords plus a "
+                "displacement with units, or model coordinates marked as such, e.g. "
+                "UnitAwareArray(model_coords, units=\"dimensionless\") (#1081).")
         return model
 
     def deform(self, new_coords, *, dt=None, zero=None, verbose=False):
@@ -5244,7 +5217,9 @@ class Mesh(Stateful, uw_object):
         new_coords : ndarray
             Target vertex coordinates, in the shape of ``mesh.X.coords``. Coordinates
             with units, such as ``mesh.X.coords`` itself in a model with reference
-            quantities, are converted; a plain array is read as model coordinates.
+            quantities, are converted. Without reference quantities a plain array is
+            model coordinates; with them it is refused, and model coordinates are
+            passed marked ``units="dimensionless"`` (#1081).
         dt : float, optional
             Timestep for the ALE ``v_mesh = Δx/dt`` correction. Required when
             SemiLagrangian history is present and the move is advective (a
@@ -7670,10 +7645,12 @@ class Mesh(Stateful, uw_object):
 
     def points_in_domain(self, points, strict_validation=True):
         """
-        Determine if the given points lie in this domain.
-        Uses a mesh-boundary skeletonization array to determine whether the point is
-        inside the boundary or outside. If close to the boundary, it checks if points
-        are in a cell.
+        Determine if the given points lie in this rank's part of the domain.
+        On a straight-sided simplex mesh, a point is in it when a local cell
+        contains it (the exact locator), or lies within the evaluation face
+        tolerance of a local cell. Other meshes use a mesh-boundary
+        skeletonization array to decide inside from outside, and check the
+        points close to the boundary against the cells.
 
         Parameters
         ----------
@@ -7681,7 +7658,9 @@ class Mesh(Stateful, uw_object):
             Coordinate array in any physical unit system (will be auto-converted).
             Plain numbers are assumed to be in model coordinates.
         strict_validation : bool
-            Whether to perform strict validation near boundaries
+            Whether to perform strict validation near boundaries. Only other
+            meshes read it: on a straight-sided simplex mesh the claim is
+            containment (or the face tolerance near the boundary) either way.
 
         """
         return self._classify_points_in_domain(points, strict_validation)[0]
@@ -7700,21 +7679,29 @@ class Mesh(Stateful, uw_object):
             Coordinate array in any physical unit system (will be
             auto-converted).
         strict_validation : bool
-            Whether to perform strict validation near boundaries.
+            Whether to perform strict validation near boundaries. Ignored on a
+            straight-sided simplex mesh, where the claim is containment either
+            way.
+        exact_location : bool
+            Evaluation's classification (passed by ``evaluate_nd``): on a
+            simplex mesh in serial, the face tolerance is tested against the
+            cell the walk left the mesh through.
 
         Returns
         -------
         in_or_not : numpy.ndarray of bool
             Exactly what :meth:`points_in_domain` returns.
         cells : numpy.ndarray of int
-            Owning cell for the points the classification actually located,
-            at the evaluation face tolerance (:meth:`_robust_owning_cells`).
-            ``-1`` everywhere else — for an EXTERIOR point that means "not in
-            the local mesh"; for an INTERIOR point it means "not looked up",
-            because the boundary-sign test settled it without a search. A
-            caller that needs a cell for every interior point locates the
-            ``-1`` entries itself, and only when it needs them: nothing here
-            searches on the classifier's behalf.
+            On a straight-sided simplex mesh, every point is located, so this
+            holds the owning cell of every claimed point (the containing cell,
+            or the one the face tolerance claimed it for) and ``-1`` exactly
+            where ``in_or_not`` is False; a caller need not locate those points
+            again. On other meshes, the owning cell for the points the
+            classification actually located, at the evaluation face tolerance
+            (:meth:`_robust_owning_cells`), and ``-1`` everywhere else: for an
+            EXTERIOR point that means "not in the local mesh"; for an INTERIOR
+            point it means "not looked up", because the boundary-sign test
+            settled it without a search.
         """
         # Convert points to model coordinates using the unified conversion function
         # This handles all coordinate formats: plain numbers, unit-aware coordinates, lists, tuples, arrays
@@ -7751,17 +7738,49 @@ class Mesh(Stateful, uw_object):
         # surface-mesh contract, query points are assumed to lie on
         # the manifold; the closest-local-cell test is the right
         # filter, not an inside/outside split.
-        if exact_location and self._simplex_locator() is not None:
-            # For evaluation (``exact_location``, passed by evaluate_nd only):
-            # a point is interior when a local cell contains it, or the face
-            # tolerance of _robust_owning_cells claims it. The boundary-sign
-            # test below can call a contained point exterior on a strongly
-            # sheared mesh (#1123). points_in_domain, which the swarm's
-            # migration reads, keeps the boundary-sign test, so no swarm claim
-            # changes here; making the two agree is the follow-up that passes a
-            # particle's previous cell to the walk.
-            cells = numpy.asarray(self._robust_owning_cells(model_points, for_evaluation=True),
-                                  dtype=numpy.int64)
+        if self._simplex_locator() is not None:
+            # On a simplex mesh the exact locator decides, for evaluation and for
+            # points_in_domain alike: a point is interior when a local cell
+            # contains it, or the face tolerance of _robust_owning_cells claims
+            # it. The boundary-face sign test below stood in for containment far
+            # from the local boundary, and on a strongly sheared mesh it called a
+            # contained point exterior (#1123): a swarm's migration then put that
+            # particle on no rank, while global_evaluate's ownership had it.
+            # Style Charter section 12: containment, not a sign test.
+            if exact_location:
+                # evaluation: the serial exit-cell tolerance test (#1175)
+                cells = numpy.asarray(
+                    self._robust_owning_cells(model_points, for_evaluation=True),
+                    dtype=numpy.int64)
+                return cells >= 0, cells
+            # Claims: exact containment first. A point no local cell contains
+            # takes the face tolerance development applied near the boundary,
+            # so claims change only by contained points: in parallel the
+            # evaluation tolerance (_robust_owning_cells), in serial the
+            # cell-wall test's own (_get_closest_local_cells_internal).
+            locator = self._simplex_locator()
+            cells, _, _ = self._walk_to_owning_cells(locator, model_points)
+            lost = numpy.flatnonzero(cells < 0)
+            # Only near the local boundary, as development applied it: the face
+            # tolerance cannot claim a point farther away, and testing every
+            # point outside the domain cost 7.6 of 11 s on 1e6 points.
+            if lost.shape[0] > 0 and self.boundary_face_control_points_kdtree is not None:
+                dist2, _ = self.boundary_face_control_points_kdtree.query(
+                    model_points[lost], k=1, sqr_dists=True)
+                lost = lost[numpy.asarray(dist2).ravel() < 2 * max_radius ** 2]
+            if lost.shape[0] > 0:
+                if self._eval_use_robust_location():
+                    # _robust_owning_cells' own tolerance search, without walking
+                    # these points a second time
+                    cells[lost] = numpy.asarray(
+                        self._get_closest_local_cells_internal(
+                            model_points[lost], tol=self._EVAL_FACE_TOL),
+                        dtype=numpy.int64)
+                else:
+                    near = numpy.asarray(
+                        self._get_closest_local_cells_internal(model_points[lost]),
+                        dtype=numpy.int64)
+                    cells[lost] = near
             return cells >= 0, cells
         if self.boundary_face_control_points_kdtree is None:
             in_or_not = self._get_closest_local_cells_internal(model_points) != -1

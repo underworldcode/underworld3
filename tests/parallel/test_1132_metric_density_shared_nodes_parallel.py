@@ -112,7 +112,8 @@ def _owned_rows(var):
 def _density(mesh, T, case, nudge_ghosts=False):
     with _gradient(nudge_ghosts):
         metrics.metric_density_from_gradient(mesh, T, **CASES[case])
-    rho = [v[2] for k, v in metrics._MDG_CACHE.items() if k[0] == id(mesh)][0]
+    rho = metrics._density_variable(mesh, CASES[case].get("degree", 1),
+                                    CASES[case].get("name") or "mdg")
     return np.asarray(rho.data[:, 0]).copy(), rho
 
 

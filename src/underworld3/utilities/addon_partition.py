@@ -319,6 +319,21 @@ def inherit_provenance(child, host):
                 except Exception as err:   # sanctioned: raised on every rank just below
                     problem = _located_problem("a surgery's result in the mesh it "
                                                "was made from", err)
+        # the host's record is read under the same guard: one entry per host
+        # cell, or it does not describe the host (#874)
+        inherited = None
+        if problem is None:
+            try:
+                record = np.asarray(parent, dtype=np.int64)
+                if record.ndim != 2 or record.shape != (cv_h.shape[0], 2):
+                    problem = (f"addon_partition: the host's record holds "
+                               f"{tuple(record.shape)} entries for "
+                               f"{cv_h.shape[0]} cells")
+                elif not n_bad:
+                    inherited = record[cell]
+            except Exception as err:   # sanctioned: raised on every rank just below
+                problem = (f"addon_partition: reading the host's record failed: "
+                           f"{type(err).__name__}: {err}")
         _collective_raise(problem)
         n_bad = int(comm.allreduce(n_bad))
         if n_bad:
@@ -326,7 +341,7 @@ def inherit_provenance(child, host):
                 f"addon_partition: {n_bad} cell(s) of a surgery's result lie "
                 f"in no local cell of the mesh it was made from; the surgery "
                 f"was not rank-local.")
-        child._addon_parent = np.asarray(parent, dtype=np.int64)[cell]
+        child._addon_parent = inherited
         child._addon_below = below
     child._addon_reference = None
     if reference is not None:
@@ -417,21 +432,31 @@ def _base_parent_addresses(base, lev, comm):
                                         dtype=np.int64), local])
     if pre is lev:
         return np.asarray(lev._addon_parent, dtype=np.int64).copy()
-    fcent, _v, cvf = _cell_centroids(lev)
-    _c, vxy_p, cv_p = _cell_centroids(pre)
-    cell = np.zeros(cvf.shape[0], dtype=np.int64)
+    # Every rank-local step (the cell tables, the location, the read of the
+    # record) is under the guard, raised on every rank (#874)
     n_bad = 0
+    addresses = None
     problem = None
-    if cvf.shape[0]:
-        if cv_p.shape[0] == 0:
-            n_bad = cvf.shape[0]
-        else:
-            try:
+    try:
+        fcent, _v, cvf = _cell_centroids(lev)
+        _c, vxy_p, cv_p = _cell_centroids(pre)
+        cell = np.zeros(cvf.shape[0], dtype=np.int64)
+        if cvf.shape[0]:
+            if cv_p.shape[0] == 0:
+                n_bad = cvf.shape[0]
+            else:
                 cell, lam = locate_in_cells_exhaustive(fcent, vxy_p, cv_p)
                 n_bad = int((lam.min(axis=1) < -_INSIDE_TOL).sum())
-            except Exception as err:   # sanctioned: raised on every rank just below
-                problem = _located_problem("the cells in the level their "
-                                           "provenance is recorded on", err)
+        record = np.asarray(pre._addon_parent, dtype=np.int64)
+        if record.ndim != 2 or record.shape != (cv_p.shape[0], 2):
+            problem = (f"addon_partition: the record of the level the provenance "
+                       f"is on holds {tuple(record.shape)} entries for "
+                       f"{cv_p.shape[0]} cells")
+        elif not n_bad:
+            addresses = record[cell]
+    except Exception as err:   # sanctioned: raised on every rank just below
+        problem = _located_problem("the cells in the level their "
+                                   "provenance is recorded on", err)
     _collective_raise(problem)
     n_bad = int(comm.allreduce(n_bad))
     if n_bad:
@@ -439,7 +464,7 @@ def _base_parent_addresses(base, lev, comm):
             f"addon_partition: {n_bad} cell(s) lie in no local cell of the "
             f"level their provenance is recorded on; the surgery since the "
             f"last partition was not rank-local.")
-    return np.asarray(pre._addon_parent, dtype=np.int64)[cell]
+    return addresses
 
 
 def _levels_of(mesh):
@@ -628,6 +653,34 @@ def _resolve_parents(below, lev):
         return
     n_old = int(below._addon_n_cells_old)
     cS, cE = below.dm.getHeightStratum(0)
+    # Both star forests below are built on recorded addresses. Each must be a
+    # (rank, old local cell) that exists, checked on every rank before either
+    # is built: a damaged entry gave a PETSc error or an MPI abort on its rank
+    # while the others waited (#874)
+    olds = np.asarray(m4.allgather(n_old), dtype=np.int64)
+    fS, fE = lev.dm.getHeightStratum(0)
+    problem = None
+    try:
+        for what, record, rows in (("cells of the level below", self_old, cE - cS),
+                                   ("parents", parent_old, fE - fS)):
+            record = np.asarray(record)
+            if record.ndim != 2 or record.shape[1] != 2 or (
+                    rows is not None and record.shape[0] != rows):
+                problem = (f"addon_partition: the recorded old addresses of the "
+                           f"{what} have shape {tuple(record.shape)}")
+                break
+            rank_ok = (record[:, 0] >= 0) & (record[:, 0] < m4.size)
+            cell_ok = rank_ok & (record[:, 1] >= 0) & (
+                record[:, 1] < olds[np.where(rank_ok, record[:, 0], 0)])
+            if not cell_ok.all():
+                problem = (f"addon_partition: {int((~cell_ok).sum())} recorded old "
+                           f"address(es) of the {what} name a rank or a cell "
+                           f"that does not exist")
+                break
+    except Exception as err:   # sanctioned: raised on every rank just below
+        problem = (f"addon_partition: checking the recorded old addresses failed: "
+                   f"{type(err).__name__}: {err}")
+    _collective_raise(problem)
     unit = MPI.INT64_T.Create_contiguous(2)
     unit.Commit()
     # directory: old cell -> (new rank, new local)
@@ -694,15 +747,24 @@ def _carried_reference(moved, carried, comm):
     be compared with the ones the moved mesh holds, so a reference in another
     vertex order cannot be taken silently. Collective."""
     from underworld3.utilities.fault_mg import _cell_vertex_table
-    was, reference = carried
-    vxy, _cv = _cell_vertex_table(moved)
-    wrong = int(vxy.shape != was.shape)
-    if not wrong and vxy.size:
-        wrong = int(np.abs(vxy - was).max() > 1e-10 * (1.0 + np.abs(vxy).max()))
+    # rank-local, so a failure on one rank counts as a mismatch there and the
+    # refusal below is reached by every rank (#874)
+    detail = ""
+    try:
+        was, reference = carried
+        vxy, _cv = _cell_vertex_table(moved)
+        wrong = int(vxy.shape != was.shape)
+        if not wrong and vxy.size:
+            wrong = int(np.abs(vxy - was).max() > 1e-10 * (1.0 + np.abs(vxy).max()))
+    except Exception as err:   # sanctioned: refused on every rank just below
+        wrong, reference = 1, None
+        detail = f" ({type(err).__name__}: {err})"
     if comm.allreduce(wrong):
+        details = [d for d in comm.allgather(detail) if d]
         raise RuntimeError(
             "addon_partition internal: the vertices of a moved level are not "
-            "in the order its reference coordinates travelled in.")
+            "in the order its reference coordinates travelled in"
+            + (details[0] if details else "") + ".")
     return reference
 
 

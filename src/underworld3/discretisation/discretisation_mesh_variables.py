@@ -147,6 +147,99 @@ def extend_enum(inherited):
     return wrapper
 
 
+def _clean_name(name):
+    """The name a mesh variable is held under in ``mesh.vars``: its letters,
+    digits and underscores."""
+    import re
+
+    return re.sub(r"[^a-zA-Z0-9_]", "", name)
+
+
+def _owned_name(mesh, name, numbered, owner):
+    """The name a mesh variable that ``owner`` makes on ``mesh`` takes: ``name``
+    if no variable holds it or ``owner`` made the one that does, else the first
+    of ``numbered(1)``, ``numbered(2)``, ... that is free or ``owner``'s.
+
+    The choice reads only ``mesh.vars``, which collective creation keeps the
+    same on every rank, so every rank chooses the same name; a creation count
+    would not, since an object made on one rank only (an expression printed on
+    rank 0) advances it there alone. A single owner keeps the plain name, and
+    so the name its checkpoints carry."""
+    import itertools
+
+    def free(candidate):
+        held = mesh.vars.get(_clean_name(candidate))
+        if held is None:
+            return True
+        made_by = getattr(held, "_made_by", None)
+        return made_by is not None and made_by() is owner
+
+    if free(name):
+        return name
+    for k in itertools.count(1):
+        if free(numbered(k)):
+            return numbered(k)
+
+
+def _mark_made_by(variable, owner):
+    """Record on ``variable``'s base, which ``mesh.vars`` holds, the owner that
+    made it (weakly: the mesh owns the variable)."""
+    import weakref
+
+    base = getattr(variable, "_base_var", variable)
+    base._made_by = weakref.ref(owner)
+
+
+def _declared_layout(mesh, num_components, vtype):
+    """The ``(vtype, shape, num_components)`` a declaration asks for on ``mesh``.
+
+    The type is inferred from ``num_components`` when it is not given. Vector
+    and tensor fields are sized by ``cdim`` (the embedding space) rather than
+    ``dim``: on a manifold mesh (e.g. ``SphericalManifold``, dim 2 and cdim 3)
+    a vector has three components, the tangent-constrained embedded-Cartesian
+    form, and a rank-2 tensor is 3 x 3, the gradient and flux dimensions the
+    JIT and solver layers expect. A vector or tensor may be declared with
+    ``dim`` or ``cdim``; on a volume mesh the two coincide. For a type this
+    does not size, the shape is ``num_components`` as given and the component
+    count ``None``.
+    """
+    import math
+
+    if vtype is None:
+        if isinstance(num_components, int) and num_components == 1:
+            vtype = uw.VarType.SCALAR
+        elif (isinstance(num_components, int)
+              and (num_components == mesh.dim or num_components == mesh.cdim)):
+            vtype = uw.VarType.VECTOR
+        elif isinstance(num_components, tuple):
+            if ((num_components[0] == mesh.dim and num_components[1] == mesh.dim)
+                    or (num_components[0] == mesh.cdim and num_components[1] == mesh.cdim)):
+                vtype = uw.VarType.TENSOR
+            else:
+                vtype = uw.VarType.MATRIX
+        else:
+            raise ValueError(
+                "Unable to infer variable type from `num_components`. Please explicitly set the `vtype` parameter."
+            )
+
+    if not isinstance(vtype, uw.VarType):
+        raise ValueError(
+            "'vtype' must be an instance of 'Variable_Type', for example `underworld.VarType.SCALAR`."
+        )
+
+    if vtype == uw.VarType.SCALAR:
+        return vtype, (1, 1), 1
+    if vtype == uw.VarType.VECTOR:
+        return vtype, (1, mesh.cdim), mesh.cdim
+    if vtype == uw.VarType.TENSOR:
+        return vtype, (mesh.cdim, mesh.cdim), mesh.cdim * mesh.cdim
+    if vtype == uw.VarType.SYM_TENSOR:
+        return vtype, (mesh.cdim, mesh.cdim), math.comb(mesh.cdim + 1, 2)
+    if vtype == uw.VarType.MATRIX:
+        return vtype, num_components, num_components[0] * num_components[1]
+    return vtype, num_components, None
+
+
 class _BaseMeshVariable(Stateful, uw_object):
     """
     The MeshVariable class generates a variable supported by a finite element mesh and the
@@ -201,13 +294,21 @@ class _BaseMeshVariable(Stateful, uw_object):
             name = varname
 
         ## Check if already defined (return existing object)
-        import re
-
-        clean_name = re.sub(r"[^a-zA-Z0-9_]", "", name)
+        clean_name = _clean_name(name)
 
         if clean_name in mesh.vars.keys():
-            print(f"Variable with name {name} already exists on the mesh - Skipping.")
-            return mesh.vars[clean_name]
+            existing = mesh.vars[clean_name]
+            changes = existing._declaration_changes(
+                cls, num_components, vtype, degree, continuous,
+                None if isinstance(varname, list) else varsymbol)
+            if changes:
+                raise ValueError(
+                    f"A variable '{existing.name}' already exists on this mesh under the "
+                    f"name '{clean_name}', and declaring '{name}' would change its "
+                    f"{', '.join(changes)}. Declare it with its own arguments to use it, "
+                    f"or give the new variable another name (#1118)."
+                )
+            return existing
 
         # NOTE: DM reconstruction is now handled in _setup_ds() - no snapshotting needed here
 
@@ -230,6 +331,32 @@ class _BaseMeshVariable(Stateful, uw_object):
         }
 
         return obj
+
+    def _declaration_changes(self, cls, num_components, vtype, degree, continuous, varsymbol):
+        """What a re-declaration under this variable's name asks for differently.
+
+        The variable is identified by its name, so a declaration under the name
+        either asks for this variable or is an error. Returns the attributes it
+        would change, empty when it asks for what is held. The declared type and
+        components are compared as ``_declared_layout`` resolves them, which is
+        how the variable was built. Units and the remesh policy are not compared.
+        """
+        changes = []
+        if cls.is_integration_point != self.is_integration_point:
+            changes.append("kind (mesh or integration-point variable)")
+        if num_components is not None or vtype is not None:
+            asked_vtype, asked_shape, _ = _declared_layout(self.mesh, num_components, vtype)
+            if asked_vtype != self.vtype:
+                changes.append("type")
+            elif tuple(numpy.atleast_1d(asked_shape)) != tuple(numpy.atleast_1d(self.shape)):
+                changes.append("number of components")
+        if degree != self.degree:
+            changes.append("degree")
+        if bool(continuous) != bool(self.continuous):
+            changes.append("continuity")
+        if varsymbol is not None and "{" + varsymbol + "}" != self.symbol:
+            changes.append("symbol")
+        return changes
 
     @timing.routine_timer_decorator
     def __init__(
@@ -279,7 +406,6 @@ class _BaseMeshVariable(Stateful, uw_object):
 
         # Variable initialization logic
         import re
-        import math
 
         # Variable naming and symbol handling
         if isinstance(varname, list):
@@ -306,41 +432,13 @@ class _BaseMeshVariable(Stateful, uw_object):
         self.name = name
         self.symbol = symbol
 
-        # Symbol disambiguation is now handled by _uw_id in UnderworldFunction (2025-12)
-        # No need for invisible \hspace{} hack - clean symbols for everyone!
-        # The mesh.instance_number is passed to UnderworldFunction._uw_id which
-        # makes symbols with same name from different meshes distinct via SymPy's
-        # __eq__ and __hash__ for UndefinedFunction kwargs.
+        # The variable's symbol is told apart from any other by
+        # UnderworldFunction's _uw_id: the mesh and this clean name, which is
+        # unique on the mesh. Two variables may show the same symbol.
 
         self.clean_name = re.sub(r"[^a-zA-Z0-9_]", "", name)
 
-        # Variable type inference. On a cd-1 mesh (dim < cdim, e.g.
-        # SphericalManifold), vector fields are stored with ``cdim``
-        # components — the natural embedded-Cartesian representation
-        # of a surface-tangent vector. We accept either dim or cdim
-        # as a vector match; on volume meshes dim == cdim and the
-        # two branches coincide.
-        if vtype == None:
-            if isinstance(num_components, int) and num_components == 1:
-                vtype = uw.VarType.SCALAR
-            elif (isinstance(num_components, int)
-                  and (num_components == mesh.dim or num_components == mesh.cdim)):
-                vtype = uw.VarType.VECTOR
-            elif isinstance(num_components, tuple):
-                if ((num_components[0] == mesh.dim and num_components[1] == mesh.dim)
-                        or (num_components[0] == mesh.cdim and num_components[1] == mesh.cdim)):
-                    vtype = uw.VarType.TENSOR
-                else:
-                    vtype = uw.VarType.MATRIX
-            else:
-                raise ValueError(
-                    "Unable to infer variable type from `num_components`. Please explicitly set the `vtype` parameter."
-                )
-
-        if not isinstance(vtype, uw.VarType):
-            raise ValueError(
-                "'vtype' must be an instance of 'Variable_Type', for example `underworld.VarType.SCALAR`."
-            )
+        vtype, layout_shape, layout_components = _declared_layout(mesh, num_components, vtype)
 
         self.vtype = vtype
         self._mesh_ref = weakref.ref(mesh)
@@ -394,28 +492,10 @@ class _BaseMeshVariable(Stateful, uw_object):
         else:
             self._units = None
 
-        # Component and shape handling.
-        # Vector / tensor fields are sized by ``cdim`` (the embedded
-        # coordinate space) rather than ``dim`` (topological). For
-        # volume meshes dim == cdim so this is unchanged; for manifold
-        # meshes (e.g. SphericalManifold: dim=2, cdim=3) vectors are
-        # 3-component (tangent-constrained) and rank-2 tensors are
-        # 3x3 — matching the gradient / flux dimensions the JIT and
-        # solver layers expect.
-        if vtype == uw.VarType.SCALAR:
-            self.shape = (1, 1)
-            self.num_components = 1
-        elif vtype == uw.VarType.VECTOR:
-            self.shape = (1, mesh.cdim)
-            self.num_components = mesh.cdim
-        elif vtype == uw.VarType.TENSOR:
-            self.num_components = mesh.cdim * mesh.cdim
-            self.shape = (mesh.cdim, mesh.cdim)
-        elif vtype == uw.VarType.SYM_TENSOR:
-            self.num_components = math.comb(mesh.cdim + 1, 2)
-            self.shape = (mesh.cdim, mesh.cdim)
-        elif vtype == uw.VarType.MATRIX:
-            self.num_components = self.shape[0] * self.shape[1]
+        # Vector and tensor fields are sized by ``cdim``: see _declared_layout.
+        self.shape = layout_shape
+        if layout_components is not None:
+            self.num_components = layout_components
 
         self._data_container = numpy.empty(self.shape, dtype=object)
 
