@@ -10164,8 +10164,12 @@ class Mesh(Stateful, uw_object):
             the on-rank imbalance). Each level re-marks against the metric.
         node_budget : int or None
             Optional cap on the number of *seed* cells marked per level (highest-
-            metric first). **Caveat:** this caps the marked seeds, *not* the
-            resulting DOFs — SBR's conforming closure re-refines the whole
+            metric first). The cap is for the whole mesh, not per rank, so the
+            cells marked do not depend on the partition. Ties, including a flat
+            metric, go to the smallest x, then y, then z, so on a plateau the
+            budget is spent from the low-x end of the feature first. ``0`` marks
+            nothing. **Caveat:** this caps the marked seeds, *not* the resulting
+            DOFs — SBR's conforming closure re-refines the whole
             connected patch from any seed in it, so a seed cap does not bound the
             added DOFs and cannot, on its own, concentrate the finest level near a
             feature. To make the **finest level hug a feature** (a funnel) with
@@ -10463,6 +10467,19 @@ class Mesh(Stateful, uw_object):
 
             return numpy.clip(eval_metric(centroids), 1e-30, None)
 
+        def budget_cut(sel, M, centroids):
+            """The ``node_budget`` cells of highest metric among the candidates
+            ``sel``, over the whole mesh. Collective when a budget is set.
+
+            One budget for the mesh, not one per rank: cut per rank, P ranks
+            marked up to P budgets, and which cells depended on the seams
+            (#1122). Ties go to the smaller centroid, which no partition moves.
+            """
+            if node_budget is None:
+                return sel
+            from underworld3.utilities import edge_split
+            return sel[edge_split.top_over_ranks(M[sel], centroids[sel], node_budget)]
+
         def cell_geometry(dm):
             """Per-cell centroid and size for every cell of a simplicial DM.
 
@@ -10684,11 +10701,10 @@ class Mesh(Stateful, uw_object):
                 if M is not None and cur_h.size:
                     h_target = 1.0 / numpy.sqrt(M)
                     sel = numpy.where(cur_h > h_target)[0]
-                    if node_budget is not None and sel.size > node_budget:
-                        order = numpy.argsort(M[sel])[::-1]
-                        sel = sel[order[:node_budget]]
                 else:
                     sel = numpy.empty(0, dtype=int)   # rank owns no cells this level
+                if M is not None:
+                    sel = budget_cut(sel, M, centroids)
 
                 # Collective stop: refine while ANY rank still has cells to split
                 # (a rank with none may still bisect via the cross-rank closure).
@@ -10780,12 +10796,10 @@ class Mesh(Stateful, uw_object):
                     diameter, _edge_tables = edge_split.cell_diameters(
                         current_dm, return_tables=True)
                     sel = numpy.where(diameter > h_target)[0]
-                    if node_budget is not None and sel.size > node_budget:
-                        order = numpy.argsort(M[sel])[::-1]
-                        sel = sel[order[:node_budget]]
                 else:
                     sel = numpy.empty(0, dtype=int)   # rank owns no cells
                 if M is not None:
+                    sel = budget_cut(sel, M, centroids)
                     # The marking pass has just measured this dm, and the MG
                     # level selection sizes each generation from the same
                     # diameters, so the size is taken here rather than by
@@ -10901,9 +10915,7 @@ class Mesh(Stateful, uw_object):
                     if verbose:
                         uw.pprint(0, f"[adapt] nvb gen {level}: nothing to refine")
                     break
-                if node_budget is not None and sel.size > node_budget:
-                    order = numpy.argsort(M[sel])[::-1]
-                    sel = sel[order[:node_budget]]
+                sel = budget_cut(sel, M, centroids)   # serial path (see above)
                 marked = [int(cids[j]) for j in sel]
                 markers_per_level.append(marked)
                 _n_coarse_verts = len(nvb.coords)   # before this generation
@@ -10978,10 +10990,7 @@ class Mesh(Stateful, uw_object):
                         uw.pprint(0, f"[adapt] level {level}: no cells need refinement")
                     break
 
-                if node_budget is not None and refine.size > node_budget:
-                    # keep the highest-metric (finest-demand) cells first
-                    order = numpy.argsort(M[refine])[::-1]
-                    refine = refine[order[:node_budget]]
+                refine = budget_cut(refine, M, centroids)
 
                 cell_ids = [int(cs + j) for j in refine]
                 markers_per_level.append(cell_ids)
