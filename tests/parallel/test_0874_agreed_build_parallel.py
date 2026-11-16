@@ -309,6 +309,13 @@ def test_a_failure_inside_the_build_takes_the_rbf_retry(monkeypatch):
     assert info is not None and max(info["vel_its_last"]) > 0, info
     record = stokes.pc_fallbacks.get("custom_mg.transfer_builder")
     assert record is not None and "Once in the build" in record["detail"], record
+    # and the retry really installed the RBF hierarchy: a broken RBF build
+    # would degrade to the default preconditioner and still converge
+    # (H1, round 4)
+    assert "custom_mg.build" not in stokes.pc_fallbacks, stokes.pc_fallbacks
+    installed = getattr(stokes, "_custom_mg", None)
+    assert isinstance(installed, dict) and \
+        installed["hierarchy"].builder is custom_mg.rbf_prolongation, installed
 
 
 def test_an_agreed_error_is_not_swallowed_by_the_build(monkeypatch):
