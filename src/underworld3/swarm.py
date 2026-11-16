@@ -256,6 +256,21 @@ def _validate_index_proxy_sampling(proxy_location, proxy_sampling):
     return proxy_sampling
 
 
+def _unshared_name(mesh, name, numbered, own=None):
+    """The name for a mesh variable a swarm variable owns: ``name``, unless a
+    variable of another owner already holds it on ``mesh``, then ``numbered``
+    (which carries the swarm's number). Two swarms on one mesh with variables
+    of the same name keep their proxies apart, and a single swarm keeps the
+    plain name. ``own`` is the variable's previous proxy, which may hold the
+    name. ``mesh.vars`` is the same on every rank, so the choice is too."""
+    import re
+
+    held = mesh.vars.get(re.sub(r"[^a-zA-Z0-9_]", "", name))
+    if held is None or held is getattr(own, "_base_var", own):
+        return name
+    return numbered
+
+
 class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object):
     r"""
     Variable supported by a particle swarm (point cloud).
@@ -1343,6 +1358,10 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
         self._meshVar = None
 
         if self._proxy:
+            proxy_name = _unshared_name(
+                self.swarm.mesh, "proxy_" + self.clean_name,
+                f"proxy_{self.swarm.instance_number}_{self.clean_name}", own=old_meshVar)
+
             # REINIT policy: a swarm proxy is re-projected from the
             # *particles* on next access, so a mesh adapt should NOT
             # interpolate the old proxy values onto the new node
@@ -1355,7 +1374,7 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
                 # Particles -> integration points directly: the assembler reads
                 # the stored values at the rule with no basis interpolation.
                 self._meshVar = uw.discretisation.IntegrationPointVariable(
-                    "proxy_" + self.clean_name,
+                    proxy_name,
                     self.swarm.mesh,
                     self.shape,
                     self._vtype,
@@ -1367,7 +1386,7 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
                 # Particles -> a polynomial per cell (least squares); read by
                 # the assembler through the ordinary discontinuous basis.
                 self._meshVar = uw.discretisation.MeshVariable(
-                    "proxy_" + self.clean_name,
+                    proxy_name,
                     self.swarm.mesh,
                     self.shape,
                     self._vtype,
@@ -1380,7 +1399,7 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
                 self._cell_projector = None
             else:
                 self._meshVar = uw.discretisation.MeshVariable(
-                    "proxy_" + self.clean_name,
+                    proxy_name,
                     self.swarm.mesh,
                     self.shape,
                     self._vtype,
@@ -2799,7 +2818,9 @@ class IndexSwarmVariable(SwarmVariable):
         self._meshLevelSetVars = [None] * self.indices
 
         for i in range(indices):
-            lname = name + R"^{[" + str(i) + R"]}"
+            lname = _unshared_name(
+                self.swarm.mesh, name + R"^{[" + str(i) + R"]}",
+                f"{name}_{self.swarm.instance_number}" + R"^{[" + str(i) + R"]}")
             if proxy_location == "integration_points":
                 self._meshLevelSetVars[i] = uw.discretisation.IntegrationPointVariable(
                     lname, self.swarm.mesh,

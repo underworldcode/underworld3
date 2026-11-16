@@ -4,9 +4,11 @@
 name again returned the existing variable and dropped every new argument, with
 only a print, so a caller asking for two components, degree 1 and the symbol
 ``\\bar{f}`` got one component, degree 2 and ``{f}``. A re-declaration that
-would change the number of components, the type, the degree, the continuity or
-the symbol now raises. One that asks for what the variable already is returns
-it (the rule #780 set for expressions).
+would change the kind (mesh or integration-point variable), the type, the
+number of components, the degree, the continuity or the symbol now raises. One
+that asks for what the variable already is returns it (the rule #780 set for
+expressions); the type and components are compared as the variable resolves
+them when it is built, so a type that overrides the count is the same request.
 
 #824: ``uw.unwrap`` passed ``keep_constants`` and ``return_self`` positionally
 into ``expressions.unwrap(fn, depth, keep_constants, return_self)``, so
@@ -31,8 +33,7 @@ def mesh():
 
 @pytest.mark.tier_b
 @pytest.mark.parametrize("change, kwargs", [
-    ("components", dict(num_components=2)),
-    ("vtype", dict(num_components=2, vtype=uw.VarType.VECTOR)),
+    ("type", dict(num_components=2)),
     ("degree", dict(num_components=1, degree=1)),
     ("continuity", dict(num_components=1, degree=2, continuous=False)),
     ("symbol", dict(num_components=1, degree=2, varsymbol=r"\bar{f}")),
@@ -41,7 +42,7 @@ def test_a_redeclaration_that_changes_the_variable_refuses(mesh, change, kwargs)
     first = uw.discretisation.MeshVariable("f", mesh, 1, degree=2)
     kwargs.setdefault("degree", 2)
     n = kwargs.pop("num_components")
-    with pytest.raises(ValueError, match="already exists"):
+    with pytest.raises(ValueError, match=rf"would change its {change}\. "):
         uw.discretisation.MeshVariable("f", mesh, n, **kwargs)
     # the existing variable is untouched
     held = mesh.vars["f"]
@@ -54,6 +55,46 @@ def test_a_redeclaration_of_the_same_variable_returns_it(mesh):
     first = uw.discretisation.MeshVariable("g", mesh, 2, degree=2, varsymbol=r"\mathbf{g}")
     again = uw.discretisation.MeshVariable("g", mesh, 2, degree=2, varsymbol=r"\mathbf{g}")
     assert again._base_var is first._base_var
+
+
+@pytest.mark.tier_b
+def test_a_change_of_components_alone_refuses(mesh):
+    uw.discretisation.MeshVariable("m", mesh, (2, 3), vtype=uw.VarType.MATRIX)
+    with pytest.raises(ValueError, match=r"would change its number of components\. "):
+        uw.discretisation.MeshVariable("m", mesh, (3, 2), vtype=uw.VarType.MATRIX)
+
+
+@pytest.mark.tier_b
+def test_a_type_only_change_refuses(mesh):
+    # (2, 2) components either way; the type alone differs.
+    uw.discretisation.MeshVariable("t", mesh, (2, 2), vtype=uw.VarType.TENSOR)
+    with pytest.raises(ValueError, match="would change its type"):
+        uw.discretisation.MeshVariable("t", mesh, (2, 2), vtype=uw.VarType.SYM_TENSOR)
+
+
+@pytest.mark.tier_b
+@pytest.mark.parametrize("declare", [
+    # the type overrides the component count, as it does when the variable is built
+    lambda m: uw.discretisation.MeshVariable("u", m, m.dim, vtype=uw.VarType.SCALAR),
+    lambda m: uw.discretisation.IntegrationPointVariable("s", m, vtype=uw.VarType.VECTOR),
+])
+def test_the_same_declaration_twice_returns_the_variable(mesh, declare):
+    first = declare(mesh)
+    assert declare(mesh)._base_var is first._base_var
+
+
+@pytest.mark.tier_b
+def test_a_manifold_vector_redeclared_with_dim_components_returns_it():
+    sphere = uw.meshing.SphericalManifold(radius=1.0, cellSize=0.5)
+    first = uw.discretisation.MeshVariable("w", sphere, sphere.cdim, degree=1)
+    assert uw.discretisation.MeshVariable("w", sphere, sphere.dim, degree=1)._base_var is first._base_var
+
+
+@pytest.mark.tier_b
+def test_an_integration_point_variable_cannot_be_redeclared_as_a_mesh_variable(mesh):
+    uw.discretisation.IntegrationPointVariable("q", mesh)
+    with pytest.raises(ValueError, match="would change its kind"):
+        uw.discretisation.MeshVariable("q", mesh, 1, degree=0, continuous=False)
 
 
 def _nested():

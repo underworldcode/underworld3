@@ -475,13 +475,13 @@ def metric_density_from_gradient(
     cache = _MDG_CACHE.get(key)
     if cache is None:
         g = uw.discretisation.MeshVariable(
-            f"mdg_g_{id(mesh):x}_{tag}{degree}", mesh,
+            f"mdg_g_{mesh.instance_number}_{tag}{degree}", mesh,
             vtype=uw.VarType.VECTOR, degree=int(degree),
             continuous=True)
         gp = uw.systems.Vector_Projection(mesh, g)
         gp.smoothing = 0.0
         rho0 = uw.discretisation.MeshVariable(
-            f"mdg_rho_{id(mesh):x}_{tag}{degree}", mesh,
+            f"mdg_rho_{mesh.instance_number}_{tag}{degree}", mesh,
             vtype=uw.VarType.SCALAR, degree=int(degree),
             continuous=True)
         # Optional pre-smoothing of the input field: a scalar
@@ -490,7 +490,7 @@ def metric_density_from_gradient(
         # from sub-L mesh structure, breaking the metric/mesh
         # feedback loop.
         f_smooth = uw.discretisation.MeshVariable(
-            f"mdg_fs_{id(mesh):x}_{tag}{degree}", mesh,
+            f"mdg_fs_{mesh.instance_number}_{tag}{degree}", mesh,
             vtype=uw.VarType.SCALAR, degree=int(degree),
             continuous=True)
         fp = uw.systems.Projection(mesh, f_smooth)
