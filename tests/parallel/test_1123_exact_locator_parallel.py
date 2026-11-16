@@ -66,13 +66,11 @@ def _near_interior_edges(mesh):
 
 
 def test_points_in_domain_and_a_swarm_keep_every_inside_point():
-    """Migration reads points_in_domain(strict); in parallel its later stages call
-    the exact locator. Every inside point is owned under it, and a swarm seeded at
-    the inside points keeps every one through migration with lost points deleted.
-    (Serially points_in_domain keeps its boundary-sign test, which still loses some
-    of these points: the swarm follow-up.)"""
-    if uw.mpi.size < 2:
-        pytest.skip("parallel: the serial migration path is unchanged by #1175")
+    """Migration reads points_in_domain(strict), which on a simplex mesh is the
+    exact locator at any rank count (#1213). Every inside point is owned under it,
+    and a swarm seeded at the inside points keeps every one through migration with
+    lost points deleted. (Before #1213, serially, the boundary-sign test left 449
+    of these points in no domain.)"""
     mesh = _sheared_box()
     P = _near_interior_edges(mesh)
     inside = uw.mpi.comm.allreduce(_inside_some_local_cell(mesh, P).astype(np.int64), op=MPI.SUM) > 0
