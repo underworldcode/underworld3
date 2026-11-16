@@ -177,3 +177,90 @@ def test_a_solve_after_deform_is_refused():
     mesh.deform(1.001 * np.array(mesh.X.coords))
     with pytest.raises(ValueError, match="was released"):
         stokes.solve_cylindrical_zero_slip_updates(walls=walls, updates=1)
+
+
+@pytest.mark.tier_b
+def test_a_release_that_moves_no_coordinate_refuses_the_solve():
+    """The cache follows the declaration, not only the coordinates: a wall whose
+    surface is released without any vertex moving is refused like a moved one,
+    on every rank."""
+    mesh = _annulus()
+    stokes = _stokes(mesh, "N")
+    walls = {name: stokes.add_cylindrical_zero_slip_transfer(boundary=name, sign=sign,
+                                                            quadrature=6)
+             for name, sign in (("Lower", -1), ("Upper", 1))}
+    version = mesh._geometry_version
+    mesh.bounding_surfaces["Lower"].release("released for the test, with no move")
+    assert mesh._geometry_version == version
+    with pytest.raises(ValueError, match="radial surface of boundary 'Lower' was released"):
+        stokes.solve_cylindrical_zero_slip_updates(walls=walls, updates=1)
+
+
+def _driven_stokes(mesh, tag):
+    # A cos(2 theta) radial load drives a flow, so the lagged datum is not zero
+    # when the mesh moves.
+    stokes = _stokes(mesh, tag)
+    x, y = mesh.X
+    r2 = x**2 + y**2
+    stokes.bodyforce = sp.Matrix([x, y]) * (x**2 - y**2) / r2**sp.Rational(3, 2)
+    walls = {name: stokes.add_cylindrical_zero_slip_transfer(boundary=name, sign=sign,
+                                                            quadrature=6)
+             for name, sign in (("Lower", -1), ("Upper", 1))}
+    return stokes, walls
+
+
+@pytest.mark.tier_b
+def test_a_slide_under_a_driven_flow_restarts_the_lagged_datum():
+    """After a slide that keeps the walls declared, the lagged solve must give
+    what a fresh solver with fresh walls gives on the moved mesh: the datum
+    lagged from the old mesh is not carried over.
+
+    Both solves assemble the same operator and the same data from a zero datum,
+    so they agree to round-off. Measured 2026-11-17 on this fixture (largest
+    speed 6.8e-3): relative difference 1.1e-31 serial and at np 2, 1.3e-16 at
+    np 3, 3.2e-16 at np 4. With the restart removed, so that the datum lagged
+    from the old mesh is carried over the rebuild, it is 1.1e-5 (serial and
+    np 2). The bound of 1e-10 relative sits five orders of magnitude from each.
+    """
+    mesh = _annulus()
+    stokes, walls = _driven_stokes(mesh, "G")
+    stokes.solve_cylindrical_zero_slip_updates(walls=walls, updates=2)
+    assert all(np.any(wall.values != 0.0) for wall in walls.values()), \
+        "the driven flow left a zero lagged datum, so this test cannot see a carried one"
+
+    uw.meshing.smooth_mesh_interior(
+        mesh, metric=_radial_metric(mesh), method="mmpde", slip_surfaces=True,
+        method_kwargs=dict(n_outer=6, step_frac=0.2, tol=5.0e-3))
+    stokes.solve_cylindrical_zero_slip_updates(walls=walls, updates=2)
+
+    fresh, fresh_walls = _driven_stokes(mesh, "H")
+    fresh.solve_cylindrical_zero_slip_updates(walls=fresh_walls, updates=2)
+
+    speed = uw.mpi.comm.allreduce(float(np.max(np.abs(fresh.u.array), initial=0.0)),
+                                  op=MPI.MAX)
+    difference = uw.mpi.comm.allreduce(
+        float(np.max(np.abs(np.asarray(stokes.u.array) - np.asarray(fresh.u.array)),
+                     initial=0.0)), op=MPI.MAX)
+    assert speed > 1.0e-6, "the load drove no flow"
+    assert difference <= 1.0e-10 * speed, (
+        f"the lagged solve after the slide differs from a fresh solve by "
+        f"{difference:.3e} (largest speed {speed:.3e}): a datum lagged from the old mesh "
+        f"was carried over the rebuild")
+
+
+@pytest.mark.tier_b
+def test_a_wall_off_its_declared_circle_is_refused_with_the_distance():
+    """A labelled wall whose vertices left the declared circle (here moved by
+    1e-9 of the radius, ten times the match tolerance, without releasing the
+    declaration) is refused, and the refusal says by how much and against what
+    tolerance."""
+    mesh = _annulus()
+    on_upper = _pinned_mask(mesh.dm, ("Upper",))
+    coords = np.array(mesh.X.coords)
+    coords[on_upper] *= 1.0 + 1.0e-9
+    mesh._deform_mesh(coords)  # the low-level move: it keeps the declaration
+    stokes = _stokes(mesh, "O")
+    with pytest.raises(ValueError, match=r"labelled vertices of boundary 'Upper' are off its "
+                       r"declared circle of radius 2\.22: the largest distance is 1\.0\d*e-09 "
+                       r"of the radius, beyond the match tolerance of 1\.0e-10"):
+        stokes.add_cylindrical_zero_slip_transfer(boundary="Upper", sign=1, quadrature=6)
