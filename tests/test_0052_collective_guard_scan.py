@@ -141,14 +141,6 @@ ACCEPTED = {
         "pass by every rank before the test, so every rank leaves the loop on "
         "the same pass and the reductions of the next pass are reached by all "
         "or by none.",
-    ("utilities/custom_mg.py", "build"):
-        "`pre` is `fault_mg.provenance_source(coarse, fine)`, which walks the "
-        "`_addon_below` / `_addon_parent` attributes of the mesh objects. "
-        "`addon_partition` sets them on every rank together when it builds or "
-        "moves the add-on hierarchy: an array (empty on a rank with no cells) "
-        "or None everywhere, never None on some ranks only. So `pre is not "
-        "None` is the same on every rank. (Seen once the scan read "
-        "`tompi4py()` collectives.)",
     ("utilities/rotated_bc.py", "solve_rotated_freeslip"):
         "the cache is created and destroyed on all ranks together, so "
         "`cache is not None` is uniform; the allgather inside exists "
