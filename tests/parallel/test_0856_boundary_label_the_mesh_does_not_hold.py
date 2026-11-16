@@ -153,13 +153,15 @@ def test_rotated_free_slip_on_a_wall_the_mesh_does_not_hold_is_refused():
     assert [name for name, _ in stokes._rotated_freeslip_bcs] == ["Upper"]
 
 
-def test_an_inactive_region_label_the_mesh_does_not_hold_is_refused():
+def test_an_inactive_region_is_refused_where_it_is_asked_for():
+    """set_active_region refuses at the call, whatever the label (#1154): region
+    discrete systems are not supported, so a missing label never reaches the
+    solve."""
     mesh = _disc()
     stokes = _disc_stokes(mesh)
     stokes.add_dirichlet_bc((0, 0), "Upper")
-    stokes.set_active_region("no_such_region", 1)
-    with pytest.raises(ValueError, match="'no_such_region' not found"):
-        stokes.solve()
+    with pytest.raises(NotImplementedError, match="extract_region"):
+        stokes.set_active_region("no_such_region", 1)
 
 
 def test_default_pinning_warns_when_the_mesh_holds_none_of_its_named_walls():
