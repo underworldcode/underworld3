@@ -851,6 +851,9 @@ class _StressHistoryMixin:
                     continuous=True, units=uw.units.Pa if uw.get_default_model().has_units() else None)
                 self._tau_decode = uw.systems.Tensor_Projection(self.mesh, self._tau_decoded)
                 self._tau_decode.smoothing = 0.0
+                # The decoded stress is a return value of the solver: project it
+                # well below the momentum solve's own tolerance.
+                self._tau_decode.tolerance = 1.0e-10
             self._tau_decode.uw_function = cm._carried_stress_sym(0)
             self._tau_decode.solve()
             return self._tau_decoded
@@ -4283,8 +4286,13 @@ class SNES_Tensor_Projection(SNES_Projection):
         Target tensor mesh variable for the projection.
     scalar_Field : MeshVariable, optional
         Scalar work variable used internally.
-    degree : int, default=2
-        Polynomial degree for the finite element space.
+    degree : int, optional
+        Polynomial degree of the scalar work variable. By default the degree
+        of ``tensor_Field``, whose components are copied in and out of it
+        node for node; a work variable whose nodes are not the tensor's (for
+        a discontinuous tensor, or a ``scalar_Field`` of another degree) is
+        refused. At degree 0 the gradient of a component is zero, so
+        smoothing has no effect.
     verbose : bool, default=False
         Enable verbose output.
 
@@ -4307,10 +4315,12 @@ class SNES_Tensor_Projection(SNES_Projection):
         mesh: uw.discretisation.Mesh,
         tensor_Field: uw.discretisation.MeshVariable = None,
         scalar_Field: uw.discretisation.MeshVariable = None,
-        degree=2,
+        degree=None,
         verbose=False,
     ):
         self.t_field = tensor_Field
+        if degree is None:
+            degree = tensor_Field.degree if tensor_Field is not None else 2
 
         super().__init__(
             mesh=mesh,
@@ -4318,6 +4328,19 @@ class SNES_Tensor_Projection(SNES_Projection):
             degree=degree,
             verbose=verbose,
         )
+
+        # Each component is copied between the tensor and the work variable
+        # node for node, so the two must have the same nodes.
+        if tensor_Field is not None and (
+                self.u.degree != tensor_Field.degree
+                or bool(self.u.continuous) != bool(tensor_Field.continuous)):
+            raise ValueError(
+                f"Tensor_Projection: the work variable '{self.u.clean_name}' (degree "
+                f"{self.u.degree}, continuous={self.u.continuous}) does not have the nodes "
+                f"of the tensor '{tensor_Field.clean_name}' (degree {tensor_Field.degree}, "
+                f"continuous={tensor_Field.continuous}). Pass a scalar_Field with the "
+                f"tensor's degree and continuity."
+            )
 
         return
 
