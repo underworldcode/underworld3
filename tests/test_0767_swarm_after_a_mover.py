@@ -23,6 +23,10 @@ pytestmark = [pytest.mark.level_1, pytest.mark.tier_b]
 
 def _swarm_of_x(location):
     mesh = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.5, cellSize=1 / 8)
+    # A field the move transfers: its transfer evaluates on the pre-move nodes
+    # while the coordinates are being changed, which must not re-bin the swarm.
+    T = uw.discretisation.MeshVariable(f"T_{location}", mesh, 1, degree=2)
+    T.array[:, 0, 0] = np.asarray(T.coords)[:, 0]
     swarm = uw.swarm.Swarm(mesh)
     s = uw.swarm.SwarmVariable(f"s_{location}", swarm, 1, proxy_degree=1,
                                proxy_location=location)
@@ -64,20 +68,20 @@ def test_the_particles_are_rebinned_at_the_first_solve_after_a_mover(monkeypatch
     assert calls == []                      # nothing moved: no re-binning
     uw.meshing.smoothing.smooth_mesh_interior(mesh, method="spring")
     swarm._sync_before_assembly()
-    assert calls == [1]
+    assert calls == [1]                     # once, onto the moved nodes
 
 
 def test_a_cell_proxy_after_a_snapshot_restore_is_evaluated_at_the_restored_nodes():
     # The projector built on the moved nodes must not survive the restore that
     # puts the nodes back.
-    model = uw.get_default_model()
+    orchestration_model = uw.get_default_model()
     mesh, swarm, s = _swarm_of_x("cells")
     before = np.asarray(mesh.X.coords).copy()
-    token = model.save_state()
+    token = orchestration_model.save_state()
     uw.meshing.smoothing.smooth_mesh_interior(mesh, method="spring")
     s.array[:, 0, 0] = swarm._particle_coordinates.array[:, 0, 0]
     assert _proxy_error(s) < EXACT["cells"]          # a projector on the moved nodes
-    model.load_state(token)
+    orchestration_model.load_state(token)
     assert np.array_equal(np.asarray(mesh.X.coords), before)
     s.array[:, 0, 0] = swarm._particle_coordinates.array[:, 0, 0]
     assert _proxy_error(s) < EXACT["cells"]

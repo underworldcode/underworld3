@@ -3664,14 +3664,26 @@ class Swarm(Stateful, uw_object):
         if global_count == 0:
             return
 
-        # A mesh coordinate change (deform, adaptation, a mover) strands particles
-        # in cells that moved; nothing re-bins them since the read-trigger
-        # on swarm.points was retired (#379 item 1 — a collective on READ
-        # was itself a parallel hazard). Solve entry is the collective
-        # point that notices the mesh version changed.
-        if getattr(self, "_mesh_geometry_version", None) != self.mesh._geometry_version:
+        # A mesh coordinate change (deform, adaptation, a mover, a snapshot
+        # restore) strands particles in cells that moved; nothing re-bins them
+        # since the read-trigger on swarm.points was retired (#379 item 1: a
+        # collective on READ was itself a parallel hazard). Solve entry is the
+        # collective point that notices the mesh geometry changed.
+        #
+        # Not while the coordinates are being changed: the field transfer of a
+        # move evaluates on the pre-move nodes, and ephemeral_coords evaluates
+        # on a trial geometry. Re-binning onto those would cost a migration for
+        # nothing and would delete particles that lie outside them. Both
+        # scopes are entered on every rank together. After an ephemeral
+        # excursion the geometry is the committed one again under a new
+        # version, which costs one migration at the next solve.
+        mesh = self.mesh
+        changing = (getattr(mesh, "_in_remesh_transfer", False)
+                    or getattr(mesh, "_coord_mutation_depth", 0) > 0)
+        if (not changing
+                and getattr(self, "_mesh_geometry_version", None) != mesh._geometry_version):
             self._needs_migration = True
-            self._mesh_geometry_version = self.mesh._geometry_version
+            self._mesh_geometry_version = mesh._geometry_version
 
         if not self._deferred_migration_suspended:
             needs_migration = bool(self._needs_migration)
@@ -3726,8 +3738,9 @@ class Swarm(Stateful, uw_object):
         # someone has to remember to set:
         #
         #   mesh geometry  -- any change of the node coordinates (a deform, an
-        #                     adaptation, a mover, a snapshot restore) bumps
-        #                     mesh._geometry_version. The whole
+        #                     adaptation, a mover, a snapshot restore, and the
+        #                     transient ones of a field transfer or
+        #                     ephemeral_coords) bumps mesh._geometry_version. The whole
         #                     cache is dropped, because every entry was built
         #                     against the old node positions. Keying on the
         #                     version instead would keep the dead entries
