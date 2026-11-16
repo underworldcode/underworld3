@@ -39,6 +39,7 @@ from underworld3.utilities._api_tools import uw_object
 from underworld3.utilities.mathematical_mixin import MathematicalMixin
 
 import underworld3.timing as timing
+from underworld3.discretisation.discretisation_mesh_variables import _mark_made_by, _owned_name
 
 comm = uw.mpi.comm
 
@@ -1343,6 +1344,10 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
         self._meshVar = None
 
         if self._proxy:
+            proxy_name = _owned_name(
+                self.swarm.mesh, "proxy_" + self.clean_name,
+                lambda k: f"proxy_{k}_{self.clean_name}", self)
+
             # REINIT policy: a swarm proxy is re-projected from the
             # *particles* on next access, so a mesh adapt should NOT
             # interpolate the old proxy values onto the new node
@@ -1355,7 +1360,7 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
                 # Particles -> integration points directly: the assembler reads
                 # the stored values at the rule with no basis interpolation.
                 self._meshVar = uw.discretisation.IntegrationPointVariable(
-                    "proxy_" + self.clean_name,
+                    proxy_name,
                     self.swarm.mesh,
                     self.shape,
                     self._vtype,
@@ -1367,7 +1372,7 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
                 # Particles -> a polynomial per cell (least squares); read by
                 # the assembler through the ordinary discontinuous basis.
                 self._meshVar = uw.discretisation.MeshVariable(
-                    "proxy_" + self.clean_name,
+                    proxy_name,
                     self.swarm.mesh,
                     self.shape,
                     self._vtype,
@@ -1380,7 +1385,7 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
                 self._cell_projector = None
             else:
                 self._meshVar = uw.discretisation.MeshVariable(
-                    "proxy_" + self.clean_name,
+                    proxy_name,
                     self.swarm.mesh,
                     self.shape,
                     self._vtype,
@@ -1395,6 +1400,7 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
                     # (issue #439). Stored data stays non-dimensional either way.
                     units=self._units,
                 )
+            _mark_made_by(self._meshVar, self)
             # The remesh helper calls this on REINIT vars after an
             # adapt. It holds the SwarmVariable weakly: the proxy's mesh
             # owns the proxy, and a strong capture made that mesh keep the
@@ -2799,7 +2805,11 @@ class IndexSwarmVariable(SwarmVariable):
         self._meshLevelSetVars = [None] * self.indices
 
         for i in range(indices):
-            lname = name + R"^{[" + str(i) + R"]}"
+            # "_<k>_" keeps its trailing separator through cleaning, so the
+            # numbered names of different indices cannot coincide.
+            lname = _owned_name(
+                self.swarm.mesh, name + R"^{[" + str(i) + R"]}",
+                lambda k, i=i: f"{name}_{k}_" + R"^{[" + str(i) + R"]}", self)
             if proxy_location == "integration_points":
                 self._meshLevelSetVars[i] = uw.discretisation.IntegrationPointVariable(
                     lname, self.swarm.mesh,
@@ -2814,6 +2824,7 @@ class IndexSwarmVariable(SwarmVariable):
                     lname, self.swarm.mesh, num_components=1,
                     degree=proxy_degree, continuous=proxy_continuous,
                 )
+            _mark_made_by(self._meshLevelSetVars[i], self)
             self._MaskArray[0, i] = self._meshLevelSetVars[i].sym[0, 0]
 
         # Initialize lazy evaluation state
