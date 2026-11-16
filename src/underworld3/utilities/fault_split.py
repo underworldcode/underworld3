@@ -1754,7 +1754,12 @@ def add_fault(mesh, faults, verbose=False, cut=True, exclude=None,
     # (#1099: without this the child listed the new faults only, and an earlier
     # fault was left split with nothing tying its sides).
     dm, tracked = _track_fault_records(mesh)
+    hosts_marked = bool(cut)
     if cut:
+        # each cell of the mesh being cut carries its own index through the cut
+        # and the split, so every cell of the result knows the cell it was made
+        # from (the split-level transfer reads it, #1120)
+        _mark_host_cells(dm)
         for name, poly in segments:
             # EVERY control point gets a vertex, not just the tips: an
             # interior kink is the same problem as a tip — a distinguished
@@ -1852,7 +1857,48 @@ def add_fault(mesh, faults, verbose=False, cut=True, exclude=None,
     if surfaces:
         out._fault_surfaces = {**(getattr(out, "_fault_surfaces", None) or {}),
                                **surfaces}
+    if hosts_marked:
+        # ``cut`` is the cut Mesh by now, no longer the flag
+        _read_host_cells(out, mesh, [mesh.dm, cut.dm])
     return out
+
+
+_HOST_CELL_LABEL = "UW_HostCell"
+
+
+def _mark_host_cells(dm):
+    """Label each cell of ``dm`` with its own local index. The cut (a DMPlex
+    transform) and the split hand a cell's label value to every cell made from
+    it, so the result's cells can be traced to the cells of the mesh they were
+    made from: a topological record, unaffected by the snapping that moves
+    vertices onto the trace."""
+    if dm.hasLabel(_HOST_CELL_LABEL):
+        dm.removeLabel(_HOST_CELL_LABEL)
+    dm.createLabel(_HOST_CELL_LABEL)
+    label = dm.getLabel(_HOST_CELL_LABEL)
+    cS, cE = dm.getHeightStratum(0)
+    for c in range(cS, cE):
+        label.setValue(c, c - cS)
+
+
+def _read_host_cells(out, host, others=()):
+    """Record on ``out`` the local cell of ``host`` each of its cells was made
+    from (``_cut_parent``, ``-1`` where the label did not reach) and the host
+    itself (``_cut_host``), then drop the label from ``out`` and from the meshes
+    it passed through."""
+    dm = out.dm
+    record = None
+    if dm.hasLabel(_HOST_CELL_LABEL):
+        label = dm.getLabel(_HOST_CELL_LABEL)
+        cS, cE = dm.getHeightStratum(0)
+        record = np.fromiter((label.getValue(c) for c in range(cS, cE)),
+                             dtype=np.int64, count=cE - cS)
+        dm.removeLabel(_HOST_CELL_LABEL)
+    for other in others:
+        if other is not dm and other.hasLabel(_HOST_CELL_LABEL):
+            other.removeLabel(_HOST_CELL_LABEL)
+    out._cut_parent = record
+    out._cut_host = host if record is not None else None
 
 
 def _add_fault_sheets(mesh, faults, verbose=False, partition=True,
