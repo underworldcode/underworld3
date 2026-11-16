@@ -991,6 +991,8 @@ def _append_remote_coarse_nodes(remote, coords_c, l2g_c, lay_c, nc, comm):
     pair stay two nodes. Returns the extended coordinates and
     ``{global row: local DOF index}`` for ``remote``, the appended nodes
     numbered after the held ones and their DOFs as ``node * nc + component``."""
+    from underworld3.utilities.agreed_build import agree
+
     cdim = coords_c.shape[1]
     k = cdim + 2
     rstart, rend = lay_c.rstart, lay_c.rend
@@ -1000,11 +1002,13 @@ def _append_remote_coarse_nodes(remote, coords_c, l2g_c, lay_c, nc, comm):
     vals[l2g_c[own] - rstart, :cdim] = coords_c[node]
     vals[l2g_c[own] - rstart, cdim] = own % nc
     vals[l2g_c[own] - rstart, cdim + 1] = comm.getRank() * 2.0 ** 32 + node
+    agree()                                   # before the collective Vec
     src = PETSc.Vec().createMPI((k * (rend - rstart), PETSc.DECIDE), comm=comm)
     src.getArray()[:] = vals.ravel()
     idx = (np.asarray(remote, dtype=np.int64)[:, None] * k + np.arange(k)).ravel()
     dst = PETSc.Vec().createSeq(idx.size, comm=PETSc.COMM_SELF)
     from_is = PETSc.IS().createGeneral(idx.astype(PETSc.IntType), comm=PETSc.COMM_SELF)
+    agree()                                   # before the collective scatter
     scatter = PETSc.Scatter().create(src, from_is, dst, None)
     scatter.scatter(src, dst, PETSc.InsertMode.INSERT_VALUES, PETSc.ScatterMode.FORWARD)
     got = dst.getArray().reshape(-1, k).copy()
@@ -1038,89 +1042,97 @@ def _fac_patch_split_parallel(P, coords_c, coords_f, lay_c, lay_f, nc, comm,
     ``(owned_global_rows, subdomain_global_rows, links)``, ``links`` from
     :func:`_patch_links`, or ``None``.
     """
-    fstart, fend = lay_f.rstart, lay_f.rend
-    n = fend - fstart
-    indptr, cols, data = P.getValuesCSR()
-    # owned global row -> local full DOF (for its node and coordinates)
-    l2g_f = np.asarray(lay_f.l2g)
-    owned_local = np.flatnonzero((l2g_f >= fstart) & (l2g_f < fend))
-    local_of_row = np.full(n, -1, dtype=np.int64)
-    local_of_row[l2g_f[owned_local] - fstart] = owned_local
-    l2g_c = np.asarray(lay_c.l2g)
-    held_c = np.flatnonzero(l2g_c >= 0)
-    c_local_of_global = dict(zip(l2g_c[held_c].tolist(), held_c.tolist()))
-    # The fine and coarse levels need not share a partition (a placed fault
-    # level takes the add-on partition, the coarse levels the base's), so a
-    # row's coarse node may be held elsewhere. Every column is classified
-    # against its node all the same: those nodes are fetched from their owners.
-    remote = np.unique(cols[~np.isin(cols, l2g_c[held_c])])
-    coords_c, fetched = _append_remote_coarse_nodes(remote, coords_c, l2g_c, lay_c, nc,
-                                                    P.getComm())
-    c_local_of_global.update(fetched)
+    # One agreement context over the whole split (#874): a rank-local
+    # exception anywhere in it is raised on every rank as the same
+    # CollectiveBuildError, at the next agreement point (before each
+    # collective) or at the context's exit. No per-statement guard.
+    from underworld3.utilities.agreed_build import (agree, agreed_build,
+                                                    allreduce as agreed_allreduce)
+    with agreed_build("custom_mg: the FAC patch split"):
+        fstart, fend = lay_f.rstart, lay_f.rend
+        n = fend - fstart
+        indptr, cols, data = P.getValuesCSR()
+        # owned global row -> local full DOF (for its node and coordinates)
+        l2g_f = np.asarray(lay_f.l2g)
+        owned_local = np.flatnonzero((l2g_f >= fstart) & (l2g_f < fend))
+        local_of_row = np.full(n, -1, dtype=np.int64)
+        local_of_row[l2g_f[owned_local] - fstart] = owned_local
+        l2g_c = np.asarray(lay_c.l2g)
+        held_c = np.flatnonzero(l2g_c >= 0)
+        c_local_of_global = dict(zip(l2g_c[held_c].tolist(), held_c.tolist()))
+        # The fine and coarse levels need not share a partition (a placed fault
+        # level takes the add-on partition, the coarse levels the base's), so a
+        # row's coarse node may be held elsewhere. Every column is classified
+        # against its node all the same: those nodes are fetched from their owners.
+        remote = np.unique(cols[~np.isin(cols, l2g_c[held_c])])
+        agree()
+        coords_c, fetched = _append_remote_coarse_nodes(remote, coords_c, l2g_c, lay_c, nc,
+                                                        P.getComm())
+        c_local_of_global.update(fetched)
 
-    bg_cnode = np.full(n, -1, dtype=np.int64)
-    bg_col = np.full(n, -1, dtype=np.int64)
-    patch_row = np.zeros(n, dtype=bool)
-    ref_cnodes = []                      # coarse nodes patch rows reference
-    ref_links = []                       # (row, coarse column) of those references
-    for r in range(n):
-        sl = slice(indptr[r], indptr[r + 1])
-        w = data[sl]
-        li = local_of_row[r]
-        if w.size == 0 or li < 0:
-            patch_row[r] = True
-            continue
-        aw = np.abs(w)
-        j = int(np.argmax(aw))
-        if abs(w[j] - 1.0) > w_tol or (aw.sum() - aw[j]) > w_tol:
-            patch_row[r] = True
-            ref_cnodes += [c_local_of_global[int(g)] // nc for g in cols[sl]]
-            ref_links += [(r, int(g)) for g in cols[sl]]
-            continue
-        cnode = c_local_of_global[int(cols[sl][j])] // nc
-        if np.max(np.abs(coords_f[li // nc] - coords_c[cnode])) > x_tol:
-            patch_row[r] = True
-            ref_cnodes.append(cnode)
-            ref_links.append((r, int(cols[sl][j])))
-            continue
-        bg_cnode[r] = cnode
-        bg_col[r] = int(cols[sl][j])
-    node_of_row = local_of_row // nc
-    nn = int(node_of_row.max()) + 1 if n else 0
-    node_is_patch = np.zeros(max(nn, 1), dtype=bool)
-    node_is_patch[node_of_row[patch_row]] = True
-    bgr = np.flatnonzero(bg_cnode >= 0)
-    if bgr.size:
-        pairs = np.unique(np.stack([bg_cnode[bgr], node_of_row[bgr]], axis=1),
-                          axis=0)
-        counts = np.bincount(pairs[:, 0])
-        dup = np.flatnonzero(counts > 1)
-        if dup.size:
-            node_is_patch[pairs[np.isin(pairs[:, 0], dup), 1]] = True
-    row_is_patch = node_is_patch[node_of_row] if n else np.zeros(0, dtype=bool)
-    csel = np.zeros(coords_c.shape[0], dtype=bool)
-    ref = np.asarray(ref_cnodes, dtype=np.int64)
-    if ref.size:
-        csel[ref] = True
-    # Index csel only where a row has a background coarse node: a rank can
-    # hold fine rows and no coarse node at all, and then csel is empty.
-    halo_rows = np.zeros(n, dtype=bool)
-    with_bg = (~row_is_patch) & (bg_cnode >= 0)
-    halo_rows[with_bg] = csel[bg_cnode[with_bg]]
-    node_in_sub = node_is_patch.copy()
-    if n:
-        node_in_sub[node_of_row[halo_rows]] = True
-    sub_local = np.flatnonzero(node_in_sub[node_of_row]) if n else np.zeros(0, dtype=np.int64)
-    n_sub = comm.allreduce(int(sub_local.size), op=MPI.SUM)
-    n_all = comm.allreduce(int(n), op=MPI.SUM)
-    taken = n_sub <= cover_max * n_all
-    if gate is not None:
-        gate.update(rows=int(n_all), subdomain_rows=int(n_sub), taken=bool(taken))
-    if not taken:
-        return None
-    owned = (np.flatnonzero(row_is_patch) + fstart).astype(np.int64)
-    sub = (sub_local + fstart).astype(np.int64)
-    return owned, sub, _patch_links(sub_local, ref_links, bg_col, node_of_row, fstart)
+        bg_cnode = np.full(n, -1, dtype=np.int64)
+        bg_col = np.full(n, -1, dtype=np.int64)
+        patch_row = np.zeros(n, dtype=bool)
+        ref_cnodes = []                      # coarse nodes patch rows reference
+        ref_links = []                       # (row, coarse column) of those references
+        for r in range(n):
+            sl = slice(indptr[r], indptr[r + 1])
+            w = data[sl]
+            li = local_of_row[r]
+            if w.size == 0 or li < 0:
+                patch_row[r] = True
+                continue
+            aw = np.abs(w)
+            j = int(np.argmax(aw))
+            if abs(w[j] - 1.0) > w_tol or (aw.sum() - aw[j]) > w_tol:
+                patch_row[r] = True
+                ref_cnodes += [c_local_of_global[int(g)] // nc for g in cols[sl]]
+                ref_links += [(r, int(g)) for g in cols[sl]]
+                continue
+            cnode = c_local_of_global[int(cols[sl][j])] // nc
+            if np.max(np.abs(coords_f[li // nc] - coords_c[cnode])) > x_tol:
+                patch_row[r] = True
+                ref_cnodes.append(cnode)
+                ref_links.append((r, int(cols[sl][j])))
+                continue
+            bg_cnode[r] = cnode
+            bg_col[r] = int(cols[sl][j])
+        node_of_row = local_of_row // nc
+        nn = int(node_of_row.max()) + 1 if n else 0
+        node_is_patch = np.zeros(max(nn, 1), dtype=bool)
+        node_is_patch[node_of_row[patch_row]] = True
+        bgr = np.flatnonzero(bg_cnode >= 0)
+        if bgr.size:
+            pairs = np.unique(np.stack([bg_cnode[bgr], node_of_row[bgr]], axis=1),
+                              axis=0)
+            counts = np.bincount(pairs[:, 0])
+            dup = np.flatnonzero(counts > 1)
+            if dup.size:
+                node_is_patch[pairs[np.isin(pairs[:, 0], dup), 1]] = True
+        row_is_patch = node_is_patch[node_of_row] if n else np.zeros(0, dtype=bool)
+        csel = np.zeros(coords_c.shape[0], dtype=bool)
+        ref = np.asarray(ref_cnodes, dtype=np.int64)
+        if ref.size:
+            csel[ref] = True
+        # Index csel only where a row has a background coarse node: a rank can
+        # hold fine rows and no coarse node at all, and then csel is empty.
+        halo_rows = np.zeros(n, dtype=bool)
+        with_bg = (~row_is_patch) & (bg_cnode >= 0)
+        halo_rows[with_bg] = csel[bg_cnode[with_bg]]
+        node_in_sub = node_is_patch.copy()
+        if n:
+            node_in_sub[node_of_row[halo_rows]] = True
+        sub_local = np.flatnonzero(node_in_sub[node_of_row]) if n else np.zeros(0, dtype=np.int64)
+        n_sub = agreed_allreduce(comm, int(sub_local.size), op=MPI.SUM)
+        n_all = agreed_allreduce(comm, int(n), op=MPI.SUM)
+        taken = n_sub <= cover_max * n_all
+        if gate is not None:
+            gate.update(rows=int(n_all), subdomain_rows=int(n_sub), taken=bool(taken))
+        if not taken:
+            return None
+        owned = (np.flatnonzero(row_is_patch) + fstart).astype(np.int64)
+        sub = (sub_local + fstart).astype(np.int64)
+        return owned, sub, _patch_links(sub_local, ref_links, bg_col, node_of_row, fstart)
 
 
 def _patch_links(sub_local, ref_links, bg_col, node_of_row, fstart):
@@ -2103,7 +2115,10 @@ class CustomMGHierarchy:
         # paths call it again).
         try:
             solver.snes.setUp()
-        except Exception:
+        except Exception as err:
+            # an error every rank raised together is not swallowed (#874)
+            from underworld3.utilities.agreed_build import reraise_agreed
+            reraise_agreed(err)
             # Sanctioned swallow: setUp can fail on a not-yet-fully-configured
             # SNES (pre-solve injection). The install paths call setUp again;
             # the finest map then reads the DM's current global section. The
@@ -2590,7 +2605,9 @@ class CustomMGHierarchy:
         DM section could be stale relative to the freshly assembled operator."""
         try:
             op_n = int(solver.snes.getJacobian()[0].getSize()[0])
-        except Exception:
+        except Exception as err:
+            from underworld3.utilities.agreed_build import reraise_agreed
+            reraise_agreed(err)        # an agreed error is not swallowed (#874)
             # Sanctioned: no readable operator to check against — record the
             # skipped guard rather than silently waiving it (#484).
             solver._record_pc_fallback(
@@ -3074,7 +3091,9 @@ def auto_inject_custom_mg(solver, field_id=None):
                     "skipping the auto-pickup (using the default preconditioner). "
                     "set_custom_fmg() an explicit hierarchy to override.")
                 return
-        except Exception:
+        except Exception as err:
+            from underworld3.utilities.agreed_build import reraise_agreed
+            reraise_agreed(err)        # an agreed error is not swallowed (#874)
             # Sanctioned: an unreadable operator must not block working cases —
             # but the skipped guard is on the record.
             solver._record_pc_fallback(

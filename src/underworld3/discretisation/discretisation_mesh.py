@@ -3027,7 +3027,9 @@ class Mesh(Stateful, uw_object):
     def _any_rank_failed(failure):
         """Whether ``failure`` is set on any rank, the same answer on all of them.
         COLLECTIVE, on the communicator no PETSc object shares."""
-        return any(uw.mpi.verdict_comm.allgather(failure is not None))
+        return uw.mpi.first_verdict(
+            None if failure is None else f"{type(failure).__name__}: {failure}",
+            site="Mesh._any_rank_failed") is not None
 
     def _idw_transfer_to_var(self, old_coords, old_data, var):
         """Inverse-distance-weighted transfer of backed-up DOF values.
