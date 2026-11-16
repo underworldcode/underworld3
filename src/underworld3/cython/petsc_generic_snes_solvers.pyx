@@ -3440,10 +3440,34 @@ class SolverBaseClass(uw_object):
             _destroy_rotated_linear_cache(cache)
 
     def _reset(self):
+        """Forget the boundary-value problem; keep the solver's configuration.
 
+        Callers reset between solves to pose another problem on the same
+        solver and fields: every registered condition goes (essential,
+        natural, rotated free-slip, constraint multipliers), and so does
+        everything built from the old problem's numbering (the DM, the SNES,
+        the Stokes nullspace objects). The constitutive model, tolerances,
+        PETSc options and the nullspace SETTINGS stay (#1169).
+        """
         self._reset_rotated_solver_cache()
         self.natural_bcs = []
         self.essential_bcs = []
+        # The rest of the problem (#1169). A Stokes nullspace vector is built on
+        # the old walls' numbering: reused, the next solve diverged (other walls,
+        # the same number of unknowns) or stopped with PETSc error 75 (another
+        # number). Rotated and constraint conditions registered again were held
+        # twice, and two walls had four multiplier fields.
+        if hasattr(self, "_reset_stokes_nullspace"):
+            self._reset_stokes_nullspace()
+        if getattr(self, "_rotated_freeslip_bcs", None):
+            self._rotated_freeslip_bcs = []
+        if getattr(self, "_block_constraint_bcs", None):
+            for h in self._multipliers:
+                self.fields.pop(getattr(h, "_solver_field_name", None), None)
+            self._multipliers = []
+            self._multiplier_screening = []
+            self._block_constraint_bcs = []
+            self._needs_function_rewire = True
         # A teardown means the next solve is a different discrete problem: a resume
         # anchor from the old problem's ||F0|| must not survive into it.
         self._resume_abs_target = None
