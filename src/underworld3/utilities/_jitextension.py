@@ -1011,23 +1011,35 @@ def getext(
             )
 
             if multi_rank and disk_enabled:
+                build_error = None
                 if underworld3.mpi.rank == 0 and module is None:
                     if verbose:
                         print(
                             f"JIT compiling new module on rank 0 ... {source_hash}",
                             flush=True,
                         )
-                    module, tmpdir = compile_and_load(
-                        real_modname, codeguys_final, verbose=verbose
-                    )
-                    if verbose:
-                        print(f"Location of compiled module: {tmpdir}", flush=True)
-                    _jc.store_module(
-                        source_hash, real_modname, tmpdir, constants_manifest
-                    )
+                    try:
+                        module, tmpdir = compile_and_load(
+                            real_modname, codeguys_final, verbose=verbose
+                        )
+                        if verbose:
+                            print(f"Location of compiled module: {tmpdir}", flush=True)
+                        _jc.store_module(
+                            source_hash, real_modname, tmpdir, constants_manifest
+                        )
+                    except Exception as error:
+                        # Held until every rank is here: raised on rank 0
+                        # alone it left the others waiting in the barrier
+                        # below until a wall-clock limit (#842).
+                        build_error = f"{type(error).__name__}: {error}"
                 # Synchronisation point: rank 0 has now published the
-                # entry; other ranks may load it.
+                # entry, or failed to build it; every rank learns which.
                 underworld3.mpi.comm.Barrier()
+                build_error = underworld3.mpi.comm.bcast(build_error, root=0)
+                if build_error is not None:
+                    raise RuntimeError(
+                        f"JIT build of {real_modname} failed on rank 0, so it fails on "
+                        f"every rank:\n{build_error}")
                 if module is None:
                     module = _jc.load_module(
                         source_hash, real_modname, constants_manifest
@@ -1044,10 +1056,29 @@ def getext(
                     print(
                         f"JIT compiling new module ... {source_hash}", flush=True
                     )
+                build_error = None
+                compiled = False
                 if module is None:
-                    module, tmpdir = compile_and_load(
-                        real_modname, codeguys_final, verbose=verbose
-                    )
+                    try:
+                        module, tmpdir = compile_and_load(
+                            real_modname, codeguys_final, verbose=verbose
+                        )
+                        compiled = True
+                    except Exception as error:
+                        build_error = f"{type(error).__name__}: {error}"
+                if multi_rank:
+                    # Each rank compiled its own copy; a failure on some ranks
+                    # only is agreed before any of them goes on (#842).
+                    failed = underworld3.mpi.comm.allgather(build_error)
+                    first = next((e for e in failed if e is not None), None)
+                    if first is not None:
+                        raise RuntimeError(
+                            f"JIT build of {real_modname} failed on rank(s) "
+                            f"{[r for r, e in enumerate(failed) if e is not None]}, so it "
+                            f"fails on every rank:\n{build_error or first}")
+                elif build_error is not None:
+                    raise RuntimeError(build_error)
+                if compiled:
                     if verbose and underworld3.mpi.rank == 0:
                         # Tests in test_0004_pointwise_fns parse this exact
                         # prefix to find the per-call build directory.
@@ -2144,12 +2175,20 @@ def compile_and_load(modname, codeguys, verbose=False):
         env=_petsc_build_env(),
     )
     stdout, stderr = process.communicate()
+    build_output = ""
 
     if process.returncode != 0:
         if verbose:
             print(f"Warning: Build process failed with return code {process.returncode}")
             print(f"stdout: {stdout.decode() if stdout else 'None'}")
             print(f"stderr: {stderr.decode() if stderr else 'None'}")
+        # The compiler's own words, whatever ``verbose`` says: the error below
+        # names only the build directory otherwise (#842).
+        text = (stderr or b"").decode(errors="replace").strip() or \
+            (stdout or b"").decode(errors="replace").strip()
+        tail = "\n".join(text.splitlines()[-40:])[-4000:]
+        build_output = (f"\nThe build exited with code {process.returncode}. The last lines "
+                        f"of its output:\n{tail}\n")
 
     def load_dynamic(name, path):
         """Load an extension module from ``path``.
@@ -2180,6 +2219,7 @@ def compile_and_load(modname, codeguys, verbose=False):
             f"Underworld and therefore any modifications to the above files will not persist into "
             f"your Underworld runtime.\n"
             f"Please contact the developers if you are unable to resolve the issue."
+            f"{build_output}"
         )
 
     return module, tmpdir
