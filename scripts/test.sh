@@ -411,6 +411,8 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   # Shell Inner/Outer cell labels follow the Internal surface, not a radius test:
   # the same assertions hold on one rank, so the file also runs serially.
   batch 3 tests/parallel/test_1175_shell_region_labels.py
+  # So is Stokes.set_active_region's refusal (#1154).
+  batch 3 tests/parallel/test_1154_stokes_active_region_refused_parallel.py
   # So is a constrained Stokes solve with a discontinuous pressure (#1167).
   batch 3 tests/parallel/test_1167_constrained_stokes_discontinuous_pressure_parallel.py
   # So is #1123's sheared mesh: every inside point owned at any rank count, exact serially.

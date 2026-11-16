@@ -45333,24 +45333,6 @@
     "is_public": false
   },
   {
-    "name": "_setup_region_ds",
-    "kind": "method",
-    "file": "src/underworld3/cython/petsc_generic_snes_solvers.pyx",
-    "line": 7634,
-    "signature": "def _setup_region_ds(self):",
-    "parameters": [],
-    "returns": null,
-    "existing_docstring": "Register a trivial DS for the inactive region.\n\n        After _setup_solver populates the default DS with Stokes weak forms,\n        this creates an empty DS for cells in the inactive region. PETSc's\n        DMGetCellDS dispatches per-cell: inactive cells get the empty DS\n        (zero volume contributions), active cells get the default DS.\n",
-    "harvested_comments": [],
-    "status": "partial",
-    "needs": [
-      "NEEDS_PARAMETERS",
-      "NEEDS_RETURNS"
-    ],
-    "parent_class": null,
-    "is_public": false
-  },
-  {
     "name": "_ensure_local_field_index_sets",
     "kind": "method",
     "file": "src/underworld3/cython/petsc_generic_snes_solvers.pyx",
