@@ -66,13 +66,22 @@ def _declared_circle_radius(mesh, boundary):
     if np.any(surface.centre != 0.0):
         raise ValueError(
             f"boundary {boundary!r} is declared as a circle centred at "
-            f"{tuple(surface.centre)}; the circular-wall methods support a circle "
+            f"{tuple(float(c) for c in surface.centre)}; the circular-wall methods support a circle "
             f"centred at the origin only")
     return float(surface.radius)
 
 
 def _edge_key(edge, tolerance):
-    """Coordinate key independent of facet orientation and partition numbering."""
+    """Coordinate key independent of facet orientation and partition numbering.
+
+    TODO(DESIGN): the key rounds ``edge / tolerance`` to integers, so it is a
+    bin, not a tolerance: two coordinates one ulp apart can fall in different
+    bins, and two nearly ``tolerance`` apart in the same one. The match is exact
+    only because every copy compared here is bit-identical (the DM's local
+    coordinates and ``_get_coords_for_basis(1, True)``, ghosts resynchronised
+    from their owners; measured on every rank in review). A key computed from
+    another coordinate source would not have that property.
+    """
     return tuple(sorted(tuple(row) for row in np.rint(edge / tolerance).astype(np.int64)))
 
 
@@ -107,7 +116,20 @@ def _labelled_edge_keys(mesh, boundary, radius, tolerance):
     edges = np.concatenate(uw.mpi.comm.allgather(np.asarray(local).reshape(-1, 2, 2)))
     if not len(edges):
         raise ValueError(f"Boundary {boundary!r} holds no facets.")
-    return {_edge_key(edge, tolerance) for edge in edges}
+    return {_edge_key(edge, tolerance) for edge in edges}, edges
+
+
+def _wall_off_circle(boundary, edges, radius):
+    """The refusal for a labelled wall whose vertices are not on its declared
+    circle to the match tolerance. ``edges`` are gathered, so the message is
+    the same on every rank."""
+    deviation = float(np.max(np.abs(np.linalg.norm(edges, axis=-1) - radius))) / radius
+    return ValueError(
+        f"the labelled vertices of boundary {boundary!r} are off its declared circle "
+        f"of radius {radius}: the largest distance is {deviation:.3e} of the radius, "
+        f"beyond the match tolerance of {_WALL_MATCH_RELATIVE_TOLERANCE:.1e} of the "
+        f"radius. A wall that has left its declared circle must be released, not "
+        f"used as that circle")
 
 
 def _p2_velocity(vertices, velocity, points):
@@ -242,7 +264,7 @@ class _CircularWall:
         # Coordinates identify the wall's cells and nodes; see
         # _WALL_MATCH_RELATIVE_TOLERANCE for why, and what it scales with.
         tolerance = _WALL_MATCH_RELATIVE_TOLERANCE * radius
-        boundary_edges = _labelled_edge_keys(mesh, boundary, radius, tolerance)
+        boundary_edges, labelled_edges = _labelled_edge_keys(mesh, boundary, radius, tolerance)
         vertex_rows = mesh._cell_node_indices(1, True).reshape(-1, 3)
         vertices = np.asarray(mesh._get_coords_for_basis(1, True))[vertex_rows]
         owned = mesh._get_owned_cells_mask()
@@ -275,8 +297,10 @@ class _CircularWall:
         self.vertices = np.concatenate(uw.mpi.comm.allgather(local_vertices))
         self.edges = np.concatenate(uw.mpi.comm.allgather(np.asarray(edges).reshape(-1, 2, 2)))
         if not len(self.edges):
-            raise ValueError("No owned facets lie on the requested circular wall.")
+            raise _wall_off_circle(boundary, labelled_edges, radius)
         if {_edge_key(edge, tolerance) for edge in self.edges} != boundary_edges:
+            if np.max(np.abs(np.linalg.norm(labelled_edges, axis=-1) - radius)) > tolerance:
+                raise _wall_off_circle(boundary, labelled_edges, radius)
             raise ValueError("Owned boundary-cell traces do not cover the labelled circular wall.")
         if np.any(np.linalg.norm(self.edges.mean(axis=1), axis=1) <= tolerance):
             raise ValueError("Circular boundary edges must span less than a semicircle.")
@@ -303,22 +327,28 @@ class _CircularWall:
             circle_weight=radius * cross / np.sum(points**2, axis=-1) * weight)
 
     def refresh_geometry(self):
-        """Build the cached geometry again if the mesh coordinates moved.
+        """Build the cached geometry again if the mesh coordinates moved or the
+        declaration changed.
 
-        The key is the mesh's geometry generation (``_geometry_version``), never a coordinate
-        comparison; the verdict is reduced so every rank rebuilds or none
-        does. A move that kept the wall declared (a mover that slides the
-        wall and restores it onto its circle) is followed: the circle is read
-        from the declaration again, the geometry rebuilt and the lagged datum
-        restarted from zero. A move that released the declaration
-        (:meth:`~underworld3.discretisation.Mesh.deform`, a direct coordinate
-        write) is refused with the reason. Collective. Returns whether the
-        geometry was rebuilt.
+        The declaration is read on every call (``mesh.analytic_surface``), so a
+        wall whose surface was released is refused with the reason whether or
+        not any coordinate moved (:meth:`~underworld3.discretisation.Mesh.deform`,
+        a direct coordinate write, a mover with the wall free, or a release
+        alone). The read is not collective and the registry is the same on every
+        rank, so every rank refuses or none does. The rebuild is keyed on the
+        mesh's geometry generation (``_geometry_version``), never a coordinate
+        comparison, and on the declared radius; the verdict is reduced so every
+        rank rebuilds or none does. A move that kept the wall declared (a mover
+        that slides the wall and restores it onto its circle) is followed: the
+        geometry is rebuilt from the declared circle and the lagged datum
+        restarted from zero. Collective. Returns whether the geometry was rebuilt.
         """
-        moved = self.mesh._geometry_version != self._built_at_geometry_version
-        if not uw.mpi.comm.allreduce(moved, op=MPI.LOR):
+        radius = _declared_circle_radius(self.mesh, self.name)
+        changed = (self.mesh._geometry_version != self._built_at_geometry_version
+                   or radius != self.radius)
+        if not uw.mpi.comm.allreduce(changed, op=MPI.LOR):
             return False
-        self._build_geometry(_declared_circle_radius(self.mesh, self.name))
+        self._build_geometry(radius)
         self._restart_lagged_datum()
         return True
 

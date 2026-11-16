@@ -249,7 +249,8 @@ def test_boundary_adapter_collects_owned_coefficients_and_preserves_velocity(lay
     # PETSc label extraction has a separate real-mesh test; here supply its
     # known fixture boundary so the owned/ghost coefficient adapter is isolated.
     monkeypatch.setattr(module, "_labelled_edge_keys", lambda mesh, name, radius, tolerance:
-                        {module._edge_key(edge, tolerance) for edge in ring.edges})
+                        ({module._edge_key(edge, tolerance) for edge in ring.edges},
+                         ring.edges))
     monkeypatch.setattr(uw.discretisation, "MeshVariable", auxiliary)
     monkeypatch.setattr(uw, "is_nondimensional_scaling_active", lambda: False)
     monkeypatch.setattr(uw, "get_default_model", lambda: SimpleNamespace(has_units_active=lambda: False))
@@ -380,7 +381,9 @@ def test_absent_local_boundary_is_not_dereferenced_before_global_edge_gather(loc
     monkeypatch.setattr(module, "_boundary_stratum_is", lambda dm, mesh, boundary: facets)
     monkeypatch.setattr(uw.mpi, "comm", OtherRankOwnsWall())
     tolerance = 1e-10*radius
-    actual = module._labelled_edge_keys(SimpleNamespace(dm=empty_dm), "Outer", radius, tolerance)
+    actual, gathered = module._labelled_edge_keys(SimpleNamespace(dm=empty_dm), "Outer",
+                                                  radius, tolerance)
     assert actual == {module._edge_key(edge, tolerance) for edge in remote_edges}
+    np.testing.assert_array_equal(gathered, remote_edges)
     if local_stratum == "valid_empty_is":
         assert not facets  # The valid empty IS is released; null handles are untouched.
