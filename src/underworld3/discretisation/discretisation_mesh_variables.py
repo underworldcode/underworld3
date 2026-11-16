@@ -1249,7 +1249,7 @@ class _BaseMeshVariable(Stateful, uw_object):
         return uw.mpi.comm.allreduce(local)
 
     @staticmethod
-    def _saved_cloud_stats(data_file, dim):
+    def _saved_cloud_stats(data_file, cdim):
         """``(rows, duplicated_coordinates)`` of the file's saved cloud.
 
         This is the question that actually decides whether a
@@ -1264,7 +1264,7 @@ class _BaseMeshVariable(Stateful, uw_object):
         if uw.mpi.rank == 0:
             try:
                 with h5py.File(data_file, "r") as h5f:
-                    saved = h5f["fields"]["coordinates"][()].reshape(-1, dim)
+                    saved = h5f["fields"]["coordinates"][()].reshape(-1, cdim)
                 _, counts = np.unique(saved, axis=0, return_counts=True)
                 stats = (int(saved.shape[0]), int((counts > 1).sum()))
             except (OSError, KeyError):
@@ -1316,7 +1316,7 @@ class _BaseMeshVariable(Stateful, uw_object):
             saved_rows, self._n_coincident = 0, self._live_coincident_count()
         else:
             saved_rows, self._n_coincident = self._saved_cloud_stats(
-                data_file, self.mesh.dim)
+                data_file, self.mesh.cdim)
         if self._n_coincident == 0:
             return
 
@@ -1488,7 +1488,7 @@ class _BaseMeshVariable(Stateful, uw_object):
         # would silently drop components for tensor types because shape is
         # ``(N, dim, dim)`` and ``[1]`` returns just ``dim``.
         n_components = self.num_components
-        dim = self.mesh.dim
+        cdim = self.mesh.cdim
 
         if not is_v1_1:
             if uw.mpi.rank == 0:
@@ -1529,13 +1529,13 @@ class _BaseMeshVariable(Stateful, uw_object):
                 )
             if is_v1_1:
                 X_src, D_src = _extract_var_via_bridge(data_file, data_name)
-                X_src = X_src.reshape(-1, dim)
+                X_src = X_src.reshape(-1, cdim)
                 D_src = D_src.reshape(-1, n_components)
             else:
                 with h5py.File(data_file, "r") as h5f:
                     coordinate_dataset = h5f["fields"]["coordinates"]
                     field_dataset = h5f["fields"][data_name]
-                    X_src = coordinate_dataset[()].reshape(-1, dim)
+                    X_src = coordinate_dataset[()].reshape(-1, cdim)
                     D_src = field_dataset[()].reshape(-1, n_components)
                     storage_frame = field_dataset.attrs.get(
                         "storage_frame", h5f.attrs.get("storage_frame")
@@ -1543,10 +1543,10 @@ class _BaseMeshVariable(Stateful, uw_object):
                     if isinstance(storage_frame, bytes):
                         storage_frame = storage_frame.decode()
                     if storage_frame == "physical":
-                        X_src = _physical_dataset_model_values(coordinate_dataset).reshape(-1, dim)
+                        X_src = _physical_dataset_model_values(coordinate_dataset).reshape(-1, cdim)
                         D_src = _physical_dataset_model_values(field_dataset).reshape(-1, n_components)
         else:
-            X_src = np.empty((0, dim), dtype=np.float64)
+            X_src = np.empty((0, cdim), dtype=np.float64)
             D_src = np.empty((0, n_components), dtype=np.float64)
 
         src_size_before = max(source_swarm.dm.getLocalSize(), 0)
@@ -1562,7 +1562,7 @@ class _BaseMeshVariable(Stateful, uw_object):
         # (vertex DOFs are shared) and source/query end up apart.
         source_swarm._route_by_nearest_centroid()
 
-        landed_X = source_swarm._particle_coordinates.array[...].reshape(-1, dim)
+        landed_X = source_swarm._particle_coordinates.array[...].reshape(-1, cdim)
         landed_D = saved.array[:, 0, :]
 
         # ---- Phase 2: query swarm round-trips live DOFs to source rank ----
@@ -1591,10 +1591,10 @@ class _BaseMeshVariable(Stateful, uw_object):
             local_min = np.ascontiguousarray(query_coords.min(axis=0), dtype=np.float64)
             local_max = np.ascontiguousarray(query_coords.max(axis=0), dtype=np.float64)
         else:
-            local_min = np.full(dim, np.inf)
-            local_max = np.full(dim, -np.inf)
-        q_min = np.empty(dim, dtype=np.float64)
-        q_max = np.empty(dim, dtype=np.float64)
+            local_min = np.full(cdim, np.inf)
+            local_max = np.full(cdim, -np.inf)
+        q_min = np.empty(cdim, dtype=np.float64)
+        q_max = np.empty(cdim, dtype=np.float64)
         uw.mpi.comm.Allreduce(local_min, q_min, op=MPI.MIN)
         uw.mpi.comm.Allreduce(local_max, q_max, op=MPI.MAX)
         query_diag = float(np.linalg.norm(q_max - q_min))
@@ -1642,7 +1642,7 @@ class _BaseMeshVariable(Stateful, uw_object):
         # closest — same deterministic rule as the source swarm above.
         query_swarm._route_by_nearest_centroid()
 
-        local_query = query_swarm._particle_coordinates.array[...].reshape(-1, dim)
+        local_query = query_swarm._particle_coordinates.array[...].reshape(-1, cdim)
 
         if landed_X.shape[0] > 0 and local_query.shape[0] > 0:
             kdt = uw.kdtree.KDTree(landed_X)

@@ -985,7 +985,7 @@ def _integration_point_sources_to_cell_fit(expr, mesh, derivfns):
             setattr(mesh, cache_key, work)
             setattr(mesh, cache_key + "_projector", CellPolynomialProjector(work))
         projector = getattr(mesh, cache_key + "_projector")
-        if projector.mesh_version != mesh._mesh_version:
+        if projector.geometry_version != mesh._geometry_version:
             projector = CellPolynomialProjector(work)
             setattr(mesh, cache_key + "_projector", projector)
         # The rule has exactly as many points per cell as a fit of this degree
