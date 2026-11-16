@@ -12980,7 +12980,15 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         # Function to get index set for a field
         def get_local_field_is(section, field, unconstrained=False):
             """
-            This function returns the index set of unconstrained points if True, or all points if False.
+            The local indices of ``field``'s unknowns: all of them, or with
+            ``unconstrained`` only those not constrained.
+
+            Every unknown of each point is taken. The test used to read the
+            PRESSURE's continuity whatever field it was asked for, and to take
+            one index per point: right only for a field with one unknown per
+            point. A discontinuous pressure then sent the multipliers through
+            the unconstrained branch, which leaves out their pinned interior
+            unknowns, and the velocity's complement grew by them (#1167).
             """
             pStart, pEnd = section.getChart()
             indices = []
@@ -12988,8 +12996,8 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                 dof = section.getFieldDof(p, field)
                 if dof > 0:
                     offset = section.getFieldOffset(p, field)
-                    if not unconstrained and self.Unknowns.p.continuous:
-                        indices.append(offset)
+                    if not unconstrained:
+                        indices.extend(range(offset, offset + dof))
                     else:
                         cind = section.getFieldConstraintIndices(p, field)
                         constrained = set(cind) if cind is not None else set()
