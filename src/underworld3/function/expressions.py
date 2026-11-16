@@ -391,8 +391,11 @@ def extract_expressions(fn):
 def extract_meshes(fn):
     """Extract all meshes referenced by MeshVariable symbols in an expression.
 
-    Searches for UnderworldFunction (applied function) atoms and
-    coordinate BaseScalar atoms, collecting the meshes they belong to.
+    Searches for UnderworldFunction (applied function) atoms and collects the
+    meshes their variables belong to. Coordinates are not counted: a coordinate
+    is a position, not mesh-owned data, and coordinates of different meshes
+    compare equal by hash and structure, so they cannot say which mesh an
+    expression belongs to.
 
     Parameters
     ----------
@@ -424,17 +427,13 @@ def extract_meshes(fn):
             if var is not None and hasattr(var, 'mesh') and var.mesh is not None:
                 meshes.add(var.mesh)
 
-    # Coordinates identify a mesh only as UWCoordinates (mesh.X). A raw coordinate
-    # BaseScalar is the same object for every mesh in effect: two meshes'
-    # coordinate systems are both "N" with equal arguments, so their raw scalars
-    # compare equal (#501), and an expression rebuilt on a second mesh can come
-    # back from SymPy's cache holding the first mesh's scalars. Their .mesh is
-    # whichever mesh made the cached object, not evidence of which mesh an
-    # expression belongs to.
-    from underworld3.coordinates import UWCoordinate
-    for atom in fn.atoms(sympy.vector.scalar.BaseScalar):
-        if isinstance(atom, UWCoordinate) and hasattr(atom, 'mesh'):
-            meshes.add(atom.mesh)
+    # Coordinates do not identify a mesh. A coordinate is a position, not data a
+    # mesh owns: another mesh's x evaluated here is the same place. And two
+    # meshes' coordinates are hash-equal and structurally equal (raw scalars by
+    # #501, UWCoordinates by their hash), so a cached expression (an unwrap of
+    # one built on an earlier mesh, for example) can carry the earlier mesh's
+    # coordinates into this one's solver. The foreign- and mixed-mesh refusals
+    # are for variables, which carry their mesh in their function class (#1209).
 
     return meshes
 

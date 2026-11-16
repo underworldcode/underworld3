@@ -32,7 +32,13 @@ def _first_model():
     st.solve()
 
 
-def _free_surface_on_a_new_mesh():
+def _free_surface_built_but_not_solved():
+    """A first model that only builds a FreeSurface (H1's case): its derived
+    solves copy a coordinate-dependent viscosity through unwrap."""
+    _free_surface_on_a_new_mesh(solve=False)
+
+
+def _free_surface_on_a_new_mesh(solve=True):
     mesh = uw.meshing.Annulus(radiusInner=R_IN, radiusOuter=R_OUT, cellSize=0.1, qdegree=3)
     x, y = mesh.X
     r = sympy.sqrt(x ** 2 + y ** 2)
@@ -52,7 +58,8 @@ def _free_surface_on_a_new_mesh():
     fs._comp_adv.constitutive_model.Parameters.diffusivity = model_units(1.0, "m**2/s")
     fs._comp_adv.add_dirichlet_bc(1.0, "Lower")
     fs._comp_adv.add_dirichlet_bc(0.0, "Upper")
-    fs.solve()
+    if solve:
+        fs.solve()
 
 
 def _references():
@@ -63,16 +70,18 @@ def _references():
 
 @pytest.mark.level_2
 @pytest.mark.tier_b
+@pytest.mark.parametrize("first", ["stokes_solved", "free_surface_built"])
 @pytest.mark.parametrize("reset", [True, False], ids=["reset_between", "one_model"])
 @pytest.mark.parametrize("units", [False, True], ids=["plain", "units"])
-def test_a_second_mesh_is_not_handed_the_first_mesh_symbols(units, reset):
-    """Raw coordinate scalars of two meshes compare equal, so this does not need a
-    reset between the two: two meshes in one model meet it too."""
+def test_a_second_mesh_is_not_handed_the_first_mesh_symbols(units, reset, first):
+    """Two meshes' coordinates compare equal by hash and structure, so this does
+    not need a reset between the two: two meshes in one model meet it too."""
     try:
         uw.reset_default_model()
         if units:
             _references()
-        _first_model()
+        {"stokes_solved": _first_model,
+         "free_surface_built": _free_surface_built_but_not_solved}[first]()
         if reset:
             uw.reset_default_model()
             if units:
