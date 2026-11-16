@@ -36,6 +36,17 @@ from scipy.spatial import cKDTree
 
 from .boundary_flux import _boundary_stratum_is
 
+# The wall's vertices, chords and P2 nodes are identified by their coordinates,
+# to this fraction of the wall's radius (TODO(DESIGN), Charter section 12: identity
+# should be topological). The whole wall is gathered on every rank and each P2
+# node is identified across ranks by position (the edge keys, the unique node
+# list, the cover check and the k-d tree map onto the velocity nodes). The
+# label's facet closure gives the same owned wall cells (measured on the test
+# annuli, serial and at np 2 and 4), but replacing the rest needs a global
+# numbering of the wall's vertices and edges and a map from the DM's points to
+# the P1 and P2 node rows, which this unit does not have.
+_WALL_MATCH_RELATIVE_TOLERANCE = 1.0e-10
+
 
 def _declared_circle_radius(mesh, boundary):
     """The radius of the origin-centred circle the mesh declares for ``boundary``.
@@ -228,10 +239,9 @@ class _CircularWall:
         boundary = self.name
         self.radius = float(radius)
         self._built_at_geometry_version = mesh._geometry_version
-        # TODO(DESIGN): the wall's cells and P2 nodes are found by matching
-        # coordinates to 1e-10 of the radius; the label's facet closure and
-        # their support cells would identify them topologically (Charter §12).
-        tolerance = 1e-10 * radius
+        # Coordinates identify the wall's cells and nodes; see
+        # _WALL_MATCH_RELATIVE_TOLERANCE for why, and what it scales with.
+        tolerance = _WALL_MATCH_RELATIVE_TOLERANCE * radius
         boundary_edges = _labelled_edge_keys(mesh, boundary, radius, tolerance)
         vertex_rows = mesh._cell_node_indices(1, True).reshape(-1, 3)
         vertices = np.asarray(mesh._get_coords_for_basis(1, True))[vertex_rows]
