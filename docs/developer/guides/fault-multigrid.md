@@ -292,7 +292,16 @@ parts, in this order of size:
    to the rank that owns most of them. With no zone keyed, the structural rows of
    every fault, a whole network's included, form one block, so the structural
    patch is one LU on one rank, as in serial, at any rank count and under any
-   placement. `seams="conform"` (#670)
+   placement. That is an efficiency choice for 2-D, not the design: the general
+   case is a patch distributed across the ranks (#895):
+
+   > "We have flip-flopped on this endlessly and I still think that the distributed fault is
+   > what we want in the general case. I don't really understand why this cannot be solved
+   > but it is mostly (right now) that it is just much more efficient in 2D to do the solve
+   > on one process. I feel that this is so marginal in 2D that we don't really need to
+   > mention it." (Louis Moresi, 2026-11-17)
+
+   `seams="conform"` (#670)
    meshes the band through the partition boundaries with nothing moved; it would
    spread the band's cells across ranks, but not that block. It also cannot
    place a fault that reaches the domain wall as the library stands: it needs
