@@ -16,7 +16,7 @@ viscosity function.
 **Key Features:**
 - Multi-material constitutive model with level-set averaging
 - Index swarm variable for material tracking
-- Comparison with analytical SolCx solution
+- Comparison with a numerical piecewise-viscosity solution
 - Simple setup suitable for quickstart examples
 
 **Physical Setup:**
@@ -101,10 +101,10 @@ swarm.populate(fill_param=3)
 # Assign materials based on x-coordinate (same as original SolCx)
 x_c = 0.5
 
-material_indices = np.where(swarm.points[:, 0] > x_c, 1, 0)
+material_indices = np.where(swarm.coords[:, 0] > x_c, 1, 0)
 material_var.array[:,0,0] = material_indices.reshape(-1)
 
-print(f"Swarm created with {swarm.points.shape[0]} particles")
+print(f"Swarm created with {swarm.coords.shape[0]} particles")
 print(f"Material 0 (low viscosity): {np.sum(material_indices == 0)} particles")
 print(f"Material 1 (high viscosity): {np.sum(material_indices == 1)} particles")
 
@@ -210,7 +210,7 @@ print(f"Pressure range: {p_range:.6e}")
 
 # %% [markdown]
 """
-## Comparison with Original SolCx
+## Comparison with a Piecewise-Viscosity Formulation
 
 Let's compare our multi-material result with the original piecewise viscosity approach.
 """
@@ -290,7 +290,7 @@ else:
 """
 
 # %%
-if uw.mpi.size == 1:
+def plot_results(mesh, v, p, v_ref, p_ref, material_var, stokes_ref):
     import pyvista as pv
     import underworld3.visualisation as vis
 
@@ -341,7 +341,16 @@ if uw.mpi.size == 1:
     pl.add_mesh(pvmesh, scalars="V_diff", cmap="viridis", show_edges=True,
                 edge_color="white", line_width=0.5, log_scale=True)
     
-    pl.show()
+    try:
+        pl.show()
+    finally:
+        pl.close()
+
+if uw.mpi.size == 1:
+    plot_results(
+        mesh, v, p, v_ref, p_ref,
+        material_var, stokes_ref,
+    )
 
 # %% [markdown]
 """
@@ -349,15 +358,15 @@ if uw.mpi.size == 1:
 
 This demonstration successfully shows:
 
-1. **✅ Multi-material constitutive model works correctly**
+1. **✅ Multi-material constitutive model executes successfully**
    - Proper flux averaging using level-set functions
    - Seamless integration with Stokes solver
    - Maintains solver-authoritative stress history architecture
 
-2. **✅ Accurate reproduction of SolCx benchmark**  
-   - Results match piecewise viscosity approach to machine precision
-   - Demonstrates mathematical correctness of level-set averaging
-   - Validates implementation against known analytical benchmark
+2. **✅ Numerical equivalence of viscosity formulations**
+   - Both numerical formulations agree to the reported precision
+   - Checks consistency between the two numerical formulations
+   - Does not constitute independent analytical SolCx validation
 
 3. **✅ Simple, extensible framework**
    - Easy to set up additional materials
@@ -366,8 +375,8 @@ This demonstration successfully shows:
 
 **Key Insights:**
 - IndexSwarmVariable provides smooth level-set transitions between materials
-- Multi-material flux averaging preserves physical accuracy
-- Performance comparable to single-material approach
+- Both viscosity formulations produce matching results in this test
+- Computational performance is not evaluated here
 - Architecture supports complex material combinations (elastic, plastic, etc.)
 
 **Next Steps:**
@@ -378,5 +387,28 @@ This demonstration successfully shows:
 
 # %%
 print("\nMulti-Material SolCx Demonstration Complete!")
-print(f"Solution validated with relative error: {max(rel_vel_error, rel_pres_error):.2e}")
+print(f"Numerical formulation comparison, relative difference: {max(rel_vel_error, rel_pres_error):.2e}")
 print("Ready for integration into quickstart examples!")
+
+# %%
+# Release simulation objects before standalone interpreter shutdown.
+# Keep variables available when executed interactively.
+if __name__ == "__main__":
+    try:
+        from IPython import get_ipython
+    except ImportError:
+        in_ipython = False
+    else:
+        in_ipython = get_ipython() is not None
+
+    if not in_ipython:
+        import gc
+
+        del multi_material_model
+        del viscous_material_0, viscous_material_1
+        del stokes_ref, stokes
+        del material_var, swarm
+        del v_ref, p_ref, v, p
+        del mesh
+
+        gc.collect()
