@@ -3809,19 +3809,27 @@ class TransverseIsotropicFlowModel(ViscousFlowModel):
 
     .. math::
 
-        \tau_{ij} = \eta_{ijkl} \cdot \frac{1}{2} \left[ \frac{\partial u_k}{\partial x_l}
+        \tau_{ij} = 2 \eta_{ijkl} \dot{\varepsilon}_{kl}, \qquad
+        \dot{\varepsilon}_{kl} = \frac{1}{2} \left[ \frac{\partial u_k}{\partial x_l}
         + \frac{\partial u_l}{\partial x_k} \right]
 
-    where :math:`\eta` is the viscosity tensor defined as:
+    where :math:`\eta` is the viscosity tensor (Moresi & Mühlhaus, 2006):
 
     .. math::
 
-        \eta_{ijkl} = \eta_0 \cdot I_{ijkl} + (\eta_0-\eta_1) \left[ \frac{1}{2} \left[
-        n_i n_l \delta_{jk} + n_j n_k \delta_{il} + n_i n_l \delta_{jk}
-        + n_j n_l \delta_{ik} \right] - 2 n_i n_j n_k n_l \right]
+        \eta_{ijkl} = \eta_0 I_{ijkl} - (\eta_0-\eta_1) \Lambda_{ijkl},
 
-    and :math:`\hat{\mathbf{n}} \equiv \{n_i\}` is the unit vector defining
-    the local orientation of the weak plane (a.k.a. the director).
+        \Lambda_{ijkl} = \frac{1}{2} \left( n_i n_k \delta_{jl} + n_j n_k \delta_{il}
+        + n_i n_l \delta_{jk} + n_j n_l \delta_{ik} \right) - 2 n_i n_j n_k n_l
+
+    :math:`I_{ijkl} = \frac{1}{2}(\delta_{ik}\delta_{jl} + \delta_{il}\delta_{jk})`
+    is the symmetric rank-4 identity and :math:`\hat{\mathbf{n}} \equiv \{n_i\}` is
+    the unit normal to the weak plane (the director). :math:`\Lambda` projects a
+    strain rate onto its shear on the weak plane, so shear along the plane sees
+    :math:`\eta_1` and every other component sees :math:`\eta_0`: for a unit
+    tangent :math:`\hat{\mathbf{t}}` in the plane,
+    :math:`\tau_{nt} = 2 \eta_1 \dot{\varepsilon}_{nt}`.
+    The model's tensor ``viscous_model.c`` is :math:`2\eta_{ijkl}`.
 
     The Mandel constitutive matrix is available in ``viscous_model.C`` and the
     rank-4 tensor form is in ``viscous_model.c``.

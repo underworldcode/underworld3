@@ -69,12 +69,11 @@ This is the Drucker-Prager yield criterion expressed as a viscosity cap. The str
 A transversely isotropic material has a single weak plane defined by its unit normal $\hat{n}$ (the "director"). The fourth-rank viscosity tensor is:
 
 $$
-\eta_{ijkl} = 2\eta_0\,I_{ijkl}
-- (\eta_0 - \eta_1)\left[
-\frac{1}{2}\!\left(n_i n_k \delta_{jl} + n_j n_k \delta_{il}
+\eta_{ijkl} = \eta_0\,I_{ijkl} - (\eta_0 - \eta_1)\,\Lambda_{ijkl},
+\qquad
+\Lambda_{ijkl} = \frac{1}{2}\!\left(n_i n_k \delta_{jl} + n_j n_k \delta_{il}
 + n_i n_l \delta_{jk} + n_j n_l \delta_{ik}\right)
 - 2\,n_i n_j n_k n_l
-\right]
 $$
 
 where $I_{ijkl} = \frac{1}{2}(\delta_{ik}\delta_{jl} + \delta_{il}\delta_{jk})$ is the symmetric identity tensor, $\eta_0$ is the bulk viscosity, and $\eta_1$ is the viscosity for shear along the weak plane. When $\eta_1 = \eta_0$, the anisotropic correction vanishes and the tensor reduces to the isotropic case.
@@ -82,8 +81,10 @@ where $I_{ijkl} = \frac{1}{2}(\delta_{ik}\delta_{jl} + \delta_{il}\delta_{jk})$ 
 The stress is:
 
 $$
-\sigma_{ij} = \eta_{ijkl}\,\dot\varepsilon_{kl}
+\sigma_{ij} = 2\,\eta_{ijkl}\,\dot\varepsilon_{kl}
 $$
+
+$\Lambda$ picks out the shear on the weak plane, so for a unit tangent $\hat{t}$ in the plane $\sigma_{nt} = 2\eta_1\dot\varepsilon_{nt}$, while every other strain-rate component sees $\eta_0$.
 
 The director $\hat{n}$ typically comes from the fault surface normals, transferred to the mesh via nearest-neighbour interpolation. Far from the fault, $\eta_1$ is set equal to $\eta_0$ (via an influence function), so the material reverts to isotropic.
 
