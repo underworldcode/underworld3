@@ -242,7 +242,9 @@ Measured on the Waters-King start-up at 1/32 and $\Delta t = 0.01$: $c = 0.023$
 $c = 0.07$ holds it unconditionally at 0.5%, and $c = 0.23$ (ten times 0.023)
 costs 3%. The irregular mesh needs 0.07. Zero, the default, is the plain projection. When the
 solvent viscosity is a fair fraction of the total, as on the cylinder benchmark,
-the smoothing is unnecessary and costs nothing if left on.
+the mode does not grow and the smoothing is unnecessary. It is not free there at
+a coarse resolution: at resolution 20 it takes about a tenth off the drag (see
+"Measured since" above).
 
 ## DEVSS
 

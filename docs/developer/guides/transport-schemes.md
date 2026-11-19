@@ -67,7 +67,10 @@ partition-independent cell size in the stabilisation.
 owning solver's Jacobian. The trace-back histories (`SemiLagrangian`,
 `IntegrationPointSemiLagrangian`) are not adjointable yet: the trace is
 differentiable in the velocity, but the interpolation at the departure
-points is not materialised as an operator. A particle step is adjointable
+points is not materialised as an operator. Nor is the forward history
+(`ForwardSemiLagrangian`): its per-cell least-squares fit of the arrivals is
+not materialised, and the cell an arrival lands in is piecewise constant in
+the velocity. A particle step is adjointable
 exactly when the particle set is fixed across it, which `swarm.advection`
 checks by counting.
 
