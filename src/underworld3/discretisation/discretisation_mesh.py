@@ -4311,12 +4311,42 @@ class Mesh(Stateful, uw_object):
         finds, and also lists the named boundaries that share those faces: a
         condition on all of them puts each exterior face's term in twice
         (#1211, measured on the ``EulerianSUPG`` inflow). So ``All_Boundaries``
-        alone where it marks faces, and otherwise every boundary that marks
-        faces. Collective.
+        alone where it marks faces.
+
+        Otherwise the boundaries that mark faces and are not internal surfaces,
+        provided no face is in two of them. A mesh that lists overlapping
+        boundaries (an internal patch and its halves, say) has no such cover,
+        and neither has a mesh with no exterior boundary; both are refused
+        rather than guessed at. Collective.
         """
+        import numpy as np
+        import underworld3 as uw
+
         faced = self._boundaries_that_mark_faces()
         exterior = [b for b in faced if b.name == "All_Boundaries"]
-        return exterior if exterior else faced
+        if exterior:
+            return exterior
+        cover = [b for b in faced if not self._boundary_is_internal(b.name)]
+        if not cover:
+            raise ValueError(
+                "This mesh has no boundary that marks exterior faces, so a condition "
+                "on the whole boundary has nowhere to go. Name the boundaries instead.")
+        label = self.dm.getLabel("UW_Boundaries")
+        f_start, f_end = self.dm.getHeightStratum(1)
+        seen = np.zeros(max(f_end - f_start, 0), dtype=np.int64)
+        for b in cover:
+            if label.getStratumSize(b.value):
+                points = np.asarray(label.getStratumIS(b.value).getIndices())
+                points = points[(points >= f_start) & (points < f_end)]
+                seen[points - f_start] += 1
+        twice = bool(np.any(seen > 1))
+        if self.dm.getComm().tompi4py().allreduce(twice, op=uw.MPI.LOR):
+            raise ValueError(
+                f"This mesh lists boundaries that share faces "
+                f"({', '.join(b.name for b in cover)}) and no All_Boundaries faces, so "
+                f"a condition on the whole boundary would count some faces twice. "
+                f"Name the boundaries instead.")
+        return cover
 
     def _boundary_is_internal(self, boundary_name):
         """True if boundary ``boundary_name`` is an internal surface — its
