@@ -267,7 +267,19 @@ def test_without_all_boundaries_boundaries_that_share_faces_are_refused():
         minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.25, qdegree=3))
     label = mesh.dm.getLabel("UW_Boundaries")
     top, bottom = mesh.boundaries.Top.value, mesh.boundaries.Bottom.value
-    for p in label.getStratumIS(top).getIndices():     # Top's faces are Bottom's too
-        label.setValue(int(p), bottom)
+    if label.getStratumSize(top):                       # a null IS on a rank without Top
+        for p in label.getStratumIS(top).getIndices():  # Top's faces are Bottom's too
+            label.setValue(int(p), bottom)
     with pytest.raises(ValueError, match="share faces"):
+        mesh._boundaries_covering_the_exterior_once()
+
+
+@pytest.mark.tier_b
+def test_without_all_boundaries_a_cover_that_misses_exterior_faces_is_refused():
+    # With Left removed as well, Bottom, Top and Right are disjoint and miss
+    # Left's exterior faces.
+    mesh = _without_all_boundaries(uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.25, qdegree=3))
+    mesh.dm.getLabel("UW_Boundaries").clearStratum(mesh.boundaries.Left.value)
+    with pytest.raises(ValueError, match="leave some exterior faces in no boundary"):
         mesh._boundaries_covering_the_exterior_once()

@@ -4314,9 +4314,10 @@ class Mesh(Stateful, uw_object):
         alone where it marks faces.
 
         Otherwise the boundaries that mark faces and are not internal surfaces,
-        provided no face is in two of them. A mesh that lists overlapping
-        boundaries (an internal patch and its halves, say) has no such cover,
-        and neither has a mesh with no exterior boundary; both are refused
+        provided no face is in two of them and every exterior face is in one.
+        A mesh that lists overlapping boundaries (an internal patch and its
+        halves, say) has no such cover, nor has one whose boundaries leave
+        exterior faces out, nor one with no exterior boundary; each is refused
         rather than guessed at. Collective.
         """
         import numpy as np
@@ -4335,23 +4336,57 @@ class Mesh(Stateful, uw_object):
         f_start, f_end = self.dm.getHeightStratum(1)
         seen = np.zeros(max(f_end - f_start, 0), dtype=np.int64)
         for b in cover:
-            if label.getStratumSize(b.value):
+            if label.getStratumSize(b.value):         # a null IS on a rank without the value
                 points = np.asarray(label.getStratumIS(b.value).getIndices())
                 points = points[(points >= f_start) & (points < f_end)]
                 seen[points - f_start] += 1
-        twice = bool(np.any(seen > 1))
-        if self.dm.getComm().tompi4py().allreduce(twice, op=uw.MPI.LOR):
+        comm = self.dm.getComm().tompi4py()
+        if comm.allreduce(bool(np.any(seen > 1)), op=uw.MPI.LOR):
             raise ValueError(
                 f"This mesh lists boundaries that share faces "
                 f"({', '.join(b.name for b in cover)}) and no All_Boundaries faces, so "
                 f"a condition on the whole boundary would count some faces twice. "
                 f"Name the boundaries instead.")
+        exterior = self._exterior_face_mask()
+        missing = int(np.count_nonzero(exterior & (seen == 0)))
+        if comm.allreduce(missing, op=uw.MPI.SUM):
+            raise ValueError(
+                f"This mesh's exterior boundaries ({', '.join(b.name for b in cover)}) "
+                f"leave some exterior faces in no boundary, and it has no "
+                f"All_Boundaries faces, so a condition on the whole boundary would "
+                f"miss them. Name the boundaries instead.")
         return cover
 
+    def _exterior_face_mask(self):
+        """Which of this rank's faces (height-1 points, from the start of the
+        stratum) lie on the exterior of the whole mesh. Collective.
+
+        The faces ``markBoundaryFaces`` marks: one cell in the whole mesh, not
+        on this rank, so a face on a partition boundary is interior wherever it
+        is held. Local support sizes cannot tell: a face on an internal surface
+        that a partition boundary runs along has one cell on each rank holding
+        it (review of #1235, ``BoxInternalBoundary`` at np 2).
+        """
+        import numpy as np
+
+        dm = self.dm
+        f_start, f_end = dm.getHeightStratum(1)
+        scratch = "uw_exterior_faces_scratch"
+        dm.createLabel(scratch)
+        dm.markBoundaryFaces(scratch, 1)
+        label = dm.getLabel(scratch)
+        mask = np.zeros(max(f_end - f_start, 0), dtype=bool)
+        if label.getStratumSize(1):
+            points = np.asarray(label.getStratumIS(1).getIndices())
+            points = points[(points >= f_start) & (points < f_end)]
+            mask[points - f_start] = True
+        dm.removeLabel(scratch)
+        return mask
+
     def _boundary_is_internal(self, boundary_name):
-        """True if boundary ``boundary_name`` is an internal surface — its
-        facets have a cell on BOTH sides (support size 2) — rather than part
-        of the mesh exterior (support size 1).
+        """True if boundary ``boundary_name`` is an internal surface: some of its
+        facets have a cell on both sides in the whole mesh, rather than lying on
+        its exterior (:meth:`_exterior_face_mask`).
 
         Collective on first call per boundary (the local answer is
         MAX-reduced so every rank agrees even when it owns no facets of the
@@ -4367,10 +4402,11 @@ class Mesh(Stateful, uw_object):
         if cached is not None:
             return cached
 
-        dm = self.dm
+        exterior = self._exterior_face_mask()
+        f_start = self.dm.getHeightStratum(1)[0]
         local = 0
         for f in self._boundary_facets(boundary_name):
-            if dm.getSupportSize(f) == 2:
+            if not exterior[f - f_start]:
                 local = 1
                 break
         result = bool(uw.mpi.comm.allreduce(local, op=MPI.MAX))
