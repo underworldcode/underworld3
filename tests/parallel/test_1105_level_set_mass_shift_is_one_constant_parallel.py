@@ -47,3 +47,26 @@ def test_the_mass_correction_is_one_shift_on_every_rank():
     highest = comm.allreduce(float(shift.max()) if shift.size else -np.inf, op=uw.MPI.MAX)
     assert abs(lowest) > 1e-8                       # the correction did something
     assert highest - lowest < 1e-14 * max(abs(lowest), 1.0)
+
+
+def test_slcn_steps_with_the_clip_and_the_wall_correction_complete():
+    # The clip's early return was decided per rank and skipped the collective
+    # volume integral on a rank with nothing to clip, and the wall correction
+    # skipped its collective write on a rank with no wall node: at np 2 and 3
+    # the step hung (review of #1234). The timeout turns a hang into a failure.
+    mesh = uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1.0 / 16, qdegree=3)
+    x, y = mesh.X
+    psi = uw.discretisation.MeshVariable("psi_steps", mesh, 1, degree=2)
+    eps = level_set.interface_thickness(mesh, psi, scale=2.0)
+    X = np.asarray(psi.coords)
+    level_set.initialise_psi(psi, eps,
+                             signed_distance=0.15 - np.hypot(X[:, 0] - 0.5, X[:, 1] - 0.75))
+    solver = uw.systems.LevelSetSolver(psi, velocity=sympy.Matrix([[-(y - 0.5), x - 0.5]]),
+                                       epsilon=eps, advection="slcn",
+                                       adv_solver_bc=("Left", "Right", "Top", "Bottom"),
+                                       reini_steps=1, reini_frequency=2)
+    for _ in range(4):
+        solver.solve(0.05)
+    # The correction stops once the volume is within its absolute tolerance.
+    assert abs(solver.volume_drift) * solver._target_volume <= solver._mass_correction_tol
