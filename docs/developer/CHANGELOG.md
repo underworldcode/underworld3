@@ -6,6 +6,19 @@ This log tracks significant development work at a conceptual level, suitable for
 
 ## 2026 Q4 (October – December)
 
+### The level set's interface thickness is the same at any rank count, and changes serial results (November 2026, #1239)
+
+`level_set.interface_thickness` gave each node the thickness of the nearest
+cell centroid among its rank's own cells, so the initial level set depended on
+the partition (its enclosed volume by up to 1.3e-3 relative at np 2). A node now
+takes the mean thickness of the cells that hold it, summed over every rank, and
+the field equals serial to about 1e-16 at np 1 to 3. The rule changes serial
+results as well. Measured in the review: a node's thickness moves by up to 21 %
+on a box, 24 % on an Annulus and 37 % on a graded mesh, where cells of different
+sizes meet, and the initial enclosed volume by 0.8 to 1.9 %. Saved level-set
+results do not reproduce exactly. The volume drift of the guide's
+rotating-circle table is unchanged to the digits shown.
+
 ### A units model refuses bare numbers for dimensional parameters, and plain arrays in `mesh.deform` (November 2026, #1182, #1081)
 
 Two API breaks, both following the units ruling of 2026-11-13: in a model with
