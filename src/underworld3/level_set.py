@@ -604,9 +604,16 @@ class LevelSetSolver:
 
         # First guess: only the band moves, so dV/d(delta) is about its area.
         # The nodal fraction of the field inside (lo, hi) times the domain area
-        # is a fair estimate of that on a reasonably uniform mesh.
+        # is a fair estimate of that on a reasonably uniform mesh. It is counted
+        # over every rank: the volumes are global, so with the same first guess
+        # every rank takes the same iterates and ends at the same shift. A
+        # rank-local fraction gave each rank its own shift (2.75e-4 and 3.33e-4
+        # at np 2, against 3.13e-4 serially, measured in the review of #1211).
         span = hi - lo
-        band = float(np.mean((data0 > lo + 1e-6 * span) & (data0 < hi - 1e-6 * span)))
+        in_band = int(np.count_nonzero((data0 > lo + 1e-6 * span) & (data0 < hi - 1e-6 * span)))
+        comm = self.mesh.dm.getComm().tompi4py()
+        in_band, nodes = comm.allreduce(np.array([in_band, data0.size]), op=uw.MPI.SUM)
+        band = float(in_band) / max(int(nodes), 1)
         domain = self._domain_volume()
         slope = max(band * domain, 1e-12)
         d_prev, v_prev = 0.0, v0
