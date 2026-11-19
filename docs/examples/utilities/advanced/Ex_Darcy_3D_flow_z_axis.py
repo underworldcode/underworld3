@@ -155,6 +155,8 @@ darcy.solve()
 
 # + editable=true slideshow={"slide_type": ""}
 # saving output
+from pathlib import Path
+Path("output").mkdir(exist_ok=True)
 mesh.petsc_save_checkpoint(index=0, meshVars=[p_soln, v_soln], outputPath='./output/darcy_3d_no_g')
 
 # + editable=true slideshow={"slide_type": ""}
@@ -220,8 +222,8 @@ pressure_analytic_noG = np.piecewise(
 # plotting numerical and analytical solution
 fig = plt.figure()
 ax1 = fig.add_subplot(111, xlabel="Pressure", ylabel="Depth")
-ax1.plot(pressure_interp, zcoords, linewidth=3, label="Numerical solution")
-ax1.plot(pressure_interp_0, zcoords, linewidth=3, label="Numerical solution (no G)")
+ax1.plot(pressure_interp.reshape(-1), zcoords, linewidth=3, label="Numerical solution")
+ax1.plot(pressure_interp_0.reshape(-1), zcoords, linewidth=3, label="Numerical solution (no G)")
 ax1.plot(pressure_analytic, zcoords, linewidth=3, linestyle="--", label="Analytic solution")
 ax1.plot(pressure_analytic_noG, zcoords, linewidth=3, linestyle="--", label="Analytic (no gravity)")
 ax1.grid("on")
