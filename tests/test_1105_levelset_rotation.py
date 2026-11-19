@@ -61,11 +61,18 @@ def test_circle_returns_after_one_revolution(advection):
 
     data = np.asarray(psi.array).reshape(-1)
     assert data.min() >= 0.0 and data.max() <= 1.0
+    # Shares of nodes, counted over every rank so that each rank asserts the
+    # same number (a rank-local share failed on one rank at np 2).
+    def share(flags):
+        counts = uw.mpi.comm.allreduce(np.array([np.count_nonzero(flags), flags.size]),
+                                       op=uw.MPI.SUM)
+        return counts[0] / max(counts[1], 1)
+
     # profile stays sharp: the transition band holds a small share of nodes
-    in_band = np.mean((data > 0.05) & (data < 0.95))
+    in_band = share((data > 0.05) & (data < 0.95))
     assert in_band < 0.2, in_band
     # the 0.5 contour is back: nodal mismatch of the indicator is small
-    mismatch = np.mean(np.abs((data > 0.5).astype(float) - (psi0.reshape(-1) > 0.5).astype(float)))
+    mismatch = share((data > 0.5) != (psi0.reshape(-1) > 0.5))
     assert mismatch < 0.01, mismatch
 
 
