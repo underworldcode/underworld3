@@ -95,9 +95,19 @@ def communicator_names(node):
     return names
 
 
+#: Agreement points (``utilities.agreed_build``, #874) are collectives too: every
+#: rank must reach each one, so one under a rank-local guard is the same defect.
+AGREEMENT_POINTS = {"agree", "agreed_allreduce", "agreed_allgather", "agreed_bcast"}
+
+
 def is_collective(call, aliases=frozenset()):
-    """The ``receiver.op`` label if *call* is an MPI collective, else None."""
+    """The ``receiver.op`` label if *call* is an MPI collective, else None. An
+    agreement point (``agree()``, an agreed wrapper) counts as one."""
     function = call.func
+    name = (function.id if isinstance(function, ast.Name)
+            else function.attr if isinstance(function, ast.Attribute) else None)
+    if name in AGREEMENT_POINTS:
+        return f"{name}()"
     if not isinstance(function, ast.Attribute) or function.attr not in MPI_COLLECTIVES:
         return None
     base = function.value
@@ -141,6 +151,21 @@ ACCEPTED = {
         "pass by every rank before the test, so every rank leaves the loop on "
         "the same pass and the reductions of the next pass are reached by all "
         "or by none.",
+    ("utilities/custom_mg.py", "_build_body"):
+        "Two guards, both the same on every rank. (1) `pre is not None`: `pre` "
+        "is `fault_mg.provenance_source(coarse, fine)`, which walks the "
+        "`_addon_below` / `_addon_parent` attributes of the mesh objects; "
+        "`addon_partition` sets them on every rank together when it builds or "
+        "moves the add-on hierarchy, an array (empty on a rank with no cells) "
+        "or None everywhere, never None on some ranks only. (2) `keyed or split "
+        "is not None`: `keyed` is the hierarchy's own `fac_zone`; the split "
+        "is called on a condition built from `fault_mg.is_split_level` (the "
+        "fault-pair dict carries a key per fault on every rank: "
+        "`fault_split.collect_point_pairs` sets `out[name]` everywhere), "
+        "`structural_on` (the FAC kill flags are allreduced) and `keyed`; and "
+        "it returns None only on the cover gate's allreduced counts. The "
+        "agreement points under them (#874) are reached by all ranks or by "
+        "none. (Seen once the scan counted agreement points as collectives.)",
     ("utilities/rotated_bc.py", "solve_rotated_freeslip"):
         "the cache is created and destroyed on all ranks together, so "
         "`cache is not None` is uniform; the allgather inside exists "
