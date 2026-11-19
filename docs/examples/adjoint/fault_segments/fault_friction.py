@@ -146,6 +146,8 @@ mesh = uw.meshing.UnstructuredSimplexBox(
     cellSize=_lengths(params.uw_cell_size), qdegree=3, refinement=1,
 )
 x, y = mesh.X
+depth = uw.expression(r"D", DOMAIN_DEPTH, "the model depth")
+xn, yn = x / depth, y / depth          # dimensionless: a function of position needs these
 
 v = uw.discretisation.MeshVariable("v", mesh, mesh.dim, degree=2)
 p = uw.discretisation.MeshVariable("p", mesh, 1, degree=1, continuous=True)
@@ -167,13 +169,13 @@ phi_top = math.radians(params.uw_surface_dip) - math.pi / 2     # angle of the s
 R = (1.0 - flat_depth) / (1.0 + math.sin(phi_top))
 yc = flat_depth + R
 xc = _lengths(params.uw_surface_x) - R * math.cos(phi_top)
-r = sympy.sqrt((x - xc) ** 2 + (y - yc) ** 2)
-phi = sympy.atan2(y - yc, x - xc)
-on_flat = x < xc
-d = sympy.Piecewise((y - flat_depth, on_flat), (R - r, True))
-s = sympy.Piecewise((x, on_flat), (xc + R * (phi + sympy.pi / 2), True))
-n_hat = sympy.Matrix([[sympy.Piecewise((0, on_flat), ((x - xc) / r, True)),
-                       sympy.Piecewise((1, on_flat), ((y - yc) / r, True))]])
+r = sympy.sqrt((xn - xc) ** 2 + (yn - yc) ** 2)
+phi = sympy.atan2(yn - yc, xn - xc)
+on_flat = xn < xc
+d = sympy.Piecewise((yn - flat_depth, on_flat), (R - r, True))
+s = sympy.Piecewise((xn, on_flat), (xc + R * (phi + sympy.pi / 2), True))
+n_hat = sympy.Matrix([[sympy.Piecewise((0, on_flat), ((xn - xc) / r, True)),
+                       sympy.Piecewise((1, on_flat), ((yn - yc) / r, True))]])
 ramp = R * (phi_top + math.pi / 2)
 length = xc + ramp
 band = sympy.exp(-(d / band_width) ** 2)
@@ -264,7 +266,7 @@ stokes.add_essential_bc((-0.5, None), "Right")
 
 # %%
 points = [(0.3, 0.65), (0.75, 0.12), (1.25, 0.3), (0.9, 0.6), (1.55, 0.85)]     # in units of the depth
-w_points = sum(sympy.exp(-((x - px) ** 2 + (y - py) ** 2) / (2 * band_width) ** 2)
+w_points = sum(sympy.exp(-((xn - px) ** 2 + (yn - py) ** 2) / (2 * band_width) ** 2)
                for px, py in points)
 
 

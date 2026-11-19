@@ -1122,12 +1122,23 @@ def _refuse_dimensional_function_argument(expr, where="evaluate"):
         return
     bad = _dimensional_function_argument(expr)
     if bad is not None:
+        import sympy
         name, argument = bad
+        coords = sorted({str(c) for c in getattr(argument, "atoms", lambda *a: set())(
+            sympy.vector.scalar.BaseScalar)})
+        if coords:
+            # A coordinate carries length in a units model (ruling, 2026-11-19):
+            # show the fix, divided by a length.
+            fix = (f"The coordinate {', '.join(coords)} is a length here. Divide it by "
+                   f"one: write {name}(... {coords[0]}/W ...) with W a length, e.g. "
+                   "W = uw.expression(\"W\", uw.quantity(1000, \"km\"), \"width\").")
+        else:
+            fix = ("Divide by a reference of the same dimension (eta1/eta0, "
+                   "E/(R*T0)).")
         raise ValueError(
             f"{where}: {name} of {str(argument)[:120]}, which carries units once its "
-            "leaves are reduced together. A function like exp, log or sin needs a "
-            "dimensionless argument: divide by a reference (eta1/eta0, E/(R*T0), "
-            "x/W), in a model with reference quantities.")
+            "leaves are reduced together, in a model with reference quantities. A "
+            f"function like exp, log or sin needs a dimensionless argument. {fix}")
 
 def _mixed_product(expr):
     """The first product (or sum) in ``expr`` that puts a field without units
