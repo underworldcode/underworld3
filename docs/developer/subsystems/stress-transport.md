@@ -194,6 +194,29 @@ handing the arrivals that cross a seam to the rank that owns them; it needs its 
 one on a Maxwell element: a version that did not ring turned out not to be
 transporting the memory at all.
 
+### Measured since: the cylinder at a coarse resolution (2026-11-20)
+
+The confined DFG cylinder, Re 100, Wi 0.5, β 0.5, resolution 20 (the campaign
+driver, upper-convected, log-conformation, ETD), with the nodal history
+carrying its stress (#1231). Drag at t 2:
+
+| history | drag |
+|---|---|
+| grid (SUPG) | 4.505 |
+| nodal | 4.985 |
+| integration point, unsmoothed | 3.370 |
+| integration point, c = 0.07 | 3.046 |
+
+The grid history's own reference is 4.593 at resolution 20 and 4.134 at 80.
+The integration-point history is a quarter low here even unsmoothed, and
+smoothing at c = 0.07 removes about a tenth more; it does not "cost nothing"
+at this resolution. On Waters and King at 1/16, Δt 0.0125, the unsmoothed
+integration-point history is the most accurate at t 2 (0.72143 against exact
+0.72077; nodal 0.72379) and rings by t 6.5 (0.59863, transverse velocity
+1.95), while c = 0.07 holds it at a cost of 1.2e-2 at t 2. The configuration
+above is characterised at finer resolution; at this one it is not the most
+accurate.
+
 ## Store smoothing for the integration-point history below Courant one
 
 The store cycle of the integration-point flavour, sample at the points then
