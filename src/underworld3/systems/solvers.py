@@ -4702,11 +4702,13 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
           non-nodal upstream points in cells with sharp gradients
           (e.g. thin boundary layers in deformed cells); legacy
           behaviour.
-        - ``"clamp"``: clip the FE trace-back result to
-          ``[nbr_min, nbr_max]`` of the ``k = dim + 1`` nearest
-          ``psi_star`` DOFs. Bit-identical to pure FE in smooth
-          regions; bounds overshoots where the FE interpolant would
-          otherwise leave the local data range.
+        - ``"clamp"``: clip the FE trace-back result to the range of
+          the ``psi_star`` DOFs on the closure of the cell containing
+          the departure point (#682; ``UW_MONOTONE_CLAMP_BOUND=nearest``
+          restores the earlier ``dim + 1`` nearest DOFs, to reproduce old
+          results only). Bit-identical to pure FE in smooth regions;
+          bounds overshoots where the FE interpolant would otherwise
+          leave the local data range.
         - ``"pick"``: keep the FE result where in-bounds; for
           out-of-bounds DOFs only, re-evaluate via Shepard's-method
           RBF. More conservative than clamp at the catastrophe edge.
