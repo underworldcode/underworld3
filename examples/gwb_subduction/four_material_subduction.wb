@@ -1,0 +1,287 @@
+{
+  "version": "1.1",
+  "coordinate system": {
+    "model": "cartesian"
+  },
+  "cross section": [
+    [
+      0,
+      0
+    ],
+    [
+      8000000.0,
+      0
+    ]
+  ],
+  "surface temperature": 273,
+  "potential mantle temperature": 1573,
+  "thermal expansion coefficient": 3.1e-05,
+  "specific heat": 1000,
+  "thermal diffusivity": 1e-06,
+  "features": [
+    {
+      "model": "mantle layer",
+      "name": "mantle",
+      "max depth": 1600000.0,
+      "coordinates": [
+        [
+          0,
+          -100000.0
+        ],
+        [
+          0,
+          100000.0
+        ],
+        [
+          8000000.0,
+          100000.0
+        ],
+        [
+          8000000.0,
+          -100000.0
+        ]
+      ],
+      "temperature models": [
+        {
+          "model": "uniform",
+          "temperature": 1573
+        }
+      ]
+    },
+    {
+      "model": "oceanic plate",
+      "name": "Overriding",
+      "min depth": 0,
+      "max depth": 200000.0,
+      "coordinates": [
+        [
+          0,
+          -100000.0
+        ],
+        [
+          0,
+          100000.0
+        ],
+        [
+          3500000.0,
+          100000.0
+        ],
+        [
+          3500000.0,
+          -100000.0
+        ]
+      ],
+      "temperature models": [
+        {
+          "model": "plate model",
+          "min depth": -10000.0,
+          "max depth": 300000.0,
+          "top temperature": 273,
+          "bottom temperature": 1573,
+          "spreading velocity": 0.05,
+          "ridge coordinates": [
+            [
+              [
+                0,
+                -100000.0
+              ],
+              [
+                0,
+                100000.0
+              ]
+            ]
+          ]
+        }
+      ],
+      "composition models": [
+        {
+          "model": "uniform",
+          "compositions": [
+            3
+          ],
+          "min depth": 0.0,
+          "max depth": 100000.0
+        }
+      ]
+    },
+    {
+      "model": "oceanic plate",
+      "name": "Subducting",
+      "min depth": 0,
+      "max depth": 300000.0,
+      "coordinates": [
+        [
+          3500000.0,
+          100000.0
+        ],
+        [
+          3500000.0,
+          -100000.0
+        ],
+        [
+          8000000.0,
+          -100000.0
+        ],
+        [
+          8000000.0,
+          100000.0
+        ]
+      ],
+      "temperature models": [
+        {
+          "model": "plate model",
+          "min depth": 0,
+          "max depth": 300000.0,
+          "top temperature": 273,
+          "bottom temperature": 1573,
+          "spreading velocity": 0.03,
+          "ridge coordinates": [
+            [
+              [
+                8000000.0,
+                -100000.0
+              ],
+              [
+                8000000.0,
+                100000.0
+              ]
+            ]
+          ]
+        }
+      ],
+      "composition models": [
+        {
+          "model": "uniform",
+          "compositions": [
+            1
+          ],
+          "min depth": 0,
+          "max depth": 100000.0
+        }
+      ]
+    },
+    {
+      "model": "subducting plate",
+      "name": "Slab",
+      "coordinates": [
+        [
+          3500000.0,
+          -100000.0
+        ],
+        [
+          3500000.0,
+          100000.0
+        ]
+      ],
+      "dip point": [
+        0,
+        0
+      ],
+      "max depth": 1000000.0,
+      "segments": [
+        {
+          "length": 200000.0,
+          "thickness": [
+            300000.0
+          ],
+          "top truncation": [
+            -50000.0
+          ],
+          "angle": [
+            0,
+            30
+          ]
+        },
+        {
+          "length": 100000.0,
+          "thickness": [
+            300000.0
+          ],
+          "top truncation": [
+            -50000.0
+          ],
+          "angle": [
+            30,
+            50
+          ]
+        },
+        {
+          "length": 500000.0,
+          "thickness": [
+            300000.0
+          ],
+          "top truncation": [
+            -50000.0
+          ],
+          "angle": [
+            50,
+            50
+          ]
+        },
+        {
+          "length": 300000.0,
+          "thickness": [
+            300000.0
+          ],
+          "top truncation": [
+            -50000.0
+          ],
+          "angle": [
+            50,
+            10
+          ]
+        },
+        {
+          "length": 300000.0,
+          "thickness": [
+            300000.0
+          ],
+          "top truncation": [
+            -50000.0
+          ],
+          "angle": [
+            10,
+            10
+          ]
+        }
+      ],
+      "composition models": [
+        {
+          "model": "uniform",
+          "compositions": [
+            2
+          ],
+          "max distance slab top": 100000.0
+        }
+      ],
+      "temperature models": [
+        {
+          "model": "mass conserving",
+          "reference model name": "plate model",
+          "density": 3300,
+          "thermal conductivity": 3.3,
+          "adiabatic heating": false,
+          "spreading velocity": 0.03,
+          "subducting velocity": 0.03,
+          "ridge coordinates": [
+            [
+              [
+                8000000.0,
+                -100000.0
+              ],
+              [
+                8000000.0,
+                100000.0
+              ]
+            ]
+          ],
+          "coupling depth": 80000.0,
+          "forearc cooling factor": 20.0,
+          "taper distance": 100000.0,
+          "min distance slab top": -200000.0,
+          "max distance slab top": 300000.0
+        }
+      ]
+    }
+  ]
+}
