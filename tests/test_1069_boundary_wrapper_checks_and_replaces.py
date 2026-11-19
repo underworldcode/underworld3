@@ -58,10 +58,12 @@ def test_an_essential_condition_on_a_label_the_dm_lacks_is_refused():
 
 @pytest.mark.tier_b
 def test_a_condition_on_a_field_the_solver_lacks_is_refused():
-    # A third variable made first puts the pressure at position 2 on the mesh;
-    # the solver's DM has fields 0 and 1 only (#1170, the Charter's field rule).
+    # The solver's DM has fields 0 (velocity) and 1 (pressure). Field 2 stands
+    # for the mistake found in #1170: a mesh variable's field_id passed where a
+    # solver field number belongs, which is 2 for a pressure made after a third
+    # variable. The Charter's field rule keeps that pattern out of code, so the
+    # test passes the out-of-range number itself.
     mesh = uw.meshing.StructuredQuadBox(elementRes=(4, 4))
-    uw.discretisation.MeshVariable("other1170", mesh, 1, degree=1)
     v = uw.discretisation.MeshVariable("V1170", mesh, 2, degree=2)
     p = uw.discretisation.MeshVariable("P1170", mesh, 1, degree=1)
     stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
@@ -70,8 +72,7 @@ def test_a_condition_on_a_field_the_solver_lacks_is_refused():
     stokes.bodyforce = sympy.Matrix([[0.0, 1.0]])
     for wall in ("Top", "Bottom", "Left", "Right"):
         stokes.add_dirichlet_bc((0.0, 0.0), wall)
-    assert p.field_id == 2
-    stokes.add_condition(p.field_id, "dirichlet", 0.0, "Top")
+    stokes.add_condition(2, "dirichlet", 0.0, "Top")
     with pytest.raises(ValueError, match="field 2, and the solver's DM has fields 0 to 1"):
         stokes.solve()
 
