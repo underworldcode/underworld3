@@ -1228,16 +1228,22 @@ def _agreed_node_transfer(builder, coarse_coords, fine_coords, comm):
     is raised on all of them. The builders do no communication, so every rank
     reaches the verdict; a rank that kept its own error would go on to retry
     while the others assemble the transfer, and the two would meet in different
-    collectives (#886)."""
+    collectives (#886).
+
+    The verdict is an agreement point (``fault_contact._collective_raise``, the
+    library's one verdict protocol, #874): it pairs with an ``agreed_build``
+    exit or ``agree()`` on another rank, which an allgather of its own on the
+    solver's communicator could not. The error carries the first failing
+    rank's message, prefixed with its rank."""
+    from underworld3.utilities.fault_contact import _collective_raise
+
     problem = None
     try:
         Pn = _drop_structural_zeros(
             _node_transfer_no_repair(builder, coarse_coords, fine_coords))
     except Exception as exc:    # sanctioned: the verdict below raises it on every rank
         Pn, problem = None, f"rank {comm.getRank()}: {exc}"
-    problems = [p for p in comm.tompi4py().allgather(problem) if p is not None]
-    if problems:
-        raise CollectiveBuildError("; ".join(problems), builder_failure=True)
+    _collective_raise(problem, error=CollectiveBuildError, builder_failure=True)
     return Pn
 
 
@@ -1252,6 +1258,8 @@ def _assemble_node_transfer(Pn, coarse_cols, fine_layout, coarse_layout, ncomp,
     are another rank's); constrained coarse DOFs (column ``-1``) drop out, so
     the map is reduced->reduced."""
     import scipy.sparse as sp
+    from underworld3.utilities.agreed_build import (agree,
+                                                    allreduce as agreed_allreduce)
     l2g_f = np.asarray(fine_layout.l2g, dtype=np.int64)
     fstart, fend = fine_layout.rstart, fine_layout.rend
     nloc_f = fend - fstart
@@ -1268,10 +1276,14 @@ def _assemble_node_transfer(Pn, coarse_cols, fine_layout, coarse_layout, ncomp,
         vals.append(Pn.data[keep])
     rows, cols, vals = (np.concatenate(rows), np.concatenate(cols),
                         np.concatenate(vals))
-    n_cols = int(comm.tompi4py().allreduce(nloc_c))
+    # agreement points before the two collectives (#874): inside an
+    # agreed_build a failure in the rank-local rows above, or in the CSR
+    # below, is raised on every rank there
+    n_cols = int(agreed_allreduce(comm.tompi4py(), nloc_c))
     loc = sp.csr_matrix((vals, (rows, cols)), shape=(nloc_f, n_cols))
     loc.sum_duplicates()
     loc.sort_indices()
+    agree()
     P = PETSc.Mat().createAIJ(
         size=((nloc_f, None), (nloc_c, None)),
         csr=(loc.indptr.astype(PETSc.IntType), loc.indices.astype(PETSc.IntType),
@@ -1305,12 +1317,16 @@ def _gather_coarse_cloud(coarse_coords, coarse_layout, ncomp, comm):
     BC-constrained DOF). Ghost copies are bit-identical and dedup by rounded
     coordinate; constrained nodes stay in the cloud as barycentric vertices but
     carry ``-1`` so they are dropped from the transfer columns."""
+    from underworld3.utilities.agreed_build import allgather as agreed_allgather
+
     m4 = comm.tompi4py()
     ncn = coarse_coords.shape[0]
     cols_local = np.asarray(coarse_layout.l2g, dtype=np.int64).reshape(ncn, ncomp)
-    cc_all = np.vstack(m4.allgather(
-        np.ascontiguousarray(coarse_coords, dtype=float)))
-    cols_all = np.vstack(m4.allgather(np.ascontiguousarray(cols_local)))
+    # agreed gathers (#874): a failure in the reads above is raised on every
+    # rank here
+    cc_all = np.vstack(agreed_allgather(
+        m4, np.ascontiguousarray(coarse_coords, dtype=float)))
+    cols_all = np.vstack(agreed_allgather(m4, np.ascontiguousarray(cols_local)))
     _key, uidx = np.unique(np.round(cc_all, 9), axis=0, return_index=True)
     uidx = np.sort(uidx)
     return cc_all[uidx], cols_all[uidx]
@@ -1347,7 +1363,8 @@ def _count_zero_columns_parallel(P, comm):
     colsum = P.createVecRight()
     P.multTranspose(ones_f, colsum)
     nzero_local = int((colsum.array == 0.0).sum())
-    nzero = comm.tompi4py().allreduce(nzero_local)
+    from underworld3.utilities.agreed_build import allreduce as agreed_allreduce
+    nzero = agreed_allreduce(comm.tompi4py(), nzero_local)
     ones_f.destroy()
     colsum.destroy()
     return nzero

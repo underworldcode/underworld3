@@ -246,3 +246,59 @@ def test_a_failure_after_a_split_pair_transfer(split_built, monkeypatch):
     assert hierarchy.has_split_levels
     _after(fault_mg, "cell_located_transfer_parallel", "Split pair", monkeypatch)
     _build_raises_everywhere(hierarchy, solver, "Split pair", monkeypatch)
+
+
+# --------------------------------------------------------------------------- #
+#  Phase 3: the node-cloud builders' insides
+# --------------------------------------------------------------------------- #
+def test_a_node_cloud_builder_failure_on_one_rank(built, monkeypatch):
+    """The builder itself fails on one rank: _agreed_node_transfer's verdict is
+    now the library's agreement point, raised on every rank."""
+    hierarchy, solver = built
+
+    def failing(*a, **k):
+        _on_last_rank("Node builder")
+        return original(*a, **k)
+
+    original = custom_mg._node_transfer_no_repair
+    monkeypatch.setattr(custom_mg, "_node_transfer_no_repair", failing)
+    _build_raises_everywhere(hierarchy, solver, "Node builder", monkeypatch)
+
+
+def test_a_failure_assembling_the_rows(built, monkeypatch):
+    """Inside _assemble_node_transfer, before its allreduce: the node transfer
+    it is handed raises when the rows are read."""
+    hierarchy, solver = built
+    original = custom_mg._drop_structural_zeros
+
+    class _Rows:
+        def __init__(self, Pn):
+            self._Pn = Pn
+
+        def tocsr(self):
+            _on_last_rank("Assembling rows")
+            return self._Pn.tocsr()
+
+        def __getattr__(self, name):
+            return getattr(self._Pn, name)
+
+    monkeypatch.setattr(custom_mg, "_drop_structural_zeros",
+                        lambda Pn: _Rows(original(Pn)))
+    _build_raises_everywhere(hierarchy, solver, "Assembling rows", monkeypatch)
+
+
+def test_a_failure_before_the_matrix_is_created(built, monkeypatch):
+    """Inside _assemble_node_transfer, between its allreduce and the collective
+    createAIJ: the local CSR raises."""
+    import sys
+    import scipy.sparse as sp
+    hierarchy, solver = built
+    original = sp.csr_matrix
+
+    def failing(*a, **k):
+        if sys._getframe(1).f_code.co_name == "_assemble_node_transfer":
+            _on_last_rank("Local CSR")
+        return original(*a, **k)
+
+    monkeypatch.setattr(sp, "csr_matrix", failing)
+    _build_raises_everywhere(hierarchy, solver, "Local CSR", monkeypatch)
