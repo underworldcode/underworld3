@@ -266,6 +266,7 @@ docs/reviews/
 | JIT setup cost ([2026-10](2026-10/jit-setup-cost-823-adversarial-review.md), #823) | JIT/Solvers | adversarial, 3 rounds | Passing | 2026-10-07 | Fixes on branch |
 | Restore exactness and step ratio ([2026-10](2026-10/restore-exact-adversarial-review.md)) | Checkpoint/Time stepping | adversarial, 1 round (3 reviewers) | Passing | 2026-10-12 | Fixes on branch |
 | Parallel add-on distribution ([2026-10](2026-10/parallel-addon-distribution-adversarial-review.md)) | Faults/Multigrid/Parallel | adversarial, 1 round (3 reviewers) | Passing | 2026-10-17 | Fixes on branch |
+| Stress history snapshot order ([2026-10](2026-10/stress-snapshot-order-adversarial-review.md)) | Time stepping/Constitutive | adversarial, 1 round (2 reviewers) | Passing | 2026-10-22 | Fixes on branch |
 | Units System (2026-02) | Units/Scaling | 60+ | Passing | 2026-02-01 | Approved (2026-03-10) |
 | Data Access (2026-02) | Array/Math Interface | 75+ | Passing | 2026-02-01 | Approved (2026-03-10) |
 | Reduction Operations | Mesh/Swarm Arrays | 5 | ✅ 100% | 2025-10-25 | ✅ Approved |

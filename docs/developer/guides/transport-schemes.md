@@ -28,7 +28,9 @@ and how it is carried. The classes describe themselves
 ## What the tests established
 
 **Advection of a step (Waters and King, 2026-09-16, #749).** With the
-same time integrator, a nodal history converges as the timestep falls; an
+same time integrator, a nodal history converges as the timestep falls
+(measured while the nodal history did not move, which is exact on this case:
+carried, it does not converge at fixed Courant number, #1009); an
 integration-point history degrades as the timestep falls, ringing and then
 diverging; a grid history diverges at every timestep. The peak of the
 profile is set by the integrator, the settled state by the transport. Rule:
@@ -41,7 +43,11 @@ half again too much stress in the first two cells off a no-slip wall,
 because the nodal projection smooths the history through the wall. Rule:
 a flux history lives on the integration points (or on the grid, with DEVSS
 opted in); a scalar field's history lives on the nodes. The two rules are
-not in conflict: they are different quantities.
+not in conflict: they are different quantities. The nodal measurement was
+made while the nodal history did not carry the stress it stored (from
+beb4f2e3, 2026-04-25, until d77bc9d2 on `bugfix/backward-nodes-snapshot-order`; see the warning in
+[stress transport](../subsystems/stress-transport.md)), so its wall excess
+is to be re-measured before this ruling is confirmed.
 
 **Courant number for the integration-point trace (#703, #737).** The
 integration-point semi-Lagrangian scheme runs at Courant number about
