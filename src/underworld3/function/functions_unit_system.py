@@ -25,6 +25,7 @@ This clean separation ensures:
 - Single source of truth for unit handling logic
 """
 
+import collections
 import warnings
 
 import numpy as np
@@ -1048,32 +1049,85 @@ def _reduces_to_a_dimension(e, coordinates_are_lengths=False):
 _UNIT_PASSING_FUNCTIONS = ("Abs", "Min", "Max", "Piecewise", "sign", "Heaviside",
                            "floor", "ceiling", "re", "im", "conjugate", "DiracDelta")
 
-_function_argument_cache = {}
+# Functions of a ratio: their arguments must share a dimension, not each be
+# dimensionless. atan2(y, x) is the angle of y/x, as the library's own polar,
+# cylindrical, spherical and geographic angles are built.
+_RATIO_FUNCTIONS = ("atan2",)
+
+# Verdicts of _reduces_to_a_dimension for function arguments, keyed by the
+# argument and the current value and units of every named expression reachable
+# from it, so a reassigned .sym is a new key. Bounded: least recently used out.
+_argument_dimension_cache = collections.OrderedDict()
+_ARGUMENT_DIMENSION_CACHE_SIZE = 512
+
+
+def _named_expression_state(e):
+    """The current value and units of every named expression reachable from
+    ``e``, in a fixed order: what the units of ``e`` depend on besides ``e``."""
+    import sympy
+    from .expressions import UWexpression
+
+    state, seen, stack = [], set(), [e]
+    while stack:
+        x = stack.pop()
+        if isinstance(x, UWexpression):
+            if id(x) in seen:
+                continue
+            seen.add(id(x))
+            value = x.sym
+            try:
+                hash(value)
+            except TypeError:
+                value = str(value)          # a mutable Matrix: compared by its text
+            state.append((id(x), value, str(getattr(x, "units", None))))
+            stack.append(x.sym)
+            continue
+        if isinstance(x, sympy.MatrixBase):
+            stack.extend(list(x))
+            continue
+        if hasattr(x, "atoms"):
+            stack.extend(a for a in x.atoms(sympy.Symbol) if isinstance(a, UWexpression))
+    return tuple(state)
+
+
+def _argument_has_a_dimension(arg):
+    """``_reduces_to_a_dimension(arg, coordinates_are_lengths=True)``, cached on
+    the argument and the current state of the named expressions in it."""
+    try:
+        key = (arg, _named_expression_state(arg))
+        hash(key)
+    except TypeError:
+        return _reduces_to_a_dimension(arg, coordinates_are_lengths=True)
+    cache = _argument_dimension_cache
+    if key in cache:
+        cache.move_to_end(key)
+        return cache[key]
+    verdict = _reduces_to_a_dimension(arg, coordinates_are_lengths=True)
+    cache[key] = verdict
+    if len(cache) > _ARGUMENT_DIMENSION_CACHE_SIZE:
+        cache.popitem(last=False)
+    return verdict
 
 
 def _dimensional_function_argument(expr):
     """The first applied function whose argument, or power whose exponent,
     carries a dimension once its leaves are reduced together (coordinates as
-    lengths); ``(name, argument)`` or None.
+    lengths); ``(name, argument)`` or None. For a power the second item is the
+    whole power, whose exponent is the argument.
 
     By rule, not by list: every applied sympy function (exp, log, the
     trigonometric, hyperbolic and inverse functions, erf, erfc, …) needs a
     dimensionless argument, except the few in ``_UNIT_PASSING_FUNCTIONS`` and a
-    mesh or swarm variable's own function. ``exp(eta1)`` and ``sin(x)`` have no
-    meaning; ``exp(eta1/eta0)``, ``exp(-E/(R*T0))`` and ``sin(pi*x/W)`` do.
-    Named expressions are walked into, each once. The verdict is cached per
-    expression, keyed by the expression itself.
+    mesh or swarm variable's own function. A function of a ratio
+    (``_RATIO_FUNCTIONS``) needs its arguments to share a dimension.
+    ``exp(eta1)`` and ``sin(x)`` have no meaning; ``exp(eta1/eta0)``,
+    ``exp(-E/(R*T0))``, ``sin(pi*x/W)`` and ``atan2(y, x)`` do. Named
+    expressions are walked into, each once, on every call: their values can be
+    reassigned. Only the units reduction of each argument is cached, keyed on
+    the current values (``_argument_has_a_dimension``).
     """
     import sympy
     from .expressions import UWexpression
-
-    key = None
-    try:
-        key = _as_symbolic(expr)
-        if key in _function_argument_cache:
-            return _function_argument_cache[key]
-    except TypeError:
-        key = None              # unhashable (a mutable Matrix): not cached
 
     def needs_dimensionless(f):
         cls = type(f)
@@ -1081,10 +1135,9 @@ def _dimensional_function_argument(expr):
                 and cls.__name__ not in _UNIT_PASSING_FUNCTIONS
                 and not isinstance(f, sympy.Derivative))
 
-    verdict = None
     seen = set()
     stack = [_as_symbolic(expr)]
-    while stack and verdict is None:
+    while stack:
         e = stack.pop()
         if isinstance(e, UWexpression):
             if id(e) in seen:
@@ -1097,21 +1150,40 @@ def _dimensional_function_argument(expr):
             continue
         if not isinstance(e, sympy.Basic):
             continue
-        if needs_dimensionless(e):
+        if type(e).__name__ in _RATIO_FUNCTIONS and len(e.args) == 2:
+            if _argument_has_a_dimension(e.args[0] / e.args[1]):
+                return (type(e).__name__, e.args[0] / e.args[1])
+        elif needs_dimensionless(e):
             for arg in e.args:
-                if _reduces_to_a_dimension(arg, coordinates_are_lengths=True):
-                    verdict = (type(e).__name__, arg)
-                    break
-        elif isinstance(e, sympy.Pow) and _reduces_to_a_dimension(
-                e.exp, coordinates_are_lengths=True):
-            verdict = ("a power with exponent", e.exp)
+                if _argument_has_a_dimension(arg):
+                    return (type(e).__name__, arg)
+        elif isinstance(e, sympy.Pow) and _argument_has_a_dimension(e.exp):
+            return ("a power with exponent", e)     # the whole power: its base names the fix
         if hasattr(type(e), "meshvar"):
             continue            # a field's own function: its arguments are coordinates
         stack.extend(e.args)
         stack.extend(a for a in e.atoms(sympy.Symbol) if isinstance(a, UWexpression))
-    if key is not None:
-        _function_argument_cache[key] = verdict
-    return verdict
+    return None
+
+
+def _free_coordinates(e):
+    """The coordinates in ``e`` outside any mesh or swarm variable's own
+    function (whose arguments are coordinates whatever the field holds)."""
+    import sympy
+    from sympy.vector import BaseScalar
+
+    found, stack = set(), [e]
+    while stack:
+        x = stack.pop()
+        if isinstance(x, BaseScalar):
+            found.add(str(x))
+            continue
+        if not isinstance(x, sympy.Basic) or hasattr(type(x), "meshvar"):
+            continue
+        if isinstance(x, sympy.Derivative) and hasattr(type(x.expr), "meshvar"):
+            continue
+        stack.extend(x.args)
+    return sorted(found)
 
 
 def _refuse_dimensional_function_argument(expr, where="evaluate"):
@@ -1121,24 +1193,31 @@ def _refuse_dimensional_function_argument(expr, where="evaluate"):
     if _internal_resampling_depth or not uw.get_default_model().has_units():
         return
     bad = _dimensional_function_argument(expr)
-    if bad is not None:
-        import sympy
-        name, argument = bad
-        coords = sorted({str(c) for c in getattr(argument, "atoms", lambda *a: set())(
-            sympy.vector.scalar.BaseScalar)})
-        if coords:
-            # A coordinate carries length in a units model (ruling, 2026-11-19):
-            # show the fix, divided by a length.
-            fix = (f"The coordinate {', '.join(coords)} is a length here. Divide it by "
-                   f"one: write {name}(... {coords[0]}/W ...) with W a length, e.g. "
-                   "W = uw.expression(\"W\", uw.quantity(1000, \"km\"), \"width\").")
-        else:
-            fix = ("Divide by a reference of the same dimension (eta1/eta0, "
-                   "E/(R*T0)).")
-        raise ValueError(
-            f"{where}: {name} of {str(argument)[:120]}, which carries units once its "
-            "leaves are reduced together, in a model with reference quantities. A "
-            f"function like exp, log or sin needs a dimensionless argument. {fix}")
+    if bad is None:
+        return
+    name, argument = bad
+    power = name == "a power with exponent"
+    base = None
+    if power:
+        base, argument = argument.base, argument.exp
+    coords = _free_coordinates(argument)
+    if coords:
+        # A coordinate carries length in a units model (ruling, 2026-11-19):
+        # show the fix, divided by a length.
+        shown = (f"{base}**(... {coords[0]}/W ...)" if power
+                 else f"{name}(... {coords[0]}/W ...)")
+        fix = (f"The coordinate {', '.join(coords)} is a length here. Divide it by "
+               f"one: write {shown} with W a length, e.g. "
+               "W = uw.expression(\"W\", uw.quantity(1000, \"km\"), \"width\").")
+    else:
+        fix = ("Divide by a reference of the same dimension (T/T0, eta1/eta0, "
+               "E/(R*T0)).")
+    what = "a power whose exponent is" if power else f"{name} of"
+    raise ValueError(
+        f"{where}: {what} {str(argument)[:120]}, which carries units once its "
+        "leaves are reduced together, in a model with reference quantities. A "
+        "function like exp, log or sin, or the exponent of a power, needs a "
+        f"dimensionless argument. {fix}")
 
 def _mixed_product(expr):
     """The first product (or sum) in ``expr`` that puts a field without units

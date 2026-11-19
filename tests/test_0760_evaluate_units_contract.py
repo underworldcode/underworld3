@@ -552,3 +552,138 @@ def test_a_dimensional_argument_is_refused_at_the_parameter_setter(units_model):
     with pytest.raises(ValueError, match="exp"):
         st.constitutive_model.Parameters.shear_viscosity_0 = e0 * sympy.exp(e1)
     st.constitutive_model.Parameters.shear_viscosity_0 = e0 * sympy.exp(-e1 / e0)
+
+
+# --- H1's review of #1197 at cca957b4 -------------------------------------
+# The verdict was cached per expression; a named expression keeps its identity
+# when its value is reassigned, so the verdict went stale in both directions.
+
+
+@pytest.mark.level_1
+@pytest.mark.tier_b
+def test_a_constant_made_dimensionless_after_a_refusal_is_accepted(units_model):
+    _box()
+    eta = uw.expression(r"\eta_{4}", uw.quantity(1e21, "Pa*s"), "made dimensionless later")
+    with pytest.raises(ValueError, match="exp"):
+        uw.function.evaluate(sympy.exp(eta), _PTS)
+    eta.sym = 0.5
+    r = uw.function.evaluate(sympy.exp(eta), _PTS)
+    assert float(np.asarray(r).ravel()[0]) == pytest.approx(np.exp(0.5))
+
+
+@pytest.mark.level_1
+@pytest.mark.tier_b
+def test_a_constant_made_dimensional_after_an_acceptance_is_refused(units_model):
+    _box()
+    eta = uw.expression(r"\eta_{5}", 0.5, "made dimensional later")
+    uw.function.evaluate(sympy.exp(eta), _PTS)
+    eta.sym = uw.quantity(1e21, "Pa*s")
+    with pytest.raises(ValueError, match="exp"):
+        uw.function.evaluate(sympy.exp(eta), _PTS)
+
+
+@pytest.mark.level_1
+@pytest.mark.tier_b
+def test_a_length_scale_made_a_number_after_an_acceptance_is_refused(units_model):
+    mesh = _box()
+    x, _y = mesh.X
+    W = uw.expression("W_2", uw.quantity(30, "km"), "made a number later")
+    uw.function.evaluate(sympy.exp(x / W), _PTS)
+    W.sym = 2.0
+    with pytest.raises(ValueError, match="N.x/W"):
+        uw.function.evaluate(sympy.exp(x / W), _PTS)
+
+
+@pytest.mark.level_1
+@pytest.mark.tier_b
+def test_the_verdict_cache_is_bounded(units_model):
+    from underworld3.function import functions_unit_system as fus
+    _box()
+    _e1, e0, _E, _R, _T0 = _arrhenius_constants()
+    for k in range(2000):
+        fus._refuse_dimensional_function_argument(sympy.exp(e0 / e0 * (k + 1)))
+    assert len(fus._argument_dimension_cache) <= fus._ARGUMENT_DIMENSION_CACHE_SIZE
+
+
+@pytest.mark.level_1
+@pytest.mark.tier_b
+def test_atan2_of_two_lengths_is_an_angle(units_model):
+    """The angle of a ratio: its two arguments share a dimension."""
+    mesh = _box()
+    x, y = mesh.X
+    r = uw.function.evaluate(sympy.atan2(y, x), _PTS)
+    assert float(np.asarray(r).ravel()[0]) == pytest.approx(np.pi / 4)
+    e1, *_ = _arrhenius_constants()
+    with pytest.raises(ValueError, match="atan2"):
+        uw.function.evaluate(sympy.atan2(y, e1), _PTS)
+
+
+@pytest.mark.level_1
+@pytest.mark.tier_b
+def test_the_annulus_angle_evaluates_in_a_units_model(units_model):
+    """The library's own theta, Piecewise((0, x == 0), (atan2(y, x), True))."""
+    ann = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.5, cellSize=0.2)
+    point = np.array([[0.7, 0.3]])
+    r = uw.function.evaluate(ann.CoordinateSystem.R[1], point)
+    assert float(np.asarray(r).ravel()[0]) == pytest.approx(np.arctan2(0.3, 0.7))
+
+
+@pytest.mark.level_1
+@pytest.mark.tier_b
+def test_a_bare_coordinate_in_the_body_force_is_refused_when_set(units_model):
+    mesh = _box()
+    x, _y = mesh.X
+    st = uw.systems.Stokes(mesh)
+    f = uw.expression("f_b", uw.quantity(1.0, "Pa/m"), "force density")
+    with pytest.raises(ValueError, match="bodyforce"):
+        st.bodyforce = sympy.Matrix([0, f * sympy.sin(sympy.pi * x)])
+    W = uw.expression("W_b", uw.quantity(30, "km"), "width")
+    st.bodyforce = sympy.Matrix([0, f * sympy.sin(sympy.pi * x / W)])
+
+
+@pytest.mark.level_1
+@pytest.mark.tier_b
+def test_a_bare_coordinate_in_an_integral_is_refused(units_model):
+    mesh = _box()
+    x, _y = mesh.X
+    uw.discretisation.MeshVariable("q_i", mesh, 1, degree=1)   # PETSc integrates over a field
+    with pytest.raises(ValueError, match="Integral"):
+        uw.maths.Integral(mesh, sympy.sin(sympy.pi * x))
+    W = uw.expression("W_i", uw.quantity(30, "km"), "width")
+    uw.maths.Integral(mesh, sympy.sin(sympy.pi * x / W)).evaluate()
+
+
+@pytest.mark.level_2
+@pytest.mark.tier_b
+def test_a_parameter_whose_inner_value_becomes_dimensional_is_refused_at_the_solve(units_model):
+    """Set when dimensionless, made dimensional afterwards: the solve checks."""
+    st = uw.systems.Stokes(_box())
+    st.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    _e1, e0, _E, _R, _T0 = _arrhenius_constants()
+    k = uw.expression("k_s", 0.5, "made dimensional later")
+    st.constitutive_model.Parameters.shear_viscosity_0 = e0 * sympy.exp(k)
+    for wall in ("Top", "Bottom", "Left", "Right"):
+        st.add_essential_bc((0.0, 0.0), wall)
+    k.sym = uw.quantity(1e21, "Pa*s")
+    with pytest.raises(ValueError, match="solve"):
+        st.solve()
+
+
+@pytest.mark.level_1
+@pytest.mark.tier_b
+def test_the_hint_for_a_field_points_to_a_reference_not_a_coordinate(units_model):
+    mesh = _box()
+    T = uw.discretisation.MeshVariable("T_h", mesh, 1, degree=1, units="K")
+    with pytest.raises(ValueError) as refused:
+        uw.function.evaluate(sympy.exp(T.sym[0]), _PTS)
+    assert "coordinate" not in str(refused.value)
+    assert "T/T0" in str(refused.value)
+
+
+@pytest.mark.level_1
+@pytest.mark.tier_b
+def test_the_hint_for_a_power_shows_the_power(units_model):
+    mesh = _box()
+    x, _y = mesh.X
+    with pytest.raises(ValueError, match=r"2\*\*\(\.\.\. N\.x/W \.\.\.\)"):
+        uw.function.evaluate(2 ** x, _PTS)

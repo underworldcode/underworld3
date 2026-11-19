@@ -1585,18 +1585,9 @@ class SolverBaseClass(uw_object):
                 )
             opts[gkey] = "both"
 
-    def _check_expression_meshes(self):
-        """Check that all MeshVariable symbols in solver expressions
-        belong to this solver's mesh.
-
-        Raises a clear error if variables from a different mesh are
-        found, rather than letting the JIT fail with a cryptic message.
-        """
-        from underworld3.function.expressions import extract_meshes
-
-        solver_mesh = self.mesh
-
-        # Collect all sympy expressions from the solver
+    def _input_expressions(self):
+        """The solver's own inputs as sympy expressions: the body force, the
+        natural boundary values and the constitutive parameters."""
         exprs = []
 
         if hasattr(self, 'bodyforce') and self.bodyforce is not None:
@@ -1624,6 +1615,41 @@ class SolverBaseClass(uw_object):
                             exprs.append(val)
                     except (AttributeError, TypeError):
                         pass
+        return exprs
+
+    def _refuse_dimensional_function_arguments(self):
+        """In a model with reference quantities, refuse a function of a
+        dimensional argument (``sin(pi*x)``, ``exp(eta1)``) anywhere in the
+        solver's inputs: the body force, the source term, the boundary values
+        and the constitutive parameters. Run at every solve, so a named
+        expression reassigned after it was set is checked too. The same on
+        every rank: the inputs are."""
+        from underworld3.function import functions_unit_system as _fus
+
+        if _fus._internal_resampling_depth or not uw.get_default_model().has_units():
+            return
+        exprs = self._input_expressions()
+        f = getattr(self, "f", None) if hasattr(type(self), "f") else None
+        if hasattr(f, "atoms"):
+            exprs.append(f)
+        for bc in getattr(self, "essential_bcs", []):
+            fn = getattr(bc, "fn", None)
+            if hasattr(fn, "atoms"):
+                exprs.append(fn)
+        for expr in exprs:
+            _fus._refuse_dimensional_function_argument(expr, where=f"{type(self).__name__}.solve")
+
+    def _check_expression_meshes(self):
+        """Check that all MeshVariable symbols in solver expressions
+        belong to this solver's mesh.
+
+        Raises a clear error if variables from a different mesh are
+        found, rather than letting the JIT fail with a cryptic message.
+        """
+        from underworld3.function.expressions import extract_meshes
+
+        solver_mesh = self.mesh
+        exprs = self._input_expressions()
 
         # Extract all meshes from all expressions
         foreign_meshes = set()
@@ -4952,6 +4978,7 @@ class SolverBaseClass(uw_object):
                     ):
 
         self._check_expression_meshes()
+        self._refuse_dimensional_function_arguments()
         if self._materials is not None:
             self._materials.check()
 
