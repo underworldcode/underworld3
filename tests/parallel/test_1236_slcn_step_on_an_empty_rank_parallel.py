@@ -7,12 +7,12 @@ two routes enter different collectives: the step hung at np 3 with an empty
 rank. The ranks now agree on the route, and the copy reads its column count
 from the array's shape.
 
-The field x + y with that value on the boundary, no flow and unit diffusivity
-is a steady solution. In parallel the record is the nodal copy, so the field
-is held to round-off. Serially it is not: the serial record writes each node
-the value at a point nudged towards its cell centroid, which moved this field
-by 7.5e-5 in two steps (measured serially on the same fixture). That is why
-the test runs from np 3 only.
+Two SLCN steps of the field x + y, with that value on the boundary, no flow
+and unit diffusivity, on the triangle with one rank empty, are compared with
+the same steps on the same triangle shared among every rank. Both take the
+parallel route, so they differ by the partition's round-off only. A loose
+check against x + y holds the answer, whatever the record's centroid nudge
+does (serially it moved this field by 7.5e-5 in two steps).
 """
 
 import numpy as np
@@ -25,21 +25,19 @@ from empty_rank_fixtures import (ALL_BOUNDARIES_VALUE, cells_along_a_side_leavin
 pytestmark = [pytest.mark.level_1, pytest.mark.tier_b, pytest.mark.timeout(300)]
 
 
-@pytest.mark.skipif(uw.mpi.size < 3, reason="at np 2 the fixture's one cell is redistributed "
-                    "onto both ranks, so no rank is empty")
-def test_an_slcn_step_with_an_empty_rank_completes():
+def _two_steps(ranks_with_cells, tag):
+    """The field after two steps, and its node coordinates, on this rank."""
     size = uw.mpi.size
     dm = right_triangle_of_cells(cells_along_a_side_leaving_one_rank_empty(size),
-                                 max(size - 1, 1))
+                                 ranks_with_cells)
     dm.createLabel("All_Boundaries")
     dm.markBoundaryFaces("All_Boundaries", ALL_BOUNDARIES_VALUE)     # collective
     mesh = uw.discretisation.Mesh(dm, qdegree=3)
-    assert 0 in cells_per_rank(mesh)
     x, y = mesh.X
-    T = uw.discretisation.MeshVariable("T1236", mesh, 1, degree=2)
+    T = uw.discretisation.MeshVariable(f"T1236{tag}", mesh, 1, degree=2)
     X = np.asarray(T.coords)
     T.array[:, 0, 0] = X[:, 0] + X[:, 1] if X.size else np.empty(0)
-    V = uw.discretisation.MeshVariable("V1236", mesh, 2, degree=1)   # no flow
+    V = uw.discretisation.MeshVariable(f"V1236{tag}", mesh, 2, degree=1)   # no flow
     adv = uw.systems.AdvDiffusionSLCN(mesh, u_Field=T, V_fn=V.sym, order=1)
     adv.constitutive_model = uw.constitutive_models.DiffusionModel
     adv.constitutive_model.Parameters.diffusivity = 1.0
@@ -47,5 +45,26 @@ def test_an_slcn_step_with_an_empty_rank_completes():
     adv.tolerance = 1.0e-10
     for _ in range(2):
         adv.solve(timestep=0.01)
-    error = float(np.abs(np.asarray(T.array).ravel() - (X[:, 0] + X[:, 1])).max()) if X.size else 0.0
-    assert uw.mpi.comm.allreduce(error, op=uw.MPI.MAX) < 1.0e-9
+    return mesh, np.asarray(T.array).reshape(-1), X
+
+
+def _gathered(values, X):
+    """Every rank's (x, y, value), sorted by position, on every rank."""
+    rows = np.column_stack([X, values]) if X.size else np.empty((0, 3))
+    table = np.vstack(uw.mpi.comm.allgather(rows))
+    table = np.unique(np.round(table, 12), axis=0)       # shared nodes appear once
+    return table[np.lexsort((table[:, 1], table[:, 0]))]
+
+
+@pytest.mark.skipif(uw.mpi.size < 3, reason="at np 2 the fixture's one cell is redistributed "
+                    "onto both ranks, so no rank is empty")
+def test_an_slcn_step_with_an_empty_rank_matches_one_without():
+    empty_mesh, empty_values, empty_X = _two_steps(uw.mpi.size - 1, "e")
+    assert 0 in cells_per_rank(empty_mesh)
+    full_mesh, full_values, full_X = _two_steps(uw.mpi.size, "f")
+    assert 0 not in cells_per_rank(full_mesh)
+    with_empty, without = _gathered(empty_values, empty_X), _gathered(full_values, full_X)
+    assert with_empty.shape == without.shape
+    np.testing.assert_allclose(with_empty[:, :2], without[:, :2], rtol=0, atol=1e-12)
+    np.testing.assert_allclose(with_empty[:, 2], without[:, 2], rtol=0, atol=1e-10)
+    assert np.abs(with_empty[:, 2] - with_empty[:, 0] - with_empty[:, 1]).max() < 1e-4
