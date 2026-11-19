@@ -4274,6 +4274,50 @@ class Mesh(Stateful, uw_object):
         value = getattr(member, "value", member)
         return value
 
+    def _boundaries_that_mark_faces(self):
+        """The members of ``self.boundaries`` whose value marks a face (a
+        height-1 point) of ``UW_Boundaries`` on some rank, in enum order.
+
+        A solver refuses a condition on a boundary that marks no point (#1211).
+        Many stock meshes list a boundary with no faces behind it: ``Centre``
+        on an ``Annulus`` marks nothing, and on a solid shell it marks a
+        vertex. Faces are counted, not points, so a boundary of vertices or of
+        cells is left out.
+
+        Collective: the counts are summed over every rank, so every rank
+        returns the same list.
+        """
+        import numpy as np
+        import underworld3 as uw
+
+        members = list(self.boundaries)
+        label = self.dm.getLabel("UW_Boundaries") if self.dm.hasLabel("UW_Boundaries") else None
+        f_start, f_end = self.dm.getHeightStratum(1)
+        local = np.zeros(len(members), dtype=np.int64)
+        if label is not None:
+            for k, b in enumerate(members):
+                if label.getStratumSize(b.value):
+                    points = np.asarray(label.getStratumIS(b.value).getIndices())
+                    local[k] = np.count_nonzero((points >= f_start) & (points < f_end))
+        total = np.zeros_like(local)
+        self.dm.getComm().tompi4py().Allreduce(local, total, op=uw.MPI.SUM)
+        return [b for b, n in zip(members, total) if n > 0]
+
+    def _boundaries_covering_the_exterior_once(self):
+        """Boundaries whose faces cover the exterior of the mesh, each face once.
+
+        For library code that puts one condition on the whole boundary. Every
+        stock mesh lists ``All_Boundaries``, the faces ``markBoundaryFaces``
+        finds, and also lists the named boundaries that share those faces: a
+        condition on all of them puts each exterior face's term in twice
+        (#1211, measured on the ``EulerianSUPG`` inflow). So ``All_Boundaries``
+        alone where it marks faces, and otherwise every boundary that marks
+        faces. Collective.
+        """
+        faced = self._boundaries_that_mark_faces()
+        exterior = [b for b in faced if b.name == "All_Boundaries"]
+        return exterior if exterior else faced
+
     def _boundary_is_internal(self, boundary_name):
         """True if boundary ``boundary_name`` is an internal surface — its
         facets have a cell on BOTH sides (support size 2) — rather than part
