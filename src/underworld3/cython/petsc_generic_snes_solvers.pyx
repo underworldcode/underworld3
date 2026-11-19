@@ -3623,11 +3623,26 @@ class SolverBaseClass(uw_object):
             self.snes = None
 
         if self.dm is not None:
+            # The field split's index sets and sub-DMs are the old DM's.
+            for is_set, subdm in (getattr(self, "_subdict", None) or {}).values():
+                is_set.destroy()
+                subdm.destroy()
+            self._subdict = {}
+
             for coarse_dm in self.dm_hierarchy:
                 coarse_dm.destroy()
 
             self.dm = None
             self.dm_hierarchy = [None]
+
+        # The nullspace objects are numbered on the DM just dropped. _build forgets
+        # them only when it finds a DM to tear down, which after this it does not,
+        # so a solve through conditions() or discretisation() used them on the new
+        # numbering: #1169 again (reason -6, PETSc error 75, a hang at np 3).
+        if hasattr(self, "_reset_stokes_nullspace"):
+            self._reset_stokes_nullspace()
+        if hasattr(self, "_constant_nullspace_obj"):
+            self._constant_nullspace_obj = None
 
         self.is_setup = False
 

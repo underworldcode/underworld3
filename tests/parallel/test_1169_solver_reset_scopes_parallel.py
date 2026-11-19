@@ -103,19 +103,41 @@ def test_rotated_free_slip_conditions_are_conditions():
     assert stokes._rotated_freeslip_bcs == []
 
 
+@pytest.mark.parametrize("scope", ["all", "conditions"])
 @pytest.mark.parametrize("first, second", [(SLIP_ENDS, SLIP_SIDES), (NO_SLIP, FREE_SLIP)],
                          ids=["other walls, same unknowns", "more unknowns"])
-def test_after_reset_all_the_solve_is_a_new_solvers(first, second):
-    """#1169: diverged (reason -6) and PETSc error 75 before."""
+def test_after_a_reset_of_the_conditions_the_solve_is_a_new_solvers(first, second, scope):
+    """#1169: diverged (reason -6) and PETSc error 75 before. Through conditions()
+    alone the nullspace objects survived the dropped DM until the fix to
+    _reset_discretisation, with the same failures and, at np 3, a hang."""
     fresh, v_fresh = _box(second)
     fresh.petsc_use_pressure_nullspace = True
     fresh.solve()
     stokes, v = _box(first)
     stokes.petsc_use_pressure_nullspace = True
     stokes.solve()
-    stokes.reset.all()
+    getattr(stokes.reset, scope)()
     for wall, velocity in second.items():
         stokes.add_essential_bc(velocity, wall)
+    stokes.solve(zero_init_guess=True)
+    assert stokes.snes.getConvergedReason() > 0
+    assert _speed(v) == pytest.approx(_speed(v_fresh), rel=1e-8)
+
+
+def test_after_a_reset_of_the_discretisation_the_solve_is_a_new_solvers():
+    """Conditions added to a solved problem change the unknowns; reset.discretisation()
+    keeps the conditions and must forget the nullspace numbered on the old DM."""
+    fresh, v_fresh = _box(FREE_SLIP)
+    fresh.petsc_use_pressure_nullspace = True
+    for wall in ("Left", "Right"):
+        fresh.add_essential_bc((0.0, 0.0), wall)
+    fresh.solve()
+    stokes, v = _box(FREE_SLIP)
+    stokes.petsc_use_pressure_nullspace = True
+    stokes.solve()
+    for wall in ("Left", "Right"):
+        stokes.add_essential_bc((0.0, 0.0), wall)
+    stokes.reset.discretisation()
     stokes.solve(zero_init_guess=True)
     assert stokes.snes.getConvergedReason() > 0
     assert _speed(v) == pytest.approx(_speed(v_fresh), rel=1e-8)
