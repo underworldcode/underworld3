@@ -507,3 +507,116 @@ def test_accepted_list_has_no_stale_entries():
         "delete them:\n"
         + "\n".join(f"  {path}::{function}" for path, function in stale)
     )
+
+
+# --------------------------------------------------------------------------- #
+#  agreed_build: every collective has an agreement point in front (#874)
+# --------------------------------------------------------------------------- #
+# What this static rule can and cannot see. It checks DIRECT mpi4py collectives
+# (as the scan above reads them) inside an ``agreed_build`` block, and inside
+# any function that calls ``agree()`` (a helper: its entry is NOT agreed). It
+# cannot see a collective inside a called helper, a PETSc collective, or a
+# mesh method that is collective inside, and it does not reason about an
+# ``agree()`` on one branch only or inside a broad ``except``. Those are left
+# to the run-time check in tests/parallel/test_0874_agreed_build_parallel.py,
+# which wraps the build's communicator and asserts that every collective made
+# inside an active context follows an agreement (W1's and H1's reviews of
+# #1218).
+AGREE_CALLS = {"agree", "agreed_allreduce", "agreed_allgather", "agreed_bcast"}
+
+
+def _call_name(call):
+    f = call.func
+    return f.attr if isinstance(f, ast.Attribute) else (f.id if isinstance(f, ast.Name) else None)
+
+
+def _flatten(statements):
+    """The statements of a block in execution order, nested blocks inline."""
+    for st in statements:
+        yield st
+        for field in ("body", "orelse", "finalbody"):
+            inner = getattr(st, field, None)
+            if isinstance(inner, list) and not isinstance(st, (ast.FunctionDef, ast.ClassDef)):
+                yield from _flatten(inner)
+        for handler in getattr(st, "handlers", []) or []:
+            yield from _flatten(handler.body)
+
+
+def _statement_calls(st):
+    """The calls a statement makes itself (not those of a nested block)."""
+    if isinstance(st, (ast.If, ast.While)):
+        nodes = [st.test]
+    elif isinstance(st, ast.For):
+        nodes = [st.iter]
+    elif isinstance(st, ast.With):
+        nodes = [item.context_expr for item in st.items]
+    elif isinstance(st, (ast.Try, ast.FunctionDef, ast.ClassDef)):
+        nodes = []
+    else:
+        nodes = [st]
+    return [n for node in nodes for n in ast.walk(node) if isinstance(n, ast.Call)]
+
+
+def agreed_build_findings(source, filename="<source>"):
+    """Direct mpi4py collectives inside an ``agreed_build`` block, or inside a
+    function that calls ``agree()``, with a statement that can raise (a call or
+    a subscript) between them and the last agreement point. A context's entry
+    is agreed; a helper's is not. Returns ``(line, function, collective)``."""
+    tree = ast.parse(source, filename=filename)
+    findings = []
+    for fn in [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]:
+        blocks = [(st.body, True) for st in ast.walk(fn) if isinstance(st, ast.With) and any(
+            isinstance(item.context_expr, ast.Call)
+            and _call_name(item.context_expr) == "agreed_build" for item in st.items)]
+        if not blocks and any(isinstance(n, ast.Call) and _call_name(n) == "agree"
+                              for n in ast.walk(fn)):
+            blocks = [(fn.body, False)]
+        for body, agreed in blocks:
+            for st in _flatten(body):
+                calls = _statement_calls(st)
+                if any(_call_name(c) in AGREE_CALLS for c in calls):
+                    agreed = True
+                    continue
+                coll = [c for c in calls if is_collective(c)]
+                if coll:
+                    if not agreed:
+                        findings.append((st.lineno, fn.name, _call_name(coll[0])))
+                    agreed = True               # a collective agrees what precedes it
+                    continue
+                risky = calls or any(isinstance(n, ast.Subscript) for n in ast.walk(st))
+                if risky and not isinstance(st, (ast.Try, ast.FunctionDef, ast.ClassDef)):
+                    agreed = False
+    return findings
+
+
+def test_agreed_build_rule_flags_a_planted_collective():
+    planted = (
+        "def f(comm, a):\n"
+        "    with agreed_build('x'):\n"
+        "        y = a[0]\n"
+        "        n = comm.allreduce(y)\n"
+        "    return n\n")
+    fixed = planted.replace("        n = comm.allreduce(y)\n",
+                            "        agree()\n        n = comm.allreduce(y)\n")
+    wrapped = planted.replace("comm.allreduce(y)", "agreed_allreduce(comm, y)")
+    helper = (
+        "def g(comm, a):\n"
+        "    n = comm.allreduce(len(a))\n"
+        "    agree()\n"
+        "    return comm.allgather(n)\n")
+    assert agreed_build_findings(planted) == [(4, "f", "allreduce")]
+    assert agreed_build_findings(fixed) == []
+    assert agreed_build_findings(wrapped) == []
+    # a helper's entry is not agreed: its first collective needs a point too
+    assert agreed_build_findings(helper) == [(2, "g", "allreduce")]
+
+
+def test_every_collective_in_an_agreed_build_has_an_agreement_point():
+    findings = []
+    for path in sorted(SRC.rglob("*.py")):
+        text = path.read_text()
+        if "agreed_build" not in text and "agree()" not in text:
+            continue
+        for line, fn, call in agreed_build_findings(text, str(path)):
+            findings.append(f"{path.relative_to(SRC).as_posix()}:{line} {fn}: {call}")
+    assert not findings, "collectives with no agreement point in front:\n" + "\n".join(findings)

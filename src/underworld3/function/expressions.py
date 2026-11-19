@@ -391,8 +391,11 @@ def extract_expressions(fn):
 def extract_meshes(fn):
     """Extract all meshes referenced by MeshVariable symbols in an expression.
 
-    Searches for UnderworldFunction (applied function) atoms and
-    coordinate BaseScalar atoms, collecting the meshes they belong to.
+    Searches for UnderworldFunction (applied function) atoms and collects the
+    meshes their variables belong to. Coordinates are not counted: a coordinate
+    is a position, not mesh-owned data, and coordinates of different meshes
+    compare equal by hash and structure, so they cannot say which mesh an
+    expression belongs to.
 
     Parameters
     ----------
@@ -424,10 +427,13 @@ def extract_meshes(fn):
             if var is not None and hasattr(var, 'mesh') and var.mesh is not None:
                 meshes.add(var.mesh)
 
-    # Check coordinate base scalars (N.x, N.y, Gamma.x, etc.)
-    for atom in fn.atoms(sympy.vector.scalar.BaseScalar):
-        if hasattr(atom, 'mesh'):
-            meshes.add(atom.mesh)
+    # Coordinates do not identify a mesh. A coordinate is a position, not data a
+    # mesh owns: another mesh's x evaluated here is the same place. And two
+    # meshes' coordinates are hash-equal and structurally equal (raw scalars by
+    # #501, UWCoordinates by their hash), so a cached expression (an unwrap of
+    # one built on an earlier mesh, for example) can carry the earlier mesh's
+    # coordinates into this one's solver. The foreign- and mixed-mesh refusals
+    # are for variables, which carry their mesh in their function class (#1209).
 
     return meshes
 
@@ -719,6 +725,10 @@ def _quantity_as_expression(quantity):
     else:
         latex_name = str(quantity.value)
     return UWexpression(latex_name, quantity, _unique_name_generation=True)
+
+
+# A missing attribute, told apart from one whose value is None.
+_ABSENT = object()
 
 
 class UWexpression(MathematicalMixin, uw_object, Symbol):
@@ -1062,10 +1072,11 @@ class UWexpression(MathematicalMixin, uw_object, Symbol):
     @property
     def value(self):
         """Get the dimensional value of the wrapped thing."""
-        # TRANSPARENT CONTAINER: Always derive from _sym (the wrapped object)
-        if hasattr(self._sym, 'value'):
-            return self._sym.value
-        return self._sym
+        # TRANSPARENT CONTAINER: Always derive from _sym (the wrapped object), in
+        # one read: hasattr() then a second access evaluated a nested
+        # expression's property twice per level (#1080).
+        value = getattr(self._sym, 'value', _ABSENT)
+        return self._sym if value is _ABSENT else value
 
     @property
     def data(self):
@@ -1078,12 +1089,13 @@ class UWexpression(MathematicalMixin, uw_object, Symbol):
 
         This is the machinery that .data uses. Named explicitly to be self-documenting.
         """
-        # TRANSPARENT CONTAINER: Derive from _sym (the wrapped object)
-        if hasattr(self._sym, 'data'):
-            return self._sym.data  # Delegate to wrapped object's .data
-        elif hasattr(self._sym, 'value'):
-            return self._sym.value  # Fallback to dimensional value
-        return self._sym
+        # TRANSPARENT CONTAINER: Derive from _sym (the wrapped object): its .data,
+        # else its dimensional .value, each read once (#1080).
+        data = getattr(self._sym, 'data', _ABSENT)
+        if data is not _ABSENT:
+            return data
+        value = getattr(self._sym, 'value', _ABSENT)
+        return self._sym if value is _ABSENT else value
 
     @property
     def units(self):
@@ -1275,10 +1287,10 @@ class UWexpression(MathematicalMixin, uw_object, Symbol):
 
     @property
     def is_extended_real(self):
-        """Delegate to wrapped expression."""
-        if self._sym is not None and hasattr(self._sym, 'is_extended_real'):
-            return self._sym.is_extended_real
-        return None
+        """Delegate to wrapped expression, in one read (#1080)."""
+        if self._sym is None:
+            return None
+        return getattr(self._sym, 'is_extended_real', None)
 
     @property
     def is_positive(self):
@@ -1309,10 +1321,10 @@ class UWexpression(MathematicalMixin, uw_object, Symbol):
 
     @property
     def is_finite(self):
-        """Delegate to wrapped expression."""
-        if self._sym is not None and hasattr(self._sym, 'is_finite'):
-            return self._sym.is_finite
-        return None
+        """Delegate to wrapped expression, in one read (#1080)."""
+        if self._sym is None:
+            return None
+        return getattr(self._sym, 'is_finite', None)
 
     def is_constant(self, *wrt, **flags):
         """SymPy-compatible is_constant - delegate to Symbol."""
