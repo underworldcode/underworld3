@@ -9896,6 +9896,245 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         from underworld3.utilities._pressure_split import _create_pressure_split
         return _create_pressure_split(self, jumps, normals, tolerance)
 
+    def cylindrical_pressure_lifting(self, *, interface, outer,
+                                     wavenumber, amplitude, quadrature_points):
+        r"""Construct an exact-circle pressure lift and moment-equivalent force.
+
+        .. note::
+           Experimental and opt-in. No stability or convergence theorem is
+           claimed for this construction; convergence studies against analytic
+           annulus solutions are still to be recorded in this repository.
+
+        Parameters
+        ----------
+        interface, outer : str
+            Boundary names of the fitted circular sheet and the outer wall.
+            Their circles are the ones the mesh declares
+            (:meth:`~underworld3.discretisation.Mesh.analytic_surface`), centred
+            at the origin, with the outer radius larger. A boundary the mesh
+            does not declare as such a circle is refused.
+        wavenumber : int
+            Azimuthal cosine mode of the prescribed radial sheet load.
+        amplitude : float
+            Sheet amplitude in :math:`f=-A\cos(n\theta)e_r\delta(r-R)`.
+        quadrature_points : int
+            Points per direction in circular-cut quadrature.
+
+        Returns
+        -------
+        named tuple
+            ``pressure_jump``, ``regular_force`` (DG P2 MeshVariable),
+            ``natural_datum``, ``pressure_jump_integral`` and ``checks``.
+            Reconstruct physical pressure as :math:`p=q+p_J`. Assign the
+            force and register ``natural_datum`` on the natural outer-wall
+            components. This term is :math:`-p_J\Gamma` and does not vanish on
+            outer chords. Fully prescribed velocity has zero test trace, so
+            no outer natural datum is registered for zero-slip walls.
+
+        Notes
+        -----
+        Only nondimensional mesh coordinates, fields and input scalars are
+        supported; active reference-unit scaling is unsupported.
+
+        Explicitly selected correction for affine 2D P2/continuous-P1 annuli,
+        constant viscosity and a fitted circular sheet. No analytical Stokes
+        solution enters construction. Call collectively on every rank.
+
+        References
+        ----------
+        K. S. Chang and D. Y. Kwak (2009), "Extraction method for Stokes
+        Flow with jumps in the pressure", arXiv:0911.4769,
+        https://arxiv.org/abs/0911.4769, Section 2, equations (4)-(6).
+        The pressure split motivates this method. The radial lift, circular-cut
+        load integration and outer-chord natural datum are UW3 adaptations,
+        not the paper's harmonic-extension/CR scheme.
+        """
+        from underworld3.utilities._cylindrical_pressure import _create_circular_pressure_lift
+        from underworld3.utilities._cylindrical_dirichlet import _declared_circle_radius
+        if self.u.degree != 2 or not self.u.continuous or self.p.degree != 1 or not self.p.continuous:
+            raise ValueError("Circular pressure lifting requires continuous P2/P1 fields.")
+        interface_radius = _declared_circle_radius(self.mesh, interface)
+        outer_radius = _declared_circle_radius(self.mesh, outer)
+        return _create_circular_pressure_lift(self.mesh, interface_radius, outer_radius,
+                                             wavenumber, amplitude, quadrature_points)
+
+    def add_cylindrical_wall_transfer(self, *, boundary, sign,
+                                      viscosity, pressure_jump, quadrature):
+        r"""Register lagged free-slip transfer to a physical circular wall.
+
+        .. note::
+           Experimental and opt-in. No stability or convergence theorem is
+           claimed for this construction; convergence studies against analytic
+           annulus solutions are still to be recorded in this repository.
+
+        Parameters
+        ----------
+        boundary : str
+            Complete exterior circular boundary label. Its circle is the one
+            the mesh declares
+            (:meth:`~underworld3.discretisation.Mesh.analytic_surface`),
+            centred at the origin; a boundary the mesh does not declare as
+            such a circle is refused.
+        sign : int
+            Domain-outward normal orientation: -1 inner, +1 outer.
+        viscosity : float
+            Positive constant viscosity, matching the constitutive model.
+        pressure_jump : scalar expression or scalar P1 MeshVariable
+            Known pressure lift in :math:`p=q+p_J`; pass zero without splitting.
+            Accepts the coordinate expression from cylindrical_pressure_lifting
+            or the DG P1 field from pressure_split. Cell-side values are used
+            for discontinuous fields; no analytical Stokes state is required.
+        quadrature : int
+            Gauss points per boundary edge, at least three.
+
+        Returns
+        -------
+        object
+            Wall handle for :meth:`solve_cylindrical_wall_updates`.
+
+        Notes
+        -----
+        Requires nondimensional continuous P2 velocity/P1 regular pressure on
+        affine triangles. Replaces ordinary free-slip registration on this wall.
+        Registers a rotated normal datum and a tangential natural datum, then
+        updates them from numerical cell gradients/Hessians: the normal shift
+        is :math:`-s(R-r)\partial_r u_r`, the shear shift
+        :math:`-(R-r)\partial_r\sigma_{r\theta}`. Polygon-facet loads preserve
+        tangential P2 nodal moments, zero net flux and zero rotation torque.
+        The method does not recover boundary traction or compute topography.
+
+        References
+        ----------
+        Atallah, Canuto and Scovazzi (2020), CMAME 372, 113341,
+        https://doi.org/10.1016/j.cma.2020.113341, Section 2.2, equations
+        (8)--(13), motivates Taylor transfer. This strong, lagged mixed-slip
+        adaptation is not their Nitsche method; no convergence theorem is
+        claimed. Check physical-circle residuals in the solve history.
+        """
+        from underworld3.utilities._cylindrical_wall import _add_cylindrical_wall_transfer
+        return _add_cylindrical_wall_transfer(self, boundary=boundary,
+            sign=sign, viscosity=viscosity, pressure_jump=pressure_jump,
+            quadrature=quadrature)
+
+    def solve_cylindrical_wall_updates(self, *, walls, updates):
+        """Solve with lagged free-slip conditions on both physical circles.
+
+        .. note::
+           Experimental and opt-in. No stability or convergence theorem is
+           claimed for this construction; convergence studies against analytic
+           annulus solutions are still to be recorded in this repository.
+
+        Parameters
+        ----------
+        walls : mapping
+            Names to this system's inner and outer wall handles.
+        updates : int
+            Nonnegative update count; performs ``updates + 1`` Stokes solves.
+
+        Returns
+        -------
+        list of dict
+            Solver verdict, pressure gauge, update changes and true-circle
+            normal-velocity/shear-stress RMS after every solve. The iteration
+            count is explicit, not a convergence guarantee.
+
+        Notes
+        -----
+        Enable ``petsc_use_pressure_nullspace`` before solving. Existing rotated
+        solver settings are retained. No analytical solution enters the updates.
+
+        If the mesh coordinates moved since the walls were registered, each
+        wall's geometry is built again from the circle the mesh declares and
+        its lagged datum restarts from zero; if the move released the
+        declaration (:meth:`~underworld3.discretisation.Mesh.deform`, a direct
+        coordinate write), the solve is refused with the reason.
+        """
+        from underworld3.utilities._cylindrical_wall import _solve_with_wall_updates
+        return _solve_with_wall_updates(self, walls, updates)
+
+    def add_cylindrical_zero_slip_transfer(self, *, boundary, sign, quadrature):
+        r"""Register a full-vector zero-slip datum shifted to a physical circle.
+
+        .. note::
+           Experimental and opt-in. No stability or convergence theorem is
+           claimed for this construction; convergence studies against analytic
+           annulus solutions are still to be recorded in this repository.
+
+        Parameters
+        ----------
+        boundary : str
+            Complete exterior circular boundary label. Its circle is the one
+            the mesh declares
+            (:meth:`~underworld3.discretisation.Mesh.analytic_surface`),
+            centred at the origin; a boundary the mesh does not declare as
+            such a circle is refused.
+        sign : int
+            Domain-outward orientation: -1 inner, +1 outer.
+        quadrature : int
+            Gauss points per edge for physical-circle audits, at least three.
+
+        Returns
+        -------
+        object
+            Handle for :meth:`solve_cylindrical_zero_slip_updates`.
+
+        Notes
+        -----
+        Requires nondimensional affine triangles with continuous P2/P1 fields.
+        Replaces ordinary zero-slip registration on this wall. The lagged
+        essential datum is the complete P2 continuation
+        :math:`u_h(x)-u_h(Rx/|x|)`. Both walls receive one joint zero-flux
+        projection; vertex constraints remain zero. Pressure splitting is
+        independent and needs no exterior traction datum on zero-slip walls.
+
+        References
+        ----------
+        Ruas (2019), CAMWA 77(6), 1756--1769,
+        https://doi.org/10.1016/j.camwa.2018.05.029, Sections 2/4, equations
+        (29)--(30), provides a true-boundary trial-constraint precedent.
+        Atallah et al. (2020), https://doi.org/10.1016/j.cma.2020.113341,
+        Section 2.2, motivates the Taylor shift. The lagged symmetric-stress
+        scheme and joint flux projection are adaptations, not their theorems.
+        """
+        from underworld3.utilities._cylindrical_dirichlet import _add_cylindrical_zero_slip_transfer
+        return _add_cylindrical_zero_slip_transfer(self, boundary=boundary,
+            sign=sign, quadrature=quadrature)
+
+    def solve_cylindrical_zero_slip_updates(self, *, walls, updates):
+        """Solve with jointly flux-compatible shifted zero-slip data.
+
+        .. note::
+           Experimental and opt-in. No stability or convergence theorem is
+           claimed for this construction; convergence studies against analytic
+           annulus solutions are still to be recorded in this repository.
+
+        Parameters
+        ----------
+        walls : mapping
+            Names to this system's inner and outer zero-slip wall handles.
+        updates : int
+            Nonnegative update count; performs ``updates + 1`` standard solves.
+
+        Returns
+        -------
+        list of dict
+            Solver verdict, joint flux projection, update changes and true-circle
+            full-velocity residuals. Inspect these for fixed-point convergence.
+
+        Notes
+        -----
+        Enable ``petsc_use_pressure_nullspace`` before solving. No rotated
+        constraints, torque correction, pressure or traction recovery is added.
+
+        If the mesh coordinates moved since the walls were registered, each
+        wall's geometry is built again from the circle the mesh declares and
+        its lagged datum restarts from zero; if the move released the
+        declaration (:meth:`~underworld3.discretisation.Mesh.deform`, a direct
+        coordinate write), the solve is refused with the reason.
+        """
+        from underworld3.utilities._cylindrical_dirichlet import _solve_cylindrical_zero_slip_updates
+        return _solve_cylindrical_zero_slip_updates(self, walls=walls, updates=updates)
+
     def add_nitsche_bc(self, conds=None, boundary=None, direction=None, normal=None,
                        gamma=12.5, theta=1, mask=None, local_h=True, g=None):
         r"""Add Nitsche weak enforcement of a velocity constraint along a direction.
