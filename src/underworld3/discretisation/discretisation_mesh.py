@@ -1068,6 +1068,14 @@ class Mesh(Stateful, uw_object):
         # For a mesh made on a moved one: the pair (level, vertices), its
         # vertices in the geometry of that level (addon_partition.inherit_provenance).
         self._addon_reference = None
+        # The coarse levels of a refined hierarchy move with the finest level
+        # (_move_coarse_levels_with_the_finest): each coarse level's map from its
+        # vertices to the finest level's, its vertices as built (both taken on
+        # the first call), and the finest geometry version they last followed.
+        self._refined_hierarchy = False
+        self._coarse_vertex_maps = None
+        self._coarse_built_vertices = None
+        self._coarse_levels_at_version = None
         self._registered_swarms = weakref.WeakSet()
         self._registered_surfaces = weakref.WeakSet()  # Surfaces using this mesh
         self._registered_submeshes = weakref.WeakSet()  # Submeshes from extract_region
@@ -1765,6 +1773,7 @@ class Mesh(Stateful, uw_object):
         sf, saved = matched
 
         self.dm_hierarchy = hierarchy
+        self._refined_hierarchy = True
         self.dm_h = self.dm_hierarchy[-1]
         self.dm_h.setName("uw_hierarchical_dm")
 
@@ -1817,6 +1826,7 @@ class Mesh(Stateful, uw_object):
 
             self.dm_hierarchy.append(dm_refined)
 
+        self._refined_hierarchy = True
         self.dm_h = self.dm_hierarchy[-1]
         self.dm_h.setName("uw_hierarchical_dm")
 
@@ -2594,9 +2604,11 @@ class Mesh(Stateful, uw_object):
 
     def clone_dm_hierarchy(self):
         """
-        Clone the dm hierarchy on the mesh
+        Clone the dm hierarchy on the mesh, its coarse levels moved with the
+        finest (:meth:`_move_coarse_levels_with_the_finest`). Collective.
         """
 
+        self._move_coarse_levels_with_the_finest()
         dm_hierarchy = self.dm_hierarchy
 
         new_dm_hierarchy = []
@@ -5401,13 +5413,15 @@ class Mesh(Stateful, uw_object):
         hierarchy, so without this they assemble on the pre-move geometry
         while integrals and evaluation use the moved one (#1037).
 
-        The coarse levels keep their geometry. For PETSc's geometric
-        multigrid that costs nothing: the nested interpolation is topological
-        and the coarse operators are Galerkin products. Custom-P transfers are
-        built from coordinates. A moved simplex level is read where it was
-        made (``fault_mg.as_built_nodes``), so its transfers are those of the
-        unmoved mesh as well; a quadrilateral, hexahedral or periodic level is
-        read on the moved coordinates.
+        The coarse levels follow at the next solve
+        (:meth:`_move_coarse_levels_with_the_finest`). For PETSc's geometric
+        multigrid their coordinates cost nothing either way: the nested
+        interpolation is topological and the coarse operators are Galerkin
+        products. Custom-P transfers are built from coordinates. A moved
+        simplex pair is read where it was made (``fault_mg.as_built_nodes``),
+        so its transfers are those of the unmoved mesh; a quadrilateral or
+        hexahedral pair is read where it stands, the coarse level moved with
+        the fine one.
 
         The level gets a copy of the global coordinates; its local vector is
         regenerated from them. Its coordinate field (cell geometry, quadrature
@@ -5421,24 +5435,163 @@ class Mesh(Stateful, uw_object):
         g = self.dm.getCoordinates().duplicate()
         self.dm.getCoordinates().copy(g)
         finest.setCoordinates(g)
-        if PETSc.Sys.getVersion() <= (3, 20, 5) and PETSc.Sys.getVersionInfo()["release"] == True:
-            finest.projectCoordinates(self.petsc_fe)
-        elif hasattr(finest, "createCoordinateSpace"):
-            from underworld3.cython.petsc_discretisation import (
-                petsc_dm_create_coordinate_space_within_plex,
-            )
-            from underworld3.cython.petsc_maths import dm_force_coordinate_field
-            petsc_dm_create_coordinate_space_within_plex(finest, self.degree)
-            dm_force_coordinate_field(finest)
-        elif PETSc.Sys.getVersion() >= (3, 24, 0):
-            finest.setCoordinateDisc(disc=self.petsc_fe, localized=False, project=False)
-        else:
-            finest.setCoordinateDisc(disc=self.petsc_fe, project=False)
+        self._rebuild_level_coordinate_field(finest)
         # The rebuild releases the level's old coordinate DM, section and
         # vectors to petsc4py's deferred-destroy list, six entries a move.
         # Every rank is here (the move is collective), so free them now rather
         # than let a long run of moves accumulate them.
         PETSc.garbage_cleanup(self.dm.getComm())
+
+    def _rebuild_level_coordinate_field(self, level):
+        """Rebuild the coordinate field (cell geometry, quadrature Jacobians) of a
+        hierarchy level whose coordinates were just set, the way
+        ``nuke_coords_and_rebuild`` rebuilds ``self.dm``'s: a solver's clone of
+        the level inherits it."""
+        if PETSc.Sys.getVersion() <= (3, 20, 5) and PETSc.Sys.getVersionInfo()["release"] == True:
+            level.projectCoordinates(self.petsc_fe)
+        elif hasattr(level, "createCoordinateSpace"):
+            from underworld3.cython.petsc_discretisation import (
+                petsc_dm_create_coordinate_space_within_plex,
+            )
+            from underworld3.cython.petsc_maths import dm_force_coordinate_field
+            petsc_dm_create_coordinate_space_within_plex(level, self.degree)
+            dm_force_coordinate_field(level)
+        elif PETSc.Sys.getVersion() >= (3, 24, 0):
+            level.setCoordinateDisc(disc=self.petsc_fe, localized=False, project=False)
+        else:
+            level.setCoordinateDisc(disc=self.petsc_fe, project=False)
+
+    def _move_coarse_levels_with_the_finest(self):
+        """Give each coarse level of a refined hierarchy the displacement its
+        vertices have on the finest level. Collective.
+
+        A coarse level stands where the fine one does, so that anything that
+        reads its geometry (a quadrilateral or hexahedral transfer, the normals
+        of a rotated boundary on a coarse level, a coarse level taken as a mesh)
+        sees the moved domain (Louis's ruling, 2026-11-19: the coarse levels
+        move, by injection of the fine-level coordinates). Every vertex of a
+        coarse level is a vertex of each finer level
+        (``_plex_topology.inherited_vertices``, the refinement's own map), so a
+        coarse vertex takes its finest vertex's displacement since the mesh was
+        made (``_transfer_vertices``): exact and topological, with no search.
+        The displacement, not the position, so that a level a refinement
+        callback snapped onto a curved wall stands where it was made until the
+        mesh moves.
+
+        Lazy: called where the levels are read (:meth:`clone_dm_hierarchy` for a
+        solver, :meth:`_coarse_level_meshes` for the custom multigrid), and a
+        no-op unless the finest geometry changed since the last call
+        (``_geometry_version``, which every coordinate change bumps, a restore
+        and ``ephemeral_coords`` included, so the levels come back with them).
+        Both copies of a level move: the hierarchy DM and its cached wrap, whose
+        record of where it was made is kept, so a transfer read as built
+        (``fault_mg.as_built_nodes``) is the one the pair had before the move.
+
+        Not for a coarsened hierarchy (its levels are not nested), a mesh holding
+        cell-wise coordinates (periodic), or a hierarchy the finest level no
+        longer matches (a remesh gave it another topology): those keep their
+        levels where they are.
+        """
+        from underworld3.utilities._plex_topology import inherited_vertices, section_offsets
+
+        hierarchy = getattr(self, "dm_hierarchy", None)
+        if (not self._refined_hierarchy or not hierarchy or len(hierarchy) < 2
+                or self._transfer_vertices is None):
+            return
+        if self._coarse_levels_at_version == self._geometry_version:
+            return
+        # A mesh that has never moved has its levels where they were made.
+        # The flag is set on every rank by the collective move.
+        if not self._moved_since_built:
+            self._coarse_levels_at_version = self._geometry_version
+            return
+        comm = self.dm.getComm().tompi4py()
+        if comm.allreduce(hierarchy[-1].getChart() != self.dm.getChart(), op=uw.MPI.LOR):
+            return
+
+        if self._coarse_vertex_maps is None:
+            # Taken before any coarse level has moved: the maps are the
+            # refinement's, and the coarse vertices are where they were made.
+            maps = [None] * (len(hierarchy) - 1)
+            to_finest = None
+            for k in range(len(hierarchy) - 2, -1, -1):
+                fine_start = hierarchy[k + 1].getDepthStratum(0)[0]
+                one_level = inherited_vertices(hierarchy[k]) - fine_start
+                to_finest = one_level if to_finest is None else to_finest[one_level]
+                maps[k] = to_finest
+            self._coarse_vertex_maps = maps
+            self._coarse_built_vertices = [_vertex_coordinates(dm) for dm in hierarchy[:-1]]
+            self._stamp_coarse_wraps_as_built(
+                (getattr(self, "_coarse_level_meshes_cache", None) or [None])[:-1])
+
+        displacement = _vertex_coordinates(self.dm) - self._transfer_vertices
+        wraps = getattr(self, "_coarse_level_meshes_cache", None)
+        cdim = self.cdim
+        for k, level in enumerate(hierarchy[:-1]):
+            moved = self._coarse_built_vertices[k] + displacement[self._coarse_vertex_maps[k]]
+            vs, ve = level.getDepthStratum(0)
+            offsets = section_offsets(level.getCoordinateSection(), numpy.arange(vs, ve))
+            # A new vector: clones of the level taken before share the old one
+            # and keep their geometry.
+            coordinates = level.getCoordinatesLocal().duplicate()
+            level.getCoordinatesLocal().copy(coordinates)
+            coordinates.array[offsets[:, None] + numpy.arange(cdim)] = moved
+            level.setCoordinatesLocal(coordinates)
+            self._rebuild_level_coordinate_field(level)
+            if wraps is not None:
+                wrap = wraps[k]
+                wvs, wve = wrap.dm.getDepthStratum(0)      # a clone: the same points
+                woffsets = section_offsets(wrap.dm.getCoordinateSection(),
+                                           numpy.arange(wvs, wve))
+                local = numpy.array(wrap.dm.getCoordinatesLocal().array)
+                local[woffsets[:, None] + numpy.arange(cdim)] = moved
+                with wrap._coord_mutation():
+                    wrap._deform_mesh(local.reshape(-1, cdim))
+                wrap._moves_with_the_finest = True
+        PETSc.garbage_cleanup(self.dm.getComm())
+        # Recorded once the levels have moved: a failure part way leaves the
+        # next call to move them again.
+        self._coarse_levels_at_version = self._geometry_version
+
+    def _coarsest_level_as_built(self):
+        """The coarsest hierarchy level where it was made: the level itself if it
+        has not moved with the finest, otherwise a clone of it carrying the
+        coordinates it was made with. A checkpoint saves this, so a write gives
+        the same file whether or not a solve moved the levels before it. The
+        caller destroys a clone."""
+        from underworld3.utilities._plex_topology import section_offsets
+
+        level = self.dm_hierarchy[0]
+        if self._coarse_built_vertices is None:
+            return level
+        clone = level.clone()
+        coordinates = level.getCoordinatesLocal().duplicate()
+        level.getCoordinatesLocal().copy(coordinates)
+        vs, ve = level.getDepthStratum(0)
+        offsets = section_offsets(level.getCoordinateSection(), numpy.arange(vs, ve))
+        coordinates.array[offsets[:, None] + numpy.arange(self.cdim)] = \
+            self._coarse_built_vertices[0]
+        clone.setCoordinatesLocal(coordinates)
+        return clone
+
+    def _stamp_coarse_wraps_as_built(self, wraps):
+        """Give wraps made of moved coarse levels the record of where the level
+        was made, so a transfer read as built is the one the pair had before the
+        move (:meth:`_move_coarse_levels_with_the_finest`)."""
+        if self._coarse_built_vertices is None:
+            return
+        for wrap, built in zip(wraps, self._coarse_built_vertices):
+            if wrap is None:
+                continue
+            wrap._as_built_vertices = built
+            wrap._transfer_vertices = built
+            # True on every rank, as a move sets it: the collective
+            # _moved_off_transfer_geometry decides whether it stands off its
+            # record. A comparison of this rank's vertices alone would differ
+            # between ranks under a move that touches part of the mesh, and the
+            # ranks would part at that collective.
+            wrap._moved_since_built = True
+            wrap._moves_with_the_finest = True
 
     def _record_as_built(self):
         """Keep the vertex coordinates the mesh stands on as the ones it was made
@@ -6745,12 +6898,17 @@ class Mesh(Stateful, uw_object):
         """
         # The coarsest level is already flagged for uniform refinement (by
         # _build_refined_hierarchy or the reload splice); refine() leaves it as is.
-        reference = self.dm_hierarchy[0]
+        # Where it was made, as the sidecar saves it: it may have moved with the
+        # finest since (_move_coarse_levels_with_the_finest).
+        coarsest = self._coarsest_level_as_built()
+        reference = coarsest
         for _ in range(len(self.dm_hierarchy) - 1):
             refined = reference.refine()
-            if reference is not self.dm_hierarchy[0]:
+            if reference is not coarsest:
                 reference.destroy()
             reference = refined
+        if coarsest is not self.dm_hierarchy[0]:
+            coarsest.destroy()
 
         same = reference.getChart() == self.dm.getChart() and all(
             reference.getDepthStratum(d) == self.dm.getDepthStratum(d)
@@ -6908,7 +7066,7 @@ class Mesh(Stateful, uw_object):
         # single-DM HDF5 file (PETSc's HDF5_PETSC format holds one DMPlex per
         # file). Collective write. See _hierarchy_sidecar_name and the .h5 reload.
         if len(self.dm_hierarchy) > 1:
-            coarse_dm = self.dm_hierarchy[0]
+            coarse_dm = self._coarsest_level_as_built()
             sidecar = _hierarchy_sidecar_name(filename)
             with _short_io_path(sidecar) as io_filename:
                 cviewer = PETSc.ViewerHDF5().create(io_filename, "w", comm=PETSc.COMM_WORLD)
@@ -6921,6 +7079,8 @@ class Mesh(Stateful, uw_object):
                     coarse_dm.setName(saved_name)
                     cviewer.popFormat()
                     cviewer.destroy()
+                    if coarse_dm is not self.dm_hierarchy[0]:
+                        coarse_dm.destroy()
 
     def vtk(self, filename: str):
         """
@@ -8957,8 +9117,9 @@ class Mesh(Stateful, uw_object):
 
     def _coarse_level_meshes(self):
         """The static coarse-mesh tail (one Mesh per base hierarchy level,
-        coarsest..base-finest), built once and cached — they never change
-        because the base hierarchy is static across adapts.
+        coarsest..base-finest), built once and cached: the base hierarchy is
+        static across adapts. Their coordinates move with this mesh's
+        (:meth:`_move_coarse_levels_with_the_finest`), their cells never change.
 
         Each wrap is tagged with its ``(hierarchy token, level)`` slot — and so
         is this mesh itself, whose ``dm`` is the finest hierarchy level. Two
@@ -8967,6 +9128,7 @@ class Mesh(Stateful, uw_object):
         EXACT nested prolongation instead of a point-located one (#425/#629).
         The token is a plain sentinel object: identity ties the family together
         without a reference cycle back to this mesh."""
+        self._move_coarse_levels_with_the_finest()
         cached = getattr(self, "_coarse_level_meshes_cache", None)
         if cached is not None and self._cached_finest_wrap_is_stale(cached[-1]):
             # A move since the cache was built gave dm_hierarchy[-1] new
@@ -8985,6 +9147,7 @@ class Mesh(Stateful, uw_object):
                 w._mg_static = True
             self._refine_slot = (token, len(cached) - 1)
             self._coarse_level_meshes_cache = cached
+            self._stamp_coarse_wraps_as_built(cached[:-1])
         return cached
 
     @property

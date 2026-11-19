@@ -64,14 +64,22 @@ def is_split_level(mesh):
     return bool(getattr(mesh, "_fault_point_pairs", None))
 
 
-def _cell_vertex_table(mesh):
+def _cell_vertex_table(mesh, as_built=False):
     """Vertex coordinates ``(n_v, cdim)`` and the ``(n_cells, dim + 1)`` table of
     vertex rows per cell.
 
     Read straight from the DM: the vertex coordinates through the coordinate
     section and each cell's vertices from its closure, with no interpolation
     built. A periodic mesh carries its coordinates cell by cell, so there the
-    P1 node table of the mesh is used, which handles them."""
+    P1 node table of the mesh is used, which handles them.
+
+    ``as_built``: a coarse level that moved with the finest
+    (``Mesh._move_coarse_levels_with_the_finest``) is read where it was made, for
+    a caller that reads the level above it there too (``reference_vertices``, a
+    fine level read as built): the parents and weights of that level are those
+    of the geometry it was made in, as when the coarse levels stood still. The
+    caller then reads the coarse nodes as built as well, so the cells and the
+    nodes are one geometry."""
     from underworld3.discretisation.discretisation_mesh import _holds_cell_coordinates
     from underworld3.utilities._plex_topology import closure_points, section_offsets
     dm = mesh.dm
@@ -84,6 +92,9 @@ def _cell_vertex_table(mesh):
     X = np.asarray(dm.getCoordinatesLocal().array).reshape(-1, cdim)
     rows = section_offsets(dm.getCoordinateSection(), np.arange(vS, vE)) // cdim
     vxy = X[rows]
+    if (as_built and getattr(mesh, "_moves_with_the_finest", False)
+            and mesh._transfer_vertices is not None):
+        vxy = np.asarray(mesh._transfer_vertices)
     cv = (closure_points(dm, np.arange(cS, cE), 0) - vS).reshape(
         cE - cS, dm.getDimension() + 1)
     return vxy, cv
@@ -95,7 +106,10 @@ def reference_vertices(mesh, below):
     or ``None`` when the current coordinates are that geometry.
 
     A move (``mesh.deform``, a mover) changes the coordinates of the mesh it
-    is applied to and of no level below it. The parent of a cell on the level
+    is applied to. The levels below it move too only for a refined hierarchy
+    (``Mesh._move_coarse_levels_with_the_finest``), and the callers of this
+    record then read such a level where it was made (``_cell_vertex_table``
+    with ``as_built``). The parent of a cell on the level
     below, and the weights of a node there, are still those of the geometry
     the mesh was made in, so they are read on that geometry and not on the
     moved one (#1091). Two records hold it. ``_as_built_vertices`` is the
@@ -512,7 +526,7 @@ def cell_located_prolongation(coarse, fine, degree, continuous=True,
           else np.asarray(coarse._get_coords_for_basis(degree, continuous)))
     Xf = (np.asarray(fine_coords) if fine_coords is not None
           else np.asarray(fine._get_coords_for_basis(degree, continuous)))
-    vxy_c, cv_c = _cell_vertex_table(coarse)
+    vxy_c, cv_c = _cell_vertex_table(coarse, as_built=fine_vertices is not None)
     vxy_f, cv_f = _cell_vertex_table(fine)
     if fine_vertices is not None:
         vxy_f = fine_vertices
@@ -621,7 +635,7 @@ def cell_located_transfer_parallel(coarse, fine, degree, continuous,
     try:
         Xc = np.asarray(coarse_coords)
         Xf = np.asarray(fine_coords)
-        vxy_c, cv_c = _cell_vertex_table(coarse)
+        vxy_c, cv_c = _cell_vertex_table(coarse, as_built=fine_vertices is not None)
         vxy_f, cv_f = _cell_vertex_table(fine)
         if fine_vertices is not None:
             vxy_f = fine_vertices
@@ -1000,11 +1014,20 @@ def provenance_transfer_parallel(coarse, fine, pre, degree, continuous,
     # transfer opens with is rank-local and read under one guard.
     cn = np.asarray(coarse._cell_node_indices(degree, continuous))
     fn = np.asarray(fine._cell_node_indices(degree, continuous))
+    # The fine nodes are taken back to the geometry of ``coarse`` they were made
+    # in when ``pre`` holds a reference (below). A coarse level that moved with
+    # the finest is then read where it was made, its nodes and its cells, so the
+    # pair stands on one geometry. Collective (as_built_nodes), on every rank.
+    reference = reference_vertices(pre, coarse)
+    if reference is not None and getattr(coarse, "_moves_with_the_finest", False):
+        built = as_built_nodes(coarse, degree, continuous)
+        if built is not None:
+            coarse_coords = built
     problem = None
     try:
         Xc = np.asarray(coarse_coords)
         Xf = np.asarray(fine_coords)
-        vxy_c, cv_c = _cell_vertex_table(coarse)
+        vxy_c, cv_c = _cell_vertex_table(coarse, as_built=reference is not None)
         vxy_f, cv_f = _cell_vertex_table(fine)
         vxy_p, cv_p = _cell_vertex_table(pre)
         l2g_c = np.asarray(coarse_layout.l2g, dtype=np.int64).reshape(-1, ncomp)
