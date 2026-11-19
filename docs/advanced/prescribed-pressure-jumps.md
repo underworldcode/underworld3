@@ -7,6 +7,10 @@ The split is built once from the mesh geometry: build it again after any change
 of mesh geometry or topology. A solve warns if the mesh geometry has changed
 since the split was built; it does not refuse. Existing solves are
 unaffected unless the method is called.
+`cylindrical_pressure_lifting` and the lagged circular-wall methods described in
+the boundary-condition rulings are also experimental and opt-in. They take each
+wall's circle from the mesh's declaration (`mesh.analytic_surface`) and refuse
+a wall the mesh does not declare as a circle.
 ```
 
 `Stokes.pressure_split` separates total pressure into a continuous P1 unknown
@@ -70,6 +74,14 @@ must satisfy junction compatibility. Incompatible cycles are rejected on all
 ranks. Nonzero tip singularities require a different enrichment; unknown jumps
 require coupled interface equations. This API keeps velocity continuous and
 does not configure the split-node fault/slip machinery.
+
+## Relation to the circular benchmark
+
+`Stokes.cylindrical_pressure_lifting` remains the specialised exact-circle
+method. It subtracts curved segments from regular-load quadrature and stores
+moment-equivalent DG P2 forces. The general API instead uses the **fitted
+polygon/polyhedron geometry** and P1 jump interpolation. It does not silently
+apply exact-circle geometry corrections or replace existing benchmark results.
 
 ## Reference
 

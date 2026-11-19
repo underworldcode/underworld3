@@ -230,3 +230,56 @@ def test_the_level_set_far_field_on_an_annulus(advection):
         assert walls.max() == 0.0
     # SLCN's mass correction holds the volume; SUPG's measured drift is 0.7 %
     assert solver.interface_volume() == pytest.approx(before, rel=1e-10 if advection == "slcn" else 0.02)
+
+
+# Without All_Boundaries faces, the cover is the exterior boundaries, provided
+# they share no face; otherwise it is refused (review of #1211). The fixtures
+# remove the All_Boundaries stratum from UW_Boundaries; no stock mesh lacks it.
+
+def _without_all_boundaries(mesh):
+    value = mesh.boundaries.All_Boundaries.value
+    mesh.dm.getLabel("UW_Boundaries").clearStratum(value)
+    return mesh
+
+
+@pytest.mark.tier_b
+def test_without_all_boundaries_the_cover_is_the_exterior_boundaries():
+    mesh = _without_all_boundaries(uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.25, qdegree=3))
+    names = [b.name for b in mesh._boundaries_covering_the_exterior_once()]
+    assert names == [b.name for b in mesh.boundaries
+                     if b.name not in ("All_Boundaries", "Null_Boundary")]
+
+
+@pytest.mark.tier_b
+def test_without_all_boundaries_an_internal_surface_is_left_out():
+    mesh = _without_all_boundaries(uw.meshing.BoxInternalBoundary(
+        elementRes=(4, 4), minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), zintCoord=0.5,
+        cellSize=0.25, simplex=True, qdegree=3))
+    names = [b.name for b in mesh._boundaries_covering_the_exterior_once()]
+    assert "Internal" in [b.name for b in mesh._boundaries_that_mark_faces()]
+    assert "Internal" not in names and len(names) == 4
+
+
+@pytest.mark.tier_b
+def test_without_all_boundaries_boundaries_that_share_faces_are_refused():
+    mesh = _without_all_boundaries(uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.25, qdegree=3))
+    label = mesh.dm.getLabel("UW_Boundaries")
+    top, bottom = mesh.boundaries.Top.value, mesh.boundaries.Bottom.value
+    if label.getStratumSize(top):                       # a null IS on a rank without Top
+        for p in label.getStratumIS(top).getIndices():  # Top's faces are Bottom's too
+            label.setValue(int(p), bottom)
+    with pytest.raises(ValueError, match="share faces"):
+        mesh._boundaries_covering_the_exterior_once()
+
+
+@pytest.mark.tier_b
+def test_without_all_boundaries_a_cover_that_misses_exterior_faces_is_refused():
+    # With Left removed as well, Bottom, Top and Right are disjoint and miss
+    # Left's exterior faces.
+    mesh = _without_all_boundaries(uw.meshing.UnstructuredSimplexBox(
+        minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.25, qdegree=3))
+    mesh.dm.getLabel("UW_Boundaries").clearStratum(mesh.boundaries.Left.value)
+    with pytest.raises(ValueError, match="leave some exterior faces in no boundary"):
+        mesh._boundaries_covering_the_exterior_once()
