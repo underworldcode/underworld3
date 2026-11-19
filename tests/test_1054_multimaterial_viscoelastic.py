@@ -63,6 +63,13 @@ def _pure_shear_box(tag):
     v = uw.discretisation.MeshVariable(f"v{tag}", mesh, mesh.dim, degree=2)
     p = uw.discretisation.MeshVariable(f"p{tag}", mesh, 1, degree=1, continuous=False)
     stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p, p_continuous=False)
+    # The materials sit on a swarm that is never advected, and the closed forms
+    # hold the stress at its point: so the history is not transported either. A
+    # carried history would bring material A's stress across the interface into
+    # B's sample point as the pure shear moves it outward from x = 0 (15-23% at
+    # step 6). This test passed on a carried history only while the nodal one
+    # did not move (#1231).
+    stokes.stress_transport = "none"
     x, y = mesh.X
     for wall in ("Top", "Bottom", "Left", "Right"):
         stokes.add_dirichlet_bc((EDOT * x, -EDOT * y), wall)
