@@ -251,94 +251,98 @@ class _CircularWall:
             raise ValueError("Circular-wall transfer supports two-vertex affine boundary facets only.")
         numbers = _global_point_numbers(dm)
         p1_dm, p2_dm = mesh._basis_coordinate_dm(1, True), mesh._basis_coordinate_dm(2, True)
-        p1, p2 = p1_dm.getLocalSection(), p2_dm.getLocalSection()
-        vertex_rows = mesh._cell_node_indices(1, True).reshape(-1, 3)
-        cell_rows = mesh._cell_node_indices(2, True).reshape(-1, 6)
-        p1_coordinates = np.asarray(mesh._get_coords_for_basis(1, True))
+        # The two clones are destroyed on every path out, including the collective
+        # refusals below (raised on every rank together).
+        try:
+            p1, p2 = p1_dm.getLocalSection(), p2_dm.getLocalSection()
+            vertex_rows = mesh._cell_node_indices(1, True).reshape(-1, 3)
+            cell_rows = mesh._cell_node_indices(2, True).reshape(-1, 6)
+            p1_coordinates = np.asarray(mesh._get_coords_for_basis(1, True))
 
-        labelled = np.concatenate(uw.mpi.comm.allgather(
-            p1_coordinates[[[p1.getOffset(v) // cdim for v in cone] for cone in cones]]
-            .reshape(-1, 2, 2)))
-        if not len(labelled):
-            raise ValueError(f"Boundary {boundary!r} holds no facets.")
-        deviation = np.max(np.abs(np.linalg.norm(labelled, axis=-1) - radius)) / radius
-        if deviation > _WALL_MATCH_RELATIVE_TOLERANCE:
-            raise _wall_off_circle(boundary, labelled, radius)
+            labelled = np.concatenate(uw.mpi.comm.allgather(
+                p1_coordinates[[[p1.getOffset(v) // cdim for v in cone] for cone in cones]]
+                .reshape(-1, 2, 2)))
+            if not len(labelled):
+                raise ValueError(f"Boundary {boundary!r} holds no facets.")
+            deviation = np.max(np.abs(np.linalg.norm(labelled, axis=-1) - radius)) / radius
+            if deviation > _WALL_MATCH_RELATIVE_TOLERANCE:
+                raise _wall_off_circle(boundary, labelled, radius)
 
-        owned = mesh._get_owned_cells_mask()
-        cells, pairs, orders, wall_numbers = [], [], [], []
-        for facet, cone in zip(facets, cones):
-            for cell in dm.getSupport(int(facet)):
-                k = int(cell) - c0
-                if not owned[k]:
-                    continue
-                by_row = {p1.getOffset(int(point)) // cdim: int(point)
-                          for point in dm.getTransitiveClosure(int(cell))[0] if v0 <= point < v1}
-                corners = [by_row[row] for row in vertex_rows[k]]
-                ends = {corners.index(vertex) for vertex in cone}
-                first, second = next(pair for pair in ((0, 1), (1, 2), (2, 0)) if set(pair) == ends)
-                edge_of = {frozenset(int(v) for v in dm.getCone(int(edge))): int(edge)
-                           for edge in dm.getCone(int(cell))}
-                standard = [p2.getOffset(vertex) // cdim for vertex in corners] + [
-                    p2.getOffset(edge_of[frozenset((corners[i], corners[j]))]) // cdim
-                    for i, j in ((0, 1), (1, 2), (2, 0))]
-                rows = cell_rows[k].tolist()
-                cells.append(k)
-                pairs.append((first, second))
-                orders.append([rows.index(row) for row in standard])
-                wall_numbers.append((numbers[corners[first]], numbers[corners[second]],
-                                     numbers[int(facet)]))
-        self.cells = np.asarray(cells, dtype=int)
-        self.p_rows = vertex_rows[self.cells]
-        self.v_rows = cell_rows[self.cells]
-        self.v_order = np.asarray(orders, dtype=int).reshape(-1, 6)
-        local_vertices = p1_coordinates[self.p_rows]
-        self.local_vertices = local_vertices
-        counts = uw.mpi.comm.allgather(len(self.cells))
-        first = sum(counts[:uw.mpi.rank])
-        self.local_edge_slice = slice(first, first + len(self.cells))
-        pairs = np.asarray(pairs, dtype=int).reshape(-1, 2)
-        local_edges = local_vertices[np.arange(len(self.cells))[:, None], pairs]
-        self.vertices = np.concatenate(uw.mpi.comm.allgather(local_vertices))
-        self.edges = np.concatenate(uw.mpi.comm.allgather(local_edges.reshape(-1, 2, 2)))
-        wall_numbers = np.concatenate(uw.mpi.comm.allgather(
-            np.asarray(wall_numbers, dtype=np.int64).reshape(-1, 3)))
-        labelled_numbers = np.concatenate(uw.mpi.comm.allgather(numbers[facets]))
-        if set(wall_numbers[:, 2].tolist()) != set(labelled_numbers.tolist()):
-            raise ValueError("Owned boundary-cell traces do not cover the labelled circular wall.")
-        # Every vertex is on the circle (checked above), so a chord's midpoint is
-        # at the origin only when the chord is a diameter.
-        if np.any(np.linalg.norm(self.edges.mean(axis=1), axis=1) <= 0.0):
-            raise ValueError("Circular boundary edges must span less than a semicircle.")
-        self.edge_nodes = np.stack((self.edges[:, 0], self.edges[:, 1], self.edges.mean(axis=1)), axis=1)
-        # Mesh coordinates are of degree 1 (#978), so a P2 midpoint node is the
-        # chord's midpoint.
-        self.node_numbers, index = np.unique(wall_numbers, return_inverse=True)
-        self.node_index = index.reshape(-1, 3)
-        self.nodes = np.empty((len(self.node_numbers), 2))
-        self.nodes[self.node_index.ravel()] = self.edge_nodes.reshape(-1, 2)
-        # An exterior closed wall has one owned cell per edge and two edges at
-        # each vertex. Reject internal circles and incomplete circular arcs.
-        _, counts = np.unique(np.sort(self.node_index[:, :2], axis=1), axis=0, return_counts=True)
-        _, incidence = np.unique(self.node_index[:, :2], return_counts=True)
-        if np.any(counts != 1) or np.any(incidence != 2):
-            raise ValueError("Transfer requires a complete exterior circular wall, not an interface or arc.")
-        # This rank's velocity rows on the wall: every local vertex and edge whose
-        # global number is a wall node, whether or not a labelled facet holding it
-        # is local here.
-        self.local_boundary = np.zeros(len(velocity.coords), dtype=bool)
-        self.local_index = np.zeros(len(velocity.coords), dtype=int)
-        for start, stop in ((v0, v1), (f0, f1)):
-            points = np.arange(start, stop)
-            position = np.searchsorted(self.node_numbers, numbers[points])
-            position = np.minimum(position, len(self.node_numbers) - 1)
-            on_wall = self.node_numbers[position] == numbers[points]
-            for point, node in zip(points[on_wall], position[on_wall]):
-                if p2.getDof(int(point)):
-                    row = p2.getOffset(int(point)) // cdim
-                    self.local_boundary[row], self.local_index[row] = True, node
-        p1_dm.destroy()
-        p2_dm.destroy()
+            owned = mesh._get_owned_cells_mask()
+            cells, pairs, orders, wall_numbers = [], [], [], []
+            for facet, cone in zip(facets, cones):
+                for cell in dm.getSupport(int(facet)):
+                    k = int(cell) - c0
+                    if not owned[k]:
+                        continue
+                    by_row = {p1.getOffset(int(point)) // cdim: int(point)
+                              for point in dm.getTransitiveClosure(int(cell))[0] if v0 <= point < v1}
+                    corners = [by_row[row] for row in vertex_rows[k]]
+                    ends = {corners.index(vertex) for vertex in cone}
+                    first, second = next(pair for pair in ((0, 1), (1, 2), (2, 0)) if set(pair) == ends)
+                    edge_of = {frozenset(int(v) for v in dm.getCone(int(edge))): int(edge)
+                               for edge in dm.getCone(int(cell))}
+                    standard = [p2.getOffset(vertex) // cdim for vertex in corners] + [
+                        p2.getOffset(edge_of[frozenset((corners[i], corners[j]))]) // cdim
+                        for i, j in ((0, 1), (1, 2), (2, 0))]
+                    rows = cell_rows[k].tolist()
+                    cells.append(k)
+                    pairs.append((first, second))
+                    orders.append([rows.index(row) for row in standard])
+                    wall_numbers.append((numbers[corners[first]], numbers[corners[second]],
+                                         numbers[int(facet)]))
+            self.cells = np.asarray(cells, dtype=int)
+            self.p_rows = vertex_rows[self.cells]
+            self.v_rows = cell_rows[self.cells]
+            self.v_order = np.asarray(orders, dtype=int).reshape(-1, 6)
+            local_vertices = p1_coordinates[self.p_rows]
+            self.local_vertices = local_vertices
+            counts = uw.mpi.comm.allgather(len(self.cells))
+            first = sum(counts[:uw.mpi.rank])
+            self.local_edge_slice = slice(first, first + len(self.cells))
+            pairs = np.asarray(pairs, dtype=int).reshape(-1, 2)
+            local_edges = local_vertices[np.arange(len(self.cells))[:, None], pairs]
+            self.vertices = np.concatenate(uw.mpi.comm.allgather(local_vertices))
+            self.edges = np.concatenate(uw.mpi.comm.allgather(local_edges.reshape(-1, 2, 2)))
+            wall_numbers = np.concatenate(uw.mpi.comm.allgather(
+                np.asarray(wall_numbers, dtype=np.int64).reshape(-1, 3)))
+            labelled_numbers = np.concatenate(uw.mpi.comm.allgather(numbers[facets]))
+            if set(wall_numbers[:, 2].tolist()) != set(labelled_numbers.tolist()):
+                raise ValueError("Owned boundary-cell traces do not cover the labelled circular wall.")
+            # Every vertex is on the circle (checked above), so a chord's midpoint is
+            # at the origin only when the chord is a diameter.
+            if np.any(np.linalg.norm(self.edges.mean(axis=1), axis=1) <= 0.0):
+                raise ValueError("Circular boundary edges must span less than a semicircle.")
+            self.edge_nodes = np.stack((self.edges[:, 0], self.edges[:, 1], self.edges.mean(axis=1)), axis=1)
+            # Mesh coordinates are of degree 1 (#978), so a P2 midpoint node is the
+            # chord's midpoint.
+            self.node_numbers, index = np.unique(wall_numbers, return_inverse=True)
+            self.node_index = index.reshape(-1, 3)
+            self.nodes = np.empty((len(self.node_numbers), 2))
+            self.nodes[self.node_index.ravel()] = self.edge_nodes.reshape(-1, 2)
+            # An exterior closed wall has one owned cell per edge and two edges at
+            # each vertex. Reject internal circles and incomplete circular arcs.
+            _, counts = np.unique(np.sort(self.node_index[:, :2], axis=1), axis=0, return_counts=True)
+            _, incidence = np.unique(self.node_index[:, :2], return_counts=True)
+            if np.any(counts != 1) or np.any(incidence != 2):
+                raise ValueError("Transfer requires a complete exterior circular wall, not an interface or arc.")
+            # This rank's velocity rows on the wall: every local vertex and edge whose
+            # global number is a wall node, whether or not a labelled facet holding it
+            # is local here.
+            self.local_boundary = np.zeros(len(velocity.coords), dtype=bool)
+            self.local_index = np.zeros(len(velocity.coords), dtype=int)
+            for start, stop in ((v0, v1), (f0, f1)):
+                points = np.arange(start, stop)
+                position = np.searchsorted(self.node_numbers, numbers[points])
+                position = np.minimum(position, len(self.node_numbers) - 1)
+                on_wall = self.node_numbers[position] == numbers[points]
+                for point, node in zip(points[on_wall], position[on_wall]):
+                    if p2.getDof(int(point)):
+                        row = p2.getOffset(int(point)) // cdim
+                        self.local_boundary[row], self.local_index[row] = True, node
+        finally:
+            p1_dm.destroy()
+            p2_dm.destroy()
         t, weight = np.polynomial.legendre.leggauss(self.quadrature)
         t, weight = (t + 1) / 2, weight / 2
         points = ((1 - t)[None, :, None] * self.edges[:, None, 0]
