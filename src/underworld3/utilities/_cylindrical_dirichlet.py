@@ -32,19 +32,15 @@ paper's regularity and stability results are not claimed for this adaptation.
 import numpy as np
 import underworld3 as uw
 from mpi4py import MPI
-from scipy.spatial import cKDTree
 
 from .boundary_flux import _boundary_stratum_is
 
-# The wall's vertices, chords and P2 nodes are identified by their coordinates,
-# to this fraction of the wall's radius (TODO(DESIGN), Charter section 12: identity
-# should be topological). The whole wall is gathered on every rank and each P2
-# node is identified across ranks by position (the edge keys, the unique node
-# list, the cover check and the k-d tree map onto the velocity nodes). The
-# label's facet closure gives the same owned wall cells (measured on the test
-# annuli, serial and at np 2 and 4), but replacing the rest needs a global
-# numbering of the wall's vertices and edges and a map from the DM's points to
-# the P1 and P2 node rows, which this unit does not have.
+# How far, as a fraction of the declared radius, a labelled wall vertex may lie
+# from the declared circle before the wall is refused as no longer on it. This is
+# the only use of a tolerance here, and it is geometry, not identity: the wall's
+# cells, vertices, chords and P2 nodes are identified topologically (the label's
+# facets, their support cells, the DM's global point numbering and the P1 and P2
+# coordinate sections), never by comparing coordinates.
 _WALL_MATCH_RELATIVE_TOLERANCE = 1.0e-10
 
 
@@ -71,63 +67,39 @@ def _declared_circle_radius(mesh, boundary):
     return float(surface.radius)
 
 
-def _edge_key(edge, tolerance):
-    """Coordinate key independent of facet orientation and partition numbering.
-
-    TODO(DESIGN): the key rounds ``edge / tolerance`` to integers, so it is a
-    bin, not a tolerance: two coordinates one ulp apart can fall in different
-    bins, and two nearly ``tolerance`` apart in the same one. The match is exact
-    only because every copy compared here is bit-identical (the DM's local
-    coordinates and ``_get_coords_for_basis(1, True)``, ghosts resynchronised
-    from their owners; measured on every rank in review). A key computed from
-    another coordinate source would not have that property.
-    """
-    return tuple(sorted(tuple(row) for row in np.rint(edge / tolerance).astype(np.int64)))
-
-
-def _labelled_edge_keys(mesh, boundary, radius, tolerance):
-    """Collect only labelled boundary facets, including ghosts on empty ranks.
-
-    ``radius`` is the declared circle. The facets are not measured against
-    it: the declaration is the contract (``mesh.analytic_surface``)."""
-    dm = mesh.dm
+def _labelled_facets(dm, mesh, boundary):
+    """This rank's labelled facets (edges) of ``boundary``, ghosts included, as
+    DM point numbers. Not collective."""
     facets = _boundary_stratum_is(dm, mesh, boundary)
-    indices = np.empty(0, dtype=int)
+    indices = np.empty(0, dtype=np.int64)
     # PETSc may return a false IS wrapper with a null C handle on empty ranks.
     # Checking only Python None would dereference that null handle at .indices.
     if facets:
-        indices = np.asarray(facets.indices).copy()
+        indices = np.asarray(facets.indices, dtype=np.int64).copy()
         facets.destroy()
     f0, f1 = dm.getDepthStratum(1)
-    v0, v1 = dm.getDepthStratum(0)
-    section = dm.getCoordinateSection()
-    coordinates = np.asarray(dm.getCoordinatesLocal().array).reshape(-1, 2)
-    local, unsupported = [], False
-    for facet in indices:
-        if f0 <= facet < f1:
-            closure = dm.getTransitiveClosure(int(facet))[0]
-            vertices = [int(point) for point in closure if v0 <= point < v1]
-            if len(vertices) != 2:
-                unsupported = True
-            else:
-                local.append([coordinates[section.getOffset(point) // 2] for point in vertices])
-    if uw.mpi.comm.allreduce(unsupported, op=MPI.LOR):
-        raise ValueError("Circular-wall transfer supports two-vertex affine boundary facets only.")
-    edges = np.concatenate(uw.mpi.comm.allgather(np.asarray(local).reshape(-1, 2, 2)))
-    if not len(edges):
-        raise ValueError(f"Boundary {boundary!r} holds no facets.")
-    return {_edge_key(edge, tolerance) for edge in edges}, edges
+    return indices[(indices >= f0) & (indices < f1)]
+
+
+def _global_point_numbers(dm):
+    """The global number of every local DM point, owned or not. The point
+    numbering stores ``-(g + 1)`` for a point another rank owns. Not collective
+    beyond the numbering's own construction, which every rank enters."""
+    numbering = dm.createPointNumbering()
+    numbers = np.asarray(numbering.indices, dtype=np.int64).copy()
+    numbering.destroy()
+    return np.where(numbers >= 0, numbers, -(numbers + 1))
 
 
 def _wall_off_circle(boundary, edges, radius):
     """The refusal for a labelled wall whose vertices are not on its declared
-    circle to the match tolerance. ``edges`` are gathered, so the message is
-    the same on every rank."""
+    circle to the tolerance. ``edges`` are gathered, so the message is the same
+    on every rank."""
     deviation = float(np.max(np.abs(np.linalg.norm(edges, axis=-1) - radius))) / radius
     return ValueError(
         f"the labelled vertices of boundary {boundary!r} are off its declared circle "
         f"of radius {radius}: the largest distance is {deviation:.3e} of the radius, "
-        f"beyond the match tolerance of {_WALL_MATCH_RELATIVE_TOLERANCE:.1e} of the "
+        f"beyond the tolerance of {_WALL_MATCH_RELATIVE_TOLERANCE:.1e} of the "
         f"radius. A wall that has left its declared circle must be released, not "
         f"used as that circle")
 
@@ -254,67 +226,119 @@ class _CircularWall:
     def _build_geometry(self, radius):
         """Cache the wall's cells, chords, P2 node maps and quadrature rule.
 
-        Everything cached here follows from the mesh coordinates, so it is
-        built again when they change (:meth:`refresh_geometry`). Collective.
+        The wall is identified topologically. Its cells are the owned support
+        cells of the labelled facets. A cell's vertices are put in its P1 row
+        order and its P2 nodes in the order vertices 012, then edges 01, 12, 20,
+        by matching DM points through the P1 and P2 coordinate sections. The
+        gathered wall is keyed on the DM's global point numbers: a vertex node by
+        its vertex's number, a midpoint node by its edge's. Coordinates enter only
+        the off-circle refusal and the geometry (chords, normals, quadrature).
+
+        Everything cached here follows from the mesh coordinates, so it is built
+        again when they change (:meth:`refresh_geometry`). Collective.
         """
         mesh, velocity = self.mesh, self.velocity
+        dm, cdim = mesh.dm, mesh.cdim
         boundary = self.name
         self.radius = float(radius)
         self._built_at_geometry_version = mesh._geometry_version
-        # Coordinates identify the wall's cells and nodes; see
-        # _WALL_MATCH_RELATIVE_TOLERANCE for why, and what it scales with.
-        tolerance = _WALL_MATCH_RELATIVE_TOLERANCE * radius
-        boundary_edges, labelled_edges = _labelled_edge_keys(mesh, boundary, radius, tolerance)
+        c0, _ = dm.getHeightStratum(0)
+        v0, v1 = dm.getDepthStratum(0)
+        f0, f1 = dm.getDepthStratum(1)
+        facets = _labelled_facets(dm, mesh, boundary)
+        cones = [[int(point) for point in dm.getCone(int(facet))] for facet in facets]
+        if uw.mpi.comm.allreduce(any(len(cone) != 2 for cone in cones), op=MPI.LOR):
+            raise ValueError("Circular-wall transfer supports two-vertex affine boundary facets only.")
+        numbers = _global_point_numbers(dm)
+        p1_dm, p2_dm = mesh._basis_coordinate_dm(1, True), mesh._basis_coordinate_dm(2, True)
+        p1, p2 = p1_dm.getLocalSection(), p2_dm.getLocalSection()
         vertex_rows = mesh._cell_node_indices(1, True).reshape(-1, 3)
-        vertices = np.asarray(mesh._get_coords_for_basis(1, True))[vertex_rows]
+        cell_rows = mesh._cell_node_indices(2, True).reshape(-1, 6)
+        p1_coordinates = np.asarray(mesh._get_coords_for_basis(1, True))
+
+        labelled = np.concatenate(uw.mpi.comm.allgather(
+            p1_coordinates[[[p1.getOffset(v) // cdim for v in cone] for cone in cones]]
+            .reshape(-1, 2, 2)))
+        if not len(labelled):
+            raise ValueError(f"Boundary {boundary!r} holds no facets.")
+        deviation = np.max(np.abs(np.linalg.norm(labelled, axis=-1) - radius)) / radius
+        if deviation > _WALL_MATCH_RELATIVE_TOLERANCE:
+            raise _wall_off_circle(boundary, labelled, radius)
+
         owned = mesh._get_owned_cells_mask()
-        cells, edges = [], []
-        for first, second in ((0, 1), (1, 2), (2, 0)):
-            chosen = np.flatnonzero(owned & np.all(np.isclose(
-                np.linalg.norm(vertices[:, [first, second]], axis=2), radius,
-                rtol=0, atol=tolerance), axis=1))
-            for cell in chosen:
-                edge = vertices[cell, [first, second]]
-                if _edge_key(edge, tolerance) in boundary_edges:
-                    cells.append(cell)
-                    edges.append(edge)
+        cells, pairs, orders, wall_numbers = [], [], [], []
+        for facet, cone in zip(facets, cones):
+            for cell in dm.getSupport(int(facet)):
+                k = int(cell) - c0
+                if not owned[k]:
+                    continue
+                by_row = {p1.getOffset(int(point)) // cdim: int(point)
+                          for point in dm.getTransitiveClosure(int(cell))[0] if v0 <= point < v1}
+                corners = [by_row[row] for row in vertex_rows[k]]
+                ends = {corners.index(vertex) for vertex in cone}
+                first, second = next(pair for pair in ((0, 1), (1, 2), (2, 0)) if set(pair) == ends)
+                edge_of = {frozenset(int(v) for v in dm.getCone(int(edge))): int(edge)
+                           for edge in dm.getCone(int(cell))}
+                standard = [p2.getOffset(vertex) // cdim for vertex in corners] + [
+                    p2.getOffset(edge_of[frozenset((corners[i], corners[j]))]) // cdim
+                    for i, j in ((0, 1), (1, 2), (2, 0))]
+                rows = cell_rows[k].tolist()
+                cells.append(k)
+                pairs.append((first, second))
+                orders.append([rows.index(row) for row in standard])
+                wall_numbers.append((numbers[corners[first]], numbers[corners[second]],
+                                     numbers[int(facet)]))
         self.cells = np.asarray(cells, dtype=int)
         self.p_rows = vertex_rows[self.cells]
-        self.v_rows = mesh._cell_node_indices(2, True).reshape(-1, 6)[self.cells]
-        local_vertices = vertices[self.cells]
+        self.v_rows = cell_rows[self.cells]
+        self.v_order = np.asarray(orders, dtype=int).reshape(-1, 6)
+        local_vertices = p1_coordinates[self.p_rows]
         self.local_vertices = local_vertices
         counts = uw.mpi.comm.allgather(len(self.cells))
         first = sum(counts[:uw.mpi.rank])
         self.local_edge_slice = slice(first, first + len(self.cells))
-        standard = np.concatenate((local_vertices,
-            (local_vertices[:, [0, 1, 2]] + local_vertices[:, [1, 2, 0]]) / 2), axis=1)
-        distance = np.linalg.norm(np.asarray(velocity.coords)[self.v_rows][:, :, None]
-                                  - standard[:, None], axis=-1)
-        self.v_order = distance.argmin(axis=1)
-        error = float(np.max(distance.min(axis=1), initial=0.0))
-        if uw.mpi.comm.allreduce(error, op=MPI.MAX) > tolerance:
-            raise ValueError("Circular-wall transfer requires straight-sided affine P2 cells.")
+        pairs = np.asarray(pairs, dtype=int).reshape(-1, 2)
+        local_edges = local_vertices[np.arange(len(self.cells))[:, None], pairs]
         self.vertices = np.concatenate(uw.mpi.comm.allgather(local_vertices))
-        self.edges = np.concatenate(uw.mpi.comm.allgather(np.asarray(edges).reshape(-1, 2, 2)))
-        if not len(self.edges):
-            raise _wall_off_circle(boundary, labelled_edges, radius)
-        if {_edge_key(edge, tolerance) for edge in self.edges} != boundary_edges:
-            if np.max(np.abs(np.linalg.norm(labelled_edges, axis=-1) - radius)) > tolerance:
-                raise _wall_off_circle(boundary, labelled_edges, radius)
+        self.edges = np.concatenate(uw.mpi.comm.allgather(local_edges.reshape(-1, 2, 2)))
+        wall_numbers = np.concatenate(uw.mpi.comm.allgather(
+            np.asarray(wall_numbers, dtype=np.int64).reshape(-1, 3)))
+        labelled_numbers = np.concatenate(uw.mpi.comm.allgather(numbers[facets]))
+        if set(wall_numbers[:, 2].tolist()) != set(labelled_numbers.tolist()):
             raise ValueError("Owned boundary-cell traces do not cover the labelled circular wall.")
-        if np.any(np.linalg.norm(self.edges.mean(axis=1), axis=1) <= tolerance):
+        # Every vertex is on the circle (checked above), so a chord's midpoint is
+        # at the origin only when the chord is a diameter.
+        if np.any(np.linalg.norm(self.edges.mean(axis=1), axis=1) <= 0.0):
             raise ValueError("Circular boundary edges must span less than a semicircle.")
         self.edge_nodes = np.stack((self.edges[:, 0], self.edges[:, 1], self.edges.mean(axis=1)), axis=1)
-        self.nodes, index = np.unique(self.edge_nodes.reshape(-1, 2), axis=0, return_inverse=True)
+        # Mesh coordinates are of degree 1 (#978), so a P2 midpoint node is the
+        # chord's midpoint.
+        self.node_numbers, index = np.unique(wall_numbers, return_inverse=True)
         self.node_index = index.reshape(-1, 3)
+        self.nodes = np.empty((len(self.node_numbers), 2))
+        self.nodes[self.node_index.ravel()] = self.edge_nodes.reshape(-1, 2)
         # An exterior closed wall has one owned cell per edge and two edges at
         # each vertex. Reject internal circles and incomplete circular arcs.
         _, counts = np.unique(np.sort(self.node_index[:, :2], axis=1), axis=0, return_counts=True)
         _, incidence = np.unique(self.node_index[:, :2], return_counts=True)
         if np.any(counts != 1) or np.any(incidence != 2):
             raise ValueError("Transfer requires a complete exterior circular wall, not an interface or arc.")
-        distance, index = cKDTree(self.nodes).query(np.asarray(velocity.coords))
-        self.local_boundary, self.local_index = distance < tolerance, index
+        # This rank's velocity rows on the wall: every local vertex and edge whose
+        # global number is a wall node, whether or not a labelled facet holding it
+        # is local here.
+        self.local_boundary = np.zeros(len(velocity.coords), dtype=bool)
+        self.local_index = np.zeros(len(velocity.coords), dtype=int)
+        for start, stop in ((v0, v1), (f0, f1)):
+            points = np.arange(start, stop)
+            position = np.searchsorted(self.node_numbers, numbers[points])
+            position = np.minimum(position, len(self.node_numbers) - 1)
+            on_wall = self.node_numbers[position] == numbers[points]
+            for point, node in zip(points[on_wall], position[on_wall]):
+                if p2.getDof(int(point)):
+                    row = p2.getOffset(int(point)) // cdim
+                    self.local_boundary[row], self.local_index[row] = True, node
+        p1_dm.destroy()
+        p2_dm.destroy()
         t, weight = np.polynomial.legendre.leggauss(self.quadrature)
         t, weight = (t + 1) / 2, weight / 2
         points = ((1 - t)[None, :, None] * self.edges[:, None, 0]

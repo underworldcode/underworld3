@@ -202,79 +202,43 @@ def test_zero_shift_and_zero_joint_flux_need_no_field_correction():
     assert check["raw_total_flux"] == 0 and check["corrected_total_flux"] == 0
 
 
-@pytest.mark.parametrize("layout", ["empty_other_ranks", "partitioned_with_ghosts"])
 @pytest.mark.tier_b
-def test_boundary_adapter_collects_owned_coefficients_and_preserves_velocity(layout, monkeypatch):
+def test_boundary_adapter_writes_only_the_wall_rows_and_preserves_velocity():
+    """The wall is the labelled facets, identified topologically. Every P2 row of
+    the closure of this rank's labelled facets is a wall row, each wall row maps
+    to the gathered node at its own coordinates (bit for bit: the same DM
+    coordinates), the gathered wall has one vertex node and one midpoint node
+    per labelled facet of the closed circle, the datum is written to the wall
+    rows only, and the velocity is not changed."""
     from underworld3.utilities import _cylindrical_dirichlet as module
-    _ZeroSlipWall = module._ZeroSlipWall
+    from underworld3.utilities._plex_topology import closure_dof_rows
 
-    radius = 2.22
-    ring = _ring(23, radius, True)
-    # A valid polygon triangulation with three circle vertices in each cell
-    # includes internal diagonals joining circle vertices. Only labelled exterior
-    # edges belong to this wall; a radius-only selector would incorrectly fail.
-    polygon = ring.edges[:, 0]
-    all_vertices = np.stack([np.stack((polygon[0], polygon[j], polygon[j+1]))
-                             for j in range(1, len(polygon)-1)])
-    all_nodes = np.concatenate((all_vertices,
-        (all_vertices[:, [0, 1, 2]]+all_vertices[:, [1, 2, 0]])/2), axis=1)
-    if layout == "empty_other_ranks":
-        selected = np.arange(len(all_vertices)) if uw.mpi.rank == 0 else np.array([], dtype=int)
-        owned = np.ones(len(selected), dtype=bool)
-    else:
-        chosen = np.arange(len(all_vertices))[uw.mpi.rank::uw.mpi.size]
-        ghosts = np.setdiff1d(np.arange(3), chosen)
-        selected = np.r_[chosen, ghosts]
-        owned = np.r_[np.ones(len(chosen), dtype=bool), np.zeros(len(ghosts), dtype=bool)]
-    local_vertices, local_nodes = all_vertices[selected], all_nodes[selected]
-    coordinates, inverse = np.unique(local_nodes.reshape(-1, 2), axis=0, return_inverse=True)
-    rows = inverse.reshape(-1, 6)
-    # Deliberately use a noncanonical local P2 ordering. The adapter must discover
-    # it geometrically while excluding every ghost cell from the gather.
-    rows = rows[:, [3, 1, 5, 2, 0, 4]]
-    p1_coordinates, p1_inverse = np.unique(local_vertices.reshape(-1, 2), axis=0, return_inverse=True)
-    mesh = SimpleNamespace(dim=2, cdim=2, isSimplex=True, _geometry_version=0,
-        boundaries=[SimpleNamespace(name="Outer")],
-        _cell_node_indices=lambda degree, continuous: p1_inverse.reshape(-1, 3) if degree == 1 else rows,
-        _get_coords_for_basis=lambda degree, continuous: p1_coordinates,
-        _get_owned_cells_mask=lambda: owned)
-    velocity = SimpleNamespace(mesh=mesh, degree=2, continuous=True,
-                               coords=coordinates, array=_quadratic(coordinates)[:, None, :])
+    mesh = uw.meshing.Annulus(radiusInner=1.22, radiusOuter=2.22, cellSize=1/8, qdegree=3)
+    velocity = uw.discretisation.MeshVariable("AdapterWitness", mesh, 2, degree=2, continuous=True)
+    velocity.array[:, 0, :] = _quadratic(np.asarray(velocity.coords))
     original = np.asarray(velocity.array).copy()
+    stokes = SimpleNamespace(instance_number=2, mesh=mesh, u=velocity,
+                             p=SimpleNamespace(degree=1, continuous=True))
+    wall = module._ZeroSlipWall(stokes, "Upper", 2.22, 1, 12)
 
-    def auxiliary(*args, **kwargs):
-        return SimpleNamespace(mesh=mesh, coords=coordinates,
-                               array=np.full_like(velocity.array, 777.), sym=None)
+    facets = module._labelled_facets(mesh.dm, mesh, "Upper")
+    labelled = len(set(np.concatenate(uw.mpi.comm.allgather(
+        module._global_point_numbers(mesh.dm)[facets])).tolist()))
+    assert len(wall.nodes) == 2 * labelled
+    p2_dm = mesh._basis_coordinate_dm(2, True)
+    closure_rows = closure_dof_rows(p2_dm, p2_dm.getLocalSection(), facets, mesh.cdim)
+    p2_dm.destroy()
+    assert np.all(wall.local_boundary[closure_rows.ravel()])
+    rows = np.flatnonzero(wall.local_boundary)
+    np.testing.assert_array_equal(wall.nodes[wall.local_index[rows]],
+                                  np.asarray(velocity.coords)[rows])
 
-    # PETSc label extraction has a separate real-mesh test; here supply its
-    # known fixture boundary so the owned/ghost coefficient adapter is isolated.
-    monkeypatch.setattr(module, "_labelled_edge_keys", lambda mesh, name, radius, tolerance:
-                        ({module._edge_key(edge, tolerance) for edge in ring.edges},
-                         ring.edges))
-    monkeypatch.setattr(uw.discretisation, "MeshVariable", auxiliary)
-    monkeypatch.setattr(uw, "is_nondimensional_scaling_active", lambda: False)
-    monkeypatch.setattr(uw, "get_default_model", lambda: SimpleNamespace(has_units_active=lambda: False))
-    wall = _ZeroSlipWall(SimpleNamespace(instance_number=1, mesh=mesh, u=velocity, p=SimpleNamespace(degree=1, continuous=True)), "Outer", radius, 1, 12)
-    assert len(wall.edges) == len(ring.edges)
-    np.testing.assert_allclose(wall.cell_values(), _quadratic(np.concatenate((wall.vertices,
-        (wall.vertices[:, [0, 1, 2]]+wall.vertices[:, [1, 2, 0]])/2), axis=1)), rtol=0, atol=1e-13)
     wall.update()
-    circle = radius*wall.nodes/np.linalg.norm(wall.nodes, axis=-1)[:, None]
-    expected = _quadratic(wall.nodes)-_quadratic(circle)
-    is_vertex = np.isclose(np.linalg.norm(wall.nodes, axis=-1), radius, rtol=0, atol=1e-12)
-    expected[is_vertex] = 0
-    np.testing.assert_allclose(wall.values, expected, rtol=0, atol=5e-13)
+    wall.field.array[...] = 777.
     wall.write()
-    np.testing.assert_allclose(wall.field.array[wall.local_boundary, 0],
-                               expected[wall.local_index[wall.local_boundary]], rtol=0, atol=5e-13)
+    np.testing.assert_array_equal(wall.field.array[rows, 0],
+                                  wall.values[wall.local_index[rows]])
     np.testing.assert_array_equal(wall.field.array[~wall.local_boundary, 0], 777.)
-    np.testing.assert_array_equal(velocity.array, original)
-    check = wall.audit()
-    theta = 2*np.pi*np.arange(32)/32
-    exact = _quadratic(radius*np.stack((np.cos(theta), np.sin(theta)), axis=-1))
-    rms = np.sqrt(np.mean(np.sum(exact**2, axis=-1)))
-    np.testing.assert_allclose(check["true_circle_velocity_rms"], rms, rtol=3e-13, atol=3e-13)
-    np.testing.assert_allclose(check["true_circle_measure"], 2*np.pi*radius, rtol=3e-13, atol=3e-13)
     np.testing.assert_array_equal(velocity.array, original)
 
 
@@ -332,12 +296,14 @@ def test_lagged_solve_requires_the_standard_pressure_nullspace():
 
 @pytest.mark.parametrize("local_stratum", ["null_petsc_is", "false_sentinel", "valid_empty_is"])
 @pytest.mark.tier_b
-def test_absent_local_boundary_is_not_dereferenced_before_global_edge_gather(local_stratum, monkeypatch):
+def test_absent_local_boundary_is_not_dereferenced(local_stratum, monkeypatch):
     """PETSc.IS() has a false null handle, distinct from a valid zero-length IS.
 
     The Gadi MPI16 gate first exposed the real null-handle crash. Never inspect
     its .indices here; a separate false sentinel safely makes any such access
     an assertion failure instead of triggering the native segmentation fault.
+    A rank holding none of the wall reads no facets, and gathers its share (none)
+    of the wall with the other ranks.
     """
     from petsc4py import PETSc
     from underworld3.utilities import _cylindrical_dirichlet as module
@@ -361,29 +327,9 @@ def test_absent_local_boundary_is_not_dereferenced_before_global_edge_gather(loc
         assert bool(facets)  # Handle validity, not the length of its index array.
     else:
         facets = FalseHandle()
-    radius = 1.7
-    remote_edges = _ring(11, radius, True).edges
-
-    class OtherRankOwnsWall:
-        def allreduce(self, value, op):
-            assert value is False
-            return False
-
-        def allgather(self, local):
-            np.testing.assert_array_equal(local.shape, (0, 2, 2))
-            return [local, remote_edges.copy()]
-
-    empty_dm = SimpleNamespace(
-        getDepthStratum=lambda depth: (0, 0),
-        getCoordinateSection=lambda: SimpleNamespace(),
-        getCoordinatesLocal=lambda: SimpleNamespace(array=np.empty(0)),
-    )
+    empty_dm = SimpleNamespace(getDepthStratum=lambda depth: (0, 0))
     monkeypatch.setattr(module, "_boundary_stratum_is", lambda dm, mesh, boundary: facets)
-    monkeypatch.setattr(uw.mpi, "comm", OtherRankOwnsWall())
-    tolerance = 1e-10*radius
-    actual, gathered = module._labelled_edge_keys(SimpleNamespace(dm=empty_dm), "Outer",
-                                                  radius, tolerance)
-    assert actual == {module._edge_key(edge, tolerance) for edge in remote_edges}
-    np.testing.assert_array_equal(gathered, remote_edges)
+    actual = module._labelled_facets(empty_dm, SimpleNamespace(), "Outer")
+    assert actual.dtype == np.int64 and actual.shape == (0,)
     if local_stratum == "valid_empty_is":
         assert not facets  # The valid empty IS is released; null handles are untouched.

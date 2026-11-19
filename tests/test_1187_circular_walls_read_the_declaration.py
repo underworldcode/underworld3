@@ -251,7 +251,7 @@ def test_a_slide_under_a_driven_flow_restarts_the_lagged_datum():
 @pytest.mark.tier_b
 def test_a_wall_off_its_declared_circle_is_refused_with_the_distance():
     """A labelled wall whose vertices left the declared circle (here moved by
-    1e-9 of the radius, ten times the match tolerance, without releasing the
+    1e-9 of the radius, ten times the tolerance, without releasing the
     declaration) is refused, and the refusal says by how much and against what
     tolerance."""
     mesh = _annulus()
@@ -262,5 +262,5 @@ def test_a_wall_off_its_declared_circle_is_refused_with_the_distance():
     stokes = _stokes(mesh, "O")
     with pytest.raises(ValueError, match=r"labelled vertices of boundary 'Upper' are off its "
                        r"declared circle of radius 2\.22: the largest distance is 1\.0\d*e-09 "
-                       r"of the radius, beyond the match tolerance of 1\.0e-10"):
+                       r"of the radius, beyond the tolerance of 1\.0e-10"):
         stokes.add_cylindrical_zero_slip_transfer(boundary="Upper", sign=1, quadrature=6)

@@ -20,25 +20,25 @@ import underworld3 as uw
 from mpi4py import MPI
 from scipy.sparse import coo_matrix
 from scipy.sparse.linalg import spsolve
-from scipy.spatial import cKDTree
 
 from ._cylindrical_dirichlet import (_CircularWall, _declared_circle_radius, _p2_velocity,
                                      _facet_normals)
 
 
-def _tangent_load_density(edges: np.ndarray, traction: np.ndarray, sign: int, quadrature: int):
+def _tangent_load_density(edges: np.ndarray, nodes: np.ndarray, index: np.ndarray,
+                          traction: np.ndarray, sign: int, quadrature: int):
     """Project integrated loads tangentially at P2 nodes; preserve their moments.
 
-    Project loads before inverting the mass matrix. Projecting pointwise density
+    ``nodes`` are the wall's P2 nodes and ``index`` each edge's rows of them,
+    in endpoint, endpoint, midpoint order (the wall's own node map). Project
+    loads before inverting the mass matrix. Projecting pointwise density
     instead would generally inject normal nodal loads into the reaction.
+    Returns the density at ``nodes`` and the checks.
     """
     _, weights = np.polynomial.legendre.leggauss(quadrature)
     rule = {"weight": np.linalg.norm(edges[:, 1]-edges[:, 0], axis=1)[:, None]*weights/2}
     t = (np.polynomial.legendre.leggauss(quadrature)[0] + 1) / 2
     shape = np.array([(1 - t) * (1 - 2 * t), t * (2 * t - 1), 4 * t * (1 - t)]).T
-    points = np.stack((edges[:, 0], edges[:, 1], edges.mean(axis=1)), axis=1)
-    nodes, index = np.unique(points.reshape(-1, 2), axis=0, return_inverse=True)
-    index = index.reshape(-1, 3)
     local_mass = np.einsum("eq,qi,qj->eij", rule["weight"], shape, shape)
     local_load = np.einsum("eq,qi,eqd->eid", rule["weight"], shape, traction)
     row = np.broadcast_to(index[:, :, None], local_mass.shape).ravel()
@@ -59,20 +59,17 @@ def _tangent_load_density(edges: np.ndarray, traction: np.ndarray, sign: int, qu
     )
     if checks["maximum_mass_moment_error"] > 1e-12 or checks["maximum_normal_nodal_load"] > 1e-12:
         raise ArithmeticError(f"Tangential boundary-load projection failed: {checks}")
-    return nodes, density, checks
+    return density, checks
 
 
-def _zero_torque_density(edges, nodes, density):
+def _zero_torque_density(edges, nodes, index, density):
     """Remove the M-weighted rigid-rotation load, preserving radial nodal loads.
 
+    ``index`` is each edge's rows of ``nodes`` (the wall's own node map).
     For affine P2 line traces M*w=diag(int(N_i))*w for w=(-y,x).
     Subtracting this linear density therefore changes only tangential loads.
     The radial sheet body force and true free-slip walls exert zero torque.
     """
-    edge_nodes = np.stack((edges[:, 0], edges[:, 1], edges.mean(axis=1)), axis=1)
-    distance, index = cKDTree(nodes).query(edge_nodes)
-    if distance.max() > 1e-10:
-        raise ValueError("Boundary density nodes do not match P2 edge nodes.")
     length = np.linalg.norm(edges[:, 1] - edges[:, 0], axis=1)
     weights = np.zeros(len(nodes))
     np.add.at(weights, index.ravel(), (length[:, None] * np.array([1 / 6, 1 / 6, 2 / 3])).ravel())
@@ -231,8 +228,10 @@ class _FreeSlipWall(_CircularWall):
         nt = np.sum(self.rule["normal"][:, None]*tangent, axis=-1)
         traction = (trace["rr"]*nr+shear*nt)[..., None]*radial + (
             shear*nr+trace["tt"]*nt)[..., None]*tangent
-        nodes, density, checks = _tangent_load_density(self.edges, traction, self.sign, self.quadrature)
-        density, torque = _zero_torque_density(self.edges, nodes, density)
+        nodes = self.nodes
+        density, checks = _tangent_load_density(self.edges, nodes, self.node_index, traction,
+                                                self.sign, self.quadrature)
+        density, torque = _zero_torque_density(self.edges, nodes, self.node_index, density)
         checks.update(torque)
         node_trace = _numerical_trace(self.vertices, velocity, pressure, self.edge_nodes,
                                       self.viscosity, np.zeros(self.edge_nodes.shape[:2]))

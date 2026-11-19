@@ -58,7 +58,11 @@ def test_tangent_mass_projection_preserves_its_exact_nodal_moments():
     t = (gauss+1)/2
     points = (1-t)[None, :, None]*edges[:, None, 0]+t[None, :, None]*edges[:, None, 1]
     traction = np.stack((points[..., 0]**2, -points[..., 1]), axis=-1)
-    nodes, density, checks = _tangent_load_density(edges, traction, 1, 6)
+    count = len(vertices)
+    nodes = np.concatenate((vertices, edges.mean(axis=1)))
+    index = np.stack((np.arange(count), (np.arange(count)+1) % count,
+                      np.arange(count)+count), axis=-1)
+    density, checks = _tangent_load_density(edges, nodes, index, traction, 1, 6)
     assert checks["maximum_normal_nodal_load"] < 1e-13
     assert checks["maximum_mass_moment_error"] < 1e-13
     shape = np.array([(1-t)*(1-2*t), t*(2*t-1), 4*t*(1-t)]).T
@@ -213,7 +217,7 @@ def test_torque_projection_preserves_normal_nodal_loads_on_irregular_trace():
     index = index.reshape(-1, 3)
     rotation = np.column_stack((-nodes[:, 1], nodes[:, 0]))
     density = 0.4 * rotation + nodes * np.sin(2 * np.arctan2(nodes[:, 1], nodes[:, 0]))[:, None]
-    balanced, checks = zero_torque_density(edges, nodes, density)
+    balanced, checks = zero_torque_density(edges, nodes, index, density)
     loads = []
     for field in (density, balanced):
         value = np.zeros_like(nodes)
