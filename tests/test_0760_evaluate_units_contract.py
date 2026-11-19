@@ -522,6 +522,17 @@ def test_coordinates_divided_by_a_length_are_dimensionless_arguments(units_model
 
 @pytest.mark.level_1
 @pytest.mark.tier_b
+def test_a_bare_coordinate_in_a_function_is_refused_and_the_message_shows_the_fix(units_model):
+    """``sin(pi*x)`` is refused (Louis's ruling): the message names the coordinate
+    and shows the division by a length."""
+    mesh = _box()
+    x, _y = mesh.X
+    with pytest.raises(ValueError, match=r"is a length here.*/W"):
+        uw.function.evaluate(sympy.sin(sympy.pi * x), _PTS)
+
+
+@pytest.mark.level_1
+@pytest.mark.tier_b
 @pytest.mark.parametrize("func", ["erfc", "asinh", "atanh"])
 def test_every_applied_function_needs_a_dimensionless_argument(units_model, func):
     """By rule, not a list: functions beyond exp, log and the trigonometric ones."""
