@@ -105,8 +105,11 @@ def create_delta_fe(Quad quad, int polytope, name="quadrature_point_fe", int num
         The cell rule the element's points coincide with. Take it from an
         existing field, ``fe.getQuadrature()``, so it is the mesh's rule.
     polytope : int
-        The reference cell type (``dm.getCellType(cStart)``) for the dual
-        space's reference cell.
+        The reference cell type (a ``PETSc.DM.PolytopeType``) for the dual
+        space's reference cell. Take it from the mesh's dimension and its
+        ``isSimplex``, which agree on every rank, not from a rank's first cell:
+        a rank with no cells has none, and ``getCellType`` then returns
+        ``UNKNOWN``.
     name : str
         PETSc object name.
 

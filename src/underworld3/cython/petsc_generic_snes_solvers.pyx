@@ -2884,6 +2884,78 @@ class SolverBaseClass(uw_object):
             _shared_scratch.give(reaction)
         return float(uw.mpi.comm.allreduce(total, op=uw.MPI.SUM))
 
+    def _essential_datum_field_dual(self, mu, field, lam=None, misfit_dual=None):
+        r"""The dual on ``field`` through the essential data, on its own nodes:
+        :math:`\big[(K^T\mu)_\Gamma + (\partial J/\partial u)_\Gamma\big]
+        \cdot \partial g/\partial f` at each constrained degree of freedom
+        (#787). The same reaction a parameter in a datum carries
+        (:meth:`_essential_datum_sensitivity`), with the derivative taken with
+        respect to the field's value at the node. Where ``field`` lives on the
+        unknown's own space its nodes are the constrained nodes, so the datum
+        at a node reads the field's value there and the map is exact; another
+        space needs a projection, and is refused.
+
+        Returns an array shaped ``(nodes, components)`` of ``field``'s local
+        array, nonzero on this rank's owned constrained nodes, or ``None`` when
+        no datum reads ``field``."""
+        import numpy as np
+        import sympy
+        from underworld3.adjoint import _shared_scratch, _value_at
+        nf = getattr(field, "num_components", 1)
+        derivatives = {}
+        for index, bc in enumerate(self.essential_bcs):
+            g = self._peel_except(sympy.Matrix(bc.fn), None)
+            ds = [sympy.Matrix(diff_wrt_field(g, field.sym[k])) for k in range(nf)]
+            if all(d.is_zero_matrix for d in ds):
+                continue
+            if int(bc.f_id) != 0:
+                raise NotImplementedError(
+                    f"gradient: field '{field.name}' enters an essential datum on field "
+                    f"{bc.f_id} of this solver; only data on the unknown carry a reaction term yet")
+            derivatives[index] = ds
+        if not derivatives:
+            return None
+        self._refuse_essential_datum_parameter(f"field '{field.name}'")
+        def space(v):
+            return (int(getattr(v, "degree", -1)), bool(getattr(v, "continuous", True)))
+        if field.mesh is not self.mesh or space(field) != space(self.u):
+            raise NotImplementedError(
+                f"gradient: field '{field.name}' enters an essential datum of "
+                f"{type(self).__name__}({self.u.name}) but lives on another space "
+                f"({space(field)} against {space(self.u)}): its dual through the datum "
+                f"needs a projection onto its nodes, which is not built yet (#787)")
+        reaction = self._essential_reaction(mu, lam)
+        try:
+            n = getattr(self.u, "num_components", 1)
+            rows = np.array(np.asarray(reaction.array), dtype=float).reshape(-1, n)
+            if misfit_dual is not None:
+                rows = rows + np.asarray(misfit_dual, dtype=float).reshape(-1, n)
+            X = np.asarray(self.u.coords_nd)
+            nodes = {}
+            for (node, comp), index in self._essential_datum_owner().items():
+                nodes.setdefault((index, comp), []).append(node)
+            dual = np.zeros((X.shape[0], nf))
+            # One evaluation per condition, field component and unknown
+            # component, on every rank and in the same order: a derivative that
+            # reads a mesh variable is evaluated collectively.
+            for index in sorted(derivatives):
+                for k in range(nf):
+                    d = derivatives[index][k]
+                    for comp in range(len(d)):
+                        if d[comp] == 0:
+                            continue
+                        here = np.array(nodes.get((index, comp), []), dtype=int)
+                        expr = sympy.sympify(d[comp])
+                        if expr.is_Number:
+                            values = np.full(len(here), float(expr))
+                        else:
+                            values = _value_at(expr, X[here].reshape(-1, X.shape[1])).ravel()
+                        if len(here):
+                            dual[here, k] += rows[here, comp] * values
+        finally:
+            _shared_scratch.give(reaction)
+        return dual
+
     def _refuse_essential_datum_parameter(self, wrt):
         """A datum that reads a parameter is handled through the reaction of
         the adjoint operator assembled from the volume kernels. That leaves
@@ -3795,6 +3867,12 @@ class SolverBaseClass(uw_object):
             config["multigrid_hierarchy"] = {
                 "merged_coarse_unknowns": dict(merged["levels"]),
                 "installs_with_merges": merged["installs_with_merges"]}
+        # coarse fault copies the split-level transfer's repair left weak
+        # (#1120): a coarse level that does not follow the fine one's move
+        unrepaired = getattr(self, "_mg_unrepaired_fault_copies", None)
+        if unrepaired:
+            config.setdefault("multigrid_hierarchy", {})[
+                "unrepaired_fault_copies"] = dict(unrepaired)
 
     def _capture_rotated_report(self, info):
         """Record a SolveReport for a rotated-free-slip solve, which runs its own

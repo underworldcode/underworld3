@@ -265,6 +265,17 @@ def mesh_metric_mismatch(mesh, metric, resolution_ratio=None):
 _MDG_CACHE: dict = {}
 
 
+def _density_variable(mesh, degree=1, tag="mdg"):
+    """The density variable :func:`metric_density_from_gradient` keeps for
+    ``mesh`` at ``degree`` and ``tag`` (its ``name``, or "mdg"), or None before
+    the first call. For tests and diagnostics, which need not know the
+    cache's key."""
+    for key, (g, gp, rho0, f_smooth, fp) in _MDG_CACHE.items():
+        if key[:3] == (mesh.instance_number, int(degree), tag):
+            return rho0
+    return None
+
+
 def _owned_dof_rows(var):
     """The local rows of a scalar MeshVariable that this rank owns, from the
     field's global section (a negative offset marks a point another rank
@@ -469,19 +480,25 @@ def metric_density_from_gradient(
     pStart, pEnd = dm.getDepthStratum(0)
     cStart, cEnd = dm.getHeightStratum(0)
     tag = name or "mdg"
-    key = (id(mesh), int(degree), tag,
-           pEnd - pStart, cEnd - cStart)
+    # Every rank hits or misses together: a miss builds projection solvers.
+    # The key is this process's (mesh.instance_number is never reused, as an
+    # id() can be once a mesh is freed); the global point and cell counts
+    # catch a topology change in place, which a move keeps. The variables live
+    # on this mesh, so their names need only the tag and degree.
+    counts = tuple(uw.mpi.comm.allreduce(
+        np.array([pEnd - pStart, cEnd - cStart], dtype=np.int64)).tolist())
+    key = (mesh.instance_number, int(degree), tag, counts)
 
     cache = _MDG_CACHE.get(key)
     if cache is None:
         g = uw.discretisation.MeshVariable(
-            f"mdg_g_{id(mesh):x}_{tag}{degree}", mesh,
+            f"mdg_g_{tag}{degree}", mesh,
             vtype=uw.VarType.VECTOR, degree=int(degree),
             continuous=True)
         gp = uw.systems.Vector_Projection(mesh, g)
         gp.smoothing = 0.0
         rho0 = uw.discretisation.MeshVariable(
-            f"mdg_rho_{id(mesh):x}_{tag}{degree}", mesh,
+            f"mdg_rho_{tag}{degree}", mesh,
             vtype=uw.VarType.SCALAR, degree=int(degree),
             continuous=True)
         # Optional pre-smoothing of the input field: a scalar
@@ -490,7 +507,7 @@ def metric_density_from_gradient(
         # from sub-L mesh structure, breaking the metric/mesh
         # feedback loop.
         f_smooth = uw.discretisation.MeshVariable(
-            f"mdg_fs_{id(mesh):x}_{tag}{degree}", mesh,
+            f"mdg_fs_{tag}{degree}", mesh,
             vtype=uw.VarType.SCALAR, degree=int(degree),
             continuous=True)
         fp = uw.systems.Projection(mesh, f_smooth)

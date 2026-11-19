@@ -6,6 +6,20 @@ rulings are in [`guides/fault-multigrid.md`](../guides/fault-multigrid.md); the
 split-level hierarchy that extends this design merged to `development` on 2026-10-31
 (#889, #890) and is recorded in the journal.
 
+## Design intent: a distributed patch (2026-11-17)
+
+Since #934 (merge 60dbf0e4) the finest level's patch blocks are built from every
+rank's rows. With no zone keyed, the structural rows of every fault form one block,
+so the structural patch is one LU solve on one rank at any rank count. That is an
+efficiency choice for 2-D, where the solve on one process is the cheaper one. It is
+not the design: the general case is a patch distributed across the ranks (#895).
+
+> "We have flip-flopped on this endlessly and I still think that the distributed fault is
+> what we want in the general case. I don't really understand why this cannot be solved
+> but it is mostly (right now) that it is just much more efficient in 2D to do the solve
+> on one process. I feel that this is so marginal in 2D that we don't really need to
+> mention it." (Louis Moresi, 2026-11-17)
+
 The solver architecture for fault-system Stokes problems, settled by
 measurement on a 2-D analysis rig and ready to carry into 3-D. One
 sentence: **ordinary balanced multigrid solves the smooth problem —

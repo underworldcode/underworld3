@@ -182,12 +182,14 @@ class UnderworldFunction(sympy.Function):
         else: # other types can manage their own component names
             fname = name
 
-        # Create function class with _uw_id for disambiguation (2025-12)
-        # When meshes have instance_number > 1, include it in _uw_id
-        # This makes f1(x,y) from mesh1 distinct from f1(x,y) from mesh2
-        # even if they have the same display name, solving the "funny whitespace" problem
+        # The function is the variable's: its identity is the mesh and the
+        # variable's own name on it, which is unique there. The display name
+        # alone is not: two variables can show the same symbol (two swarms'
+        # proxies of a variable called "phase", a varsymbol given twice), and
+        # a function identified by it would be one function for both, so an
+        # expression in one would evaluate the other (#1118 review).
         mesh = meshvar.mesh
-        uw_id = mesh.instance_number if mesh.instance_number > 1 else None
+        uw_id = (mesh.instance_number, meshvar.clean_name)
         # A mesh-variable value (and its derivative) is a real, finite number at every
         # point. An undefined function is complex to SymPy by default, so every power
         # with a symbolic exponent made it work out real and imaginary parts before
@@ -566,6 +568,22 @@ def global_evaluate_nd(   expr,
     coords_array = np.array(coords, dtype=np.float64, copy=False).view(np.ndarray)
 
     mesh, varfns, derivfns = uw.function.expressions.mesh_vars_in_expression(expr)
+
+    # Derivatives are resolved ONCE, on every rank, into a projected work variable
+    # before the points are split, as evaluate_nd does serially. Otherwise the
+    # out-of-domain fallback below evaluates the original expression by RBF
+    # (Clement recovery) where serial projects: a derivative at a point just
+    # outside read differently at each rank count, and a matrix-valued one raised
+    # (#999). The decision rests on the expression and the flags, the same on
+    # every rank, and the projection is collective, as this function is.
+    if mesh is not None and derivfns and not rbf and not evalf:
+        # An integration-point source has no gradient of its own: fit it per cell
+        # first, as evaluate_nd does, then project.
+        expr, derivfns = _integration_point_sources_to_cell_fit(expr, mesh, derivfns)
+    if mesh is not None and derivfns and not rbf and not evalf:
+        work_var = _project_to_work_variable(expr, mesh, smoothing)
+        expr = work_var.sym
+        mesh, varfns, derivfns = uw.function.expressions.mesh_vars_in_expression(expr)
 
     if mesh is None: #  or uw.mpi.size==1:
         return evaluate_nd(
