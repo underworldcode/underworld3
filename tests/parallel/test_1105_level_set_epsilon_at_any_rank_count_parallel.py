@@ -52,3 +52,23 @@ def test_the_interface_thickness_and_the_initial_volume_are_the_serial_ones():
     epsilon_integral, volume = _epsilon_and_volume()
     assert epsilon_integral == pytest.approx(EPSILON_INTEGRAL, rel=1e-12)
     assert volume == pytest.approx(VOLUME, rel=1e-12)
+
+
+@pytest.mark.skipif(uw.mpi.size < 3, reason="the fixture empties a rank from np 3 only")
+def test_a_rank_without_cells_does_not_change_the_thickness():
+    # The same triangle with one rank empty and with every rank holding cells,
+    # at the same rank count: the empty rank adds nothing to the node sums.
+    from empty_rank_fixtures import cells_along_a_side_leaving_one_rank_empty, cells_per_rank
+
+    def integrals(ranks_with_cells, tag):
+        dm = right_triangle_of_cells(cells_along_a_side_leaving_one_rank_empty(uw.mpi.size),
+                                     ranks_with_cells)
+        mesh = uw.discretisation.Mesh(dm, qdegree=3)
+        psi = uw.discretisation.MeshVariable(f"psi_eps_{tag}", mesh, 1, degree=2)
+        eps = level_set.interface_thickness(mesh, psi, scale=2.0)
+        return cells_per_rank(mesh), float(uw.maths.Integral(mesh, eps.sym[0]).evaluate())
+
+    counts_empty, with_empty = integrals(uw.mpi.size - 1, "e")
+    counts_full, without = integrals(uw.mpi.size, "f")
+    assert 0 in counts_empty and 0 not in counts_full
+    assert with_empty == pytest.approx(without, rel=1e-12)
