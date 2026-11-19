@@ -10,9 +10,12 @@ from the array's shape.
 Two SLCN steps of the field x + y, with that value on the boundary, no flow
 and unit diffusivity, on the triangle with one rank empty, are compared with
 the same steps on the same triangle shared among every rank. Both take the
-parallel route, so they differ by the partition's round-off only. A loose
-check against x + y holds the answer, whatever the record's centroid nudge
-does (serially it moved this field by 7.5e-5 in two steps).
+parallel route, so they differ by what the solve tolerance leaves on two
+partitions: 2.4e-9 at a tolerance of 1e-10 (measured by the reviewer at np 3).
+The bound is 100 times the tolerance, far below the 5e-5 that separates the
+serial route from the parallel one. A loose check against x + y holds the
+answer; neither route keeps it exactly (in two steps the field moves 7.5e-5
+from x + y serially and 2.5e-5 at np 3, measured by the reviewer).
 """
 
 import numpy as np
@@ -23,6 +26,8 @@ from empty_rank_fixtures import (ALL_BOUNDARIES_VALUE, cells_along_a_side_leavin
                                  cells_per_rank, right_triangle_of_cells)
 
 pytestmark = [pytest.mark.level_1, pytest.mark.tier_b, pytest.mark.timeout(300)]
+
+TOLERANCE = 1.0e-10
 
 
 def _two_steps(ranks_with_cells, tag):
@@ -42,7 +47,7 @@ def _two_steps(ranks_with_cells, tag):
     adv.constitutive_model = uw.constitutive_models.DiffusionModel
     adv.constitutive_model.Parameters.diffusivity = 1.0
     adv.add_dirichlet_bc([x + y], "All_Boundaries")
-    adv.tolerance = 1.0e-10
+    adv.tolerance = TOLERANCE
     for _ in range(2):
         adv.solve(timestep=0.01)
     return mesh, np.asarray(T.array).reshape(-1), X
@@ -66,5 +71,5 @@ def test_an_slcn_step_with_an_empty_rank_matches_one_without():
     with_empty, without = _gathered(empty_values, empty_X), _gathered(full_values, full_X)
     assert with_empty.shape == without.shape
     np.testing.assert_allclose(with_empty[:, :2], without[:, :2], rtol=0, atol=1e-12)
-    np.testing.assert_allclose(with_empty[:, 2], without[:, 2], rtol=0, atol=1e-10)
+    np.testing.assert_allclose(with_empty[:, 2], without[:, 2], rtol=0, atol=100 * TOLERANCE)
     assert np.abs(with_empty[:, 2] - with_empty[:, 0] - with_empty[:, 1]).max() < 1e-4
