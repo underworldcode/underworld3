@@ -66,6 +66,15 @@ def initialise(jupyter_backend):
     return
 
 
+def _cell_table(cell_points_list, cell_num_points):
+    """The cells' vertex lists as an ``(n_cells, cell_num_points)`` array. On a
+    rank that holds no cells the list is empty, and ``np.array`` alone would
+    give shape ``(0,)``, which pyvista refuses."""
+    import numpy as np
+
+    return np.array(cell_points_list, dtype=np.int64).reshape(-1, cell_num_points)
+
+
 def mesh_to_pv_mesh(mesh, jupyter_backend=None):
     """Convert Underworld mesh to PyVista unstructured grid.
 
@@ -160,7 +169,8 @@ def mesh_to_pv_mesh(mesh, jupyter_backend=None):
         mesh_units = mesh.units if mesh.units is not None else uw.units.dimensionless
 
         mmesh = meshio.Mesh(
-            points=mesh_coordinates_nd, cells=[(meshio_cell_type, np.array(cell_points_list))]
+            points=mesh_coordinates_nd,
+            cells=[(meshio_cell_type, _cell_table(cell_points_list, cell_num_points))],
         )
 
         pv_mesh = pv.from_meshio(mmesh)
@@ -182,7 +192,7 @@ def mesh_to_pv_mesh(mesh, jupyter_backend=None):
             case (False, 3):
                 vtk_cell_type = pv.cell.CellType.HEXAHEDRON
 
-        cells_array = np.array(cell_points_list, dtype=int)
+        cells_array = _cell_table(cell_points_list, cell_num_points)
         cells_size = np.full((cells_array.shape[0], 1), cell_num_points, dtype=int)
         cells_type = np.full((cells_array.shape[0], 1), vtk_cell_type, dtype=int)
 
@@ -392,6 +402,21 @@ _VTK_TENSOR_CELL = {
 }
 
 
+def _corner_weights(ref, simplex):
+    """Each point's position as a combination of the reference cell's corners:
+    ``ref`` is ``(n, dim)`` reference coordinates on ``[0, 1]``, the result
+    ``(n, n_corners)``, corners in PETSc's closure-vertex order. Barycentric on a
+    simplex (``ref`` holds the weights of corners 1..dim), multilinear on a quad
+    or hexahedron."""
+    import numpy as np
+
+    if simplex:
+        return np.column_stack([1.0 - ref.sum(axis=1), ref])
+    corners = np.array(_TENSOR_CORNERS[ref.shape[1]])
+    return np.prod(np.where(corners[None, :, :] == 1, ref[:, None, :], 1.0 - ref[:, None, :]),
+                   axis=2)
+
+
 def _reference_lattice(dim, degree, simplex):
     """The degree-``degree`` node lattice of the reference cell, and its sub-cells.
 
@@ -430,12 +455,9 @@ def _reference_lattice(dim, degree, simplex):
                     subcells.append([index[v] for v in verts])
         weights = np.array(nodes, dtype=float) / k
     else:
-        corners = np.array(_TENSOR_CORNERS[dim])
         nodes = list(itertools.product(range(k + 1), repeat=dim))
         index = {n: i for i, n in enumerate(nodes)}
-        t = np.array(nodes, dtype=float) / k
-        weights = np.prod(np.where(corners[None, :, :] == 1, t[:, None, :], 1.0 - t[:, None, :]),
-                          axis=2)
+        weights = _corner_weights(np.array(nodes, dtype=float) / k, False)
         subcells = [[index[tuple(np.add(base, o))] for o in _VTK_TENSOR_CELL[dim]]
                     for base in itertools.product(range(k), repeat=dim)]
     masks = ((weights > 0) * (1 << np.arange(weights.shape[1]))).sum(axis=1)
@@ -486,6 +508,52 @@ def _orient_subcells_on_surface(conn, X, parent_x, simplex):
     return conn
 
 
+# A reference coordinate this close to 0 or 1 lies on that face of the
+# reference cell (whose size is 1): it absorbs the round-off in PETSc's nodes.
+_REFERENCE_FACE_TOLERANCE = 1.0e-10
+
+
+def _fe_reference_nodes(dm, cdim, lattice_ref, masks, simplex):
+    """The Lagrange nodes of the FE on ``dm``'s field 0, in reference
+    coordinates on ``[0, 1]``: an ``(n_nodes, dim)`` array ordered as the
+    equispaced lattice ``lattice_ref``, or ``None`` if the FE's nodes do not
+    sit on the lattice's entities in the same numbers.
+
+    PETSc places its nodes off the equispaced lattice (``node_endpoints`` is
+    off, and from degree 3 the nodes are not equispaced), increasingly so with
+    the degree. Each node is first placed on its vertex, edge, face or interior
+    by which corners it has weight on, the same bitmask as ``masks``; only then
+    are the nodes of one entity paired with that entity's lattice sites, by an
+    assignment on the reference cell.
+    """
+    import numpy as np
+    from scipy.optimize import linear_sum_assignment
+
+    fe = dm.getField(0)
+    fe = fe[0] if isinstance(fe, tuple) else fe
+    dual = fe.getDualSpace()
+    dim = lattice_ref.shape[1]
+    # One point functional per node and component, node-major (the section's
+    # layout); PETSc's reference cell is [-1, 1].
+    points = np.array([np.asarray(dual.getFunctional(i).getData()[0]).reshape(-1, dim)[0]
+                       for i in range(0, dual.getDimension(), cdim)])
+    if len(points) != len(lattice_ref):
+        return None
+    nodes = 0.5 * (points + 1.0)
+    on = _corner_weights(nodes, simplex) > _REFERENCE_FACE_TOLERANCE
+    node_masks = (on * (1 << np.arange(on.shape[1]))).sum(axis=1)
+
+    ordered = np.empty_like(lattice_ref)
+    for slot in np.unique(masks):
+        sites = np.flatnonzero(masks == slot)
+        candidates = np.flatnonzero(node_masks == slot)
+        if len(candidates) != len(sites):
+            return None
+        cost = ((lattice_ref[sites, None, :] - nodes[None, candidates, :]) ** 2).sum(-1)
+        ordered[sites] = nodes[candidates[linear_sum_assignment(cost)[1]]]
+    return ordered
+
+
 def _lagrange_subcell_connectivity(meshVar):
     """Sub-cells of the mesh's own cells through a continuous Lagrange
     variable's nodes: an ``(n, nv)`` table of the variable's DOF rows, or
@@ -497,12 +565,12 @@ def _lagrange_subcell_connectivity(meshVar):
     is identified with an entity of the reference lattice by its set of
     corners. Position is used for one thing only: ordering the several nodes
     of a single edge, face or interior, which follow that entity's own
-    orientation. Those are matched to the lattice positions of the same
-    entity, mapped through the cell's corners, and the competing positions are
-    a lattice spacing apart, so a node a little off its lattice position is
-    still matched to the right one.
-    The match is refused, and ``None`` returned, if a node lies more than half
-    a spacing from its lattice position.
+    orientation. Those are matched to the positions of the same entity's
+    nodes in the FE (PETSc's own, which are not equispaced at high degree),
+    mapped through the cell's corners, with distances measured in reference
+    coordinates, so the cell's aspect ratio does not enter (#1083).
+    The match is refused, and ``None`` returned, if a node lies half the
+    spacing of its entity's nodes or more from its position.
     """
     import itertools
     import numpy as np
@@ -517,12 +585,25 @@ def _lagrange_subcell_connectivity(meshVar):
     weights, masks, subcells = _reference_lattice(dim, k, simplex)
     n_corners = weights.shape[1]
 
+    # Each corner's reference coordinates, and from them every lattice node's.
+    # On a simplex the reference coordinates are the barycentric weights of
+    # corners 1..dim; on a quad or hexahedron the corner's lattice position.
+    if simplex:
+        corner_ref = np.vstack([np.zeros(dim), np.eye(dim)])
+    else:
+        corner_ref = np.array(_TENSOR_CORNERS[dim], dtype=float)
+
     X = np.asarray(meshVar.coords_nd, dtype=np.float64)
     dm = mesh._basis_coordinate_dm(k, True)
     try:
+        ref_lattice = _fe_reference_nodes(dm, cdim, weights @ corner_ref, masks, simplex)
+        if ref_lattice is None:
+            return None
         section = dm.getLocalSection()
         cells = np.arange(*dm.getHeightStratum(0))
         nc = len(cells)
+        if nc == 0:
+            return np.zeros((0, subcells.shape[1]), dtype=np.int64)
         corners = closure_points(dm, cells, 0)
         if corners.shape != (nc, n_corners) or (corners < 0).any():
             return None                   # mixed or unexpected cell types
@@ -552,8 +633,22 @@ def _lagrange_subcell_connectivity(meshVar):
 
     nodes = np.full((nc, len(masks)), -1, dtype=np.int64)
     corner_nodes = [int(np.flatnonzero(masks == 1 << c)[0]) for c in range(n_corners)]
+
+    origin_node = corner_nodes[int(np.flatnonzero(~corner_ref.any(axis=1))[0])]
+    axis_nodes = [corner_nodes[int(np.flatnonzero((corner_ref == row).all(axis=1))[0])]
+                  for row in np.eye(dim)]
+    # Each target is PETSc's reference node put through the cell's own map from
+    # its corners (affine on a simplex, multilinear on a quad or hexahedron), so
+    # it is exact on any degree-1 cell. The distance from a node to a target is
+    # measured in reference coordinates, through the pseudo-inverse of the edge
+    # vectors at the first corner, where the spacing between an entity's nodes
+    # does not depend on the cell's aspect ratio. On a cell that is not a
+    # parallelogram that inverse is approximate, which only rescales distances
+    # that are zero for the right pairing.
+
     # Vertices first: their positions place every other lattice node.
     slots = sorted(set(masks.tolist()), key=lambda s: bin(s).count("1"))
+    to_ref = None
     for slot in slots:
         lattice = np.flatnonzero(masks == slot)
         m = len(lattice)
@@ -568,10 +663,16 @@ def _lagrange_subcell_connectivity(meshVar):
         if m == 1:
             nodes[:, lattice[0]] = rows[:, 0]
             continue
-        corner_x = X[nodes[:, corner_nodes]]                             # (nc, corners, cdim)
-        target = np.einsum("lc,ncx->nlx", weights[lattice], corner_x)    # (nc, m, cdim)
-        actual = X[rows]                                                 # (nc, m, cdim)
-        cost = ((target[:, :, None, :] - actual[:, None, :, :]) ** 2).sum(-1)
+        if to_ref is None:
+            edge = X[nodes[:, axis_nodes]] - X[nodes[:, origin_node]][:, None]   # (nc, dim, cdim)
+            to_ref = np.linalg.pinv(np.transpose(edge, (0, 2, 1)))               # (nc, dim, cdim)
+        target_ref = ref_lattice[lattice]                                # (m, dim)
+        spacing = np.sqrt(np.where(np.eye(m, dtype=bool), np.inf,
+                                   ((target_ref[:, None] - target_ref[None]) ** 2).sum(-1)).min())
+        target = np.einsum("lc,ncx->nlx", _corner_weights(target_ref, simplex),
+                           X[nodes[:, corner_nodes]])                    # (nc, m, cdim)
+        offset = target[:, :, None, :] - X[rows][:, None, :, :]          # (nc, m, m, cdim)
+        cost = (np.einsum("nax,nijx->nija", to_ref, offset) ** 2).sum(-1)
         if m <= 4:
             perms = np.array(list(itertools.permutations(range(m))))
             total = cost[:, np.arange(m)[None, :], perms].sum(-1)       # (nc, nperm)
@@ -579,8 +680,6 @@ def _lagrange_subcell_connectivity(meshVar):
         else:
             choice = np.array([linear_sum_assignment(c)[1] for c in cost])
         matched = np.take_along_axis(cost, choice[:, :, None], axis=2)[..., 0]
-        spacing = np.sqrt(np.where(np.eye(m, dtype=bool), np.inf,
-                                   ((target[:, :, None] - target[:, None]) ** 2).sum(-1)).min(axis=(1, 2)))
         if (np.sqrt(matched.max(axis=1)) >= 0.5 * spacing).any():
             return None
         nodes[:, lattice] = np.take_along_axis(rows, choice, axis=1)
@@ -609,7 +708,9 @@ def meshVariable_to_native_pv_mesh(meshVar):
     own triangulation.
 
     Returns ``None`` for a layout this does not handle (a discontinuous or
-    degree-0 variable, a mixed-cell mesh), and the caller falls back.
+    degree-0 variable, a mixed-cell mesh), and the caller falls back. On a
+    rank that holds no cells the grid has no cells; pyvista's ``add_mesh``
+    refuses an empty grid unless ``allow_empty_mesh=True``.
 
     Why this exists
     ---------------
@@ -666,7 +767,8 @@ def meshVariable_to_pv_mesh_object(meshVar, alpha=None):
     route silently drops coarse cells on an adapted mesh.
 
     Otherwise (a discontinuous variable, or a layout the native path refuses)
-    the points are Delaunay-triangulated.
+    the points are Delaunay-triangulated. A refused continuous variable is
+    reported with a warning, since it is meant to be drawn natively.
 
     Parameters
     ----------
@@ -690,8 +792,23 @@ def meshVariable_to_pv_mesh_object(meshVar, alpha=None):
         native = meshVariable_to_native_pv_mesh(meshVar)
         if native is not None:
             return native
+        if meshVar.continuous:
+            # A continuous variable is meant to be drawn on the mesh's own
+            # cells; the Delaunay of its nodes can leave nodes uncovered.
+            import warnings
+
+            warnings.warn(
+                f"meshVariable_to_pv_mesh_object: the native rendering refused "
+                f"'{meshVar.clean_name}' (continuous, degree {meshVar.degree}); drawing "
+                f"a Delaunay triangulation of its nodes instead, which can leave "
+                f"nodes uncovered (#1083).",
+                stacklevel=2,
+            )
 
     point_cloud = meshVariable_to_pv_cloud(meshVar)
+    if point_cloud.n_points == 0:
+        # A rank that holds no cells has nothing to triangulate.
+        return point_cloud
 
     if alpha is None:
         # Compute alpha from the point cloud coordinates themselves
@@ -742,7 +859,11 @@ def scalar_fn_to_pv_points(pv_mesh, uw_fn, dim=None):
     import numpy as np
 
     if dim is None:
-        if pv_mesh.points[:, 2].max() - pv_mesh.points[:, 2].min() < 1.0e-6:
+        if hasattr(pv_mesh, '_coord_array'):
+            # the mesh's own coordinate dimension, which a rank that holds no
+            # points has too
+            dim = np.shape(pv_mesh._coord_array)[1]
+        elif pv_mesh.points[:, 2].max() - pv_mesh.points[:, 2].min() < 1.0e-6:
             dim = 2
         else:
             dim = 3
@@ -1202,8 +1323,8 @@ def plot_scalar(
     mesh,
     scalar,
     scalar_name="",
-    cmap="",
-    clim="",
+    cmap=None,
+    clim=None,
     window_size=(750, 750),
     title="",
     fmt="%10.7f",
@@ -1232,11 +1353,11 @@ def plot_scalar(
 
     cmap : str, optional
         The colormap to be used for visualizing the scalar values. This can be any colormap
-        recognized by PyVista or Matplotlib. Default is an empty string, which uses the default colormap.
+        recognized by PyVista or Matplotlib. Default is None, which uses PyVista's theme colormap.
 
     clim : tuple of float, optional
         The scalar range to be used for coloring the mesh (e.g., `(min_value, max_value)`). If not
-        provided, the range of the scalar values is used. Default is an empty string, which uses
+        provided, the range of the scalar values is used. Default is None, which uses
         the full range of the scalar values.
 
     window_size : tuple of int, optional
@@ -1281,7 +1402,13 @@ def plot_scalar(
     import pyvista as pv
 
     pvmesh = mesh_to_pv_mesh(mesh)
-    pvmesh.point_data[scalar_name] = scalar_fn_to_pv_points(pvmesh, scalar)
+    # The evaluation is collective, so every rank makes it. A rank that holds
+    # no cells then has nothing to draw: pyvista refuses an empty array and an
+    # empty mesh.
+    values = scalar_fn_to_pv_points(pvmesh, scalar)
+    if pvmesh.n_cells == 0:
+        return
+    pvmesh.point_data[scalar_name] = values
 
     # Build scalar bar label with units if available
     scalar_bar_title = scalar_name
@@ -1334,8 +1461,8 @@ def plot_vector(
     mesh,
     vector,
     vector_name="",
-    cmap="",
-    clim="",
+    cmap=None,
+    clim=None,
     vmag="",
     vfreq="",
     save_png=False,
@@ -1369,11 +1496,11 @@ def plot_vector(
 
     cmap : str, optional
         The colormap to be used for visualizing the vector magnitudes. This can be any colormap
-        recognized by PyVista or Matplotlib. Default is an empty string, which uses the default colormap.
+        recognized by PyVista or Matplotlib. Default is None, which uses PyVista's theme colormap.
 
     clim : tuple of float, optional
         The scalar range to be used for coloring the mesh based on vector magnitudes (e.g., `(min_value, max_value)`).
-        If not provided, the range of the vector magnitudes is used. Default is an empty string.
+        If not provided, the range of the vector magnitudes is used. Default is None.
 
     vmag : float or str, optional
         The scaling factor for the arrow magnitudes when plotting vectors as arrows.
@@ -1446,22 +1573,28 @@ def plot_vector(
     import pyvista as pv
 
     pvmesh = mesh_to_pv_mesh(mesh)
-    pvmesh.point_data[vector_name] = vector_fn_to_pv_points(pvmesh, vector.sym)
+    # The evaluations are collective, so every rank makes all three before a
+    # rank that holds no cells returns: pyvista refuses an empty array and an
+    # empty mesh.
+    vectors = vector_fn_to_pv_points(pvmesh, vector.sym)
     if scalar is None:
         scalar_name = vector_name + "_mag"
-        pvmesh.point_data[scalar_name] = scalar_fn_to_pv_points(
-            pvmesh, sympy.sqrt(vector.sym.dot(vector.sym))
-        )
+        magnitudes = scalar_fn_to_pv_points(pvmesh, sympy.sqrt(vector.sym.dot(vector.sym)))
     else:
-        pvmesh.point_data[scalar_name] = scalar_fn_to_pv_points(pvmesh, scalar.sym)
+        magnitudes = scalar_fn_to_pv_points(pvmesh, scalar.sym)
+    velocity_points = meshVariable_to_pv_cloud(vector)
+    arrows = vector_fn_to_pv_points(velocity_points, vector.sym)
+    if pvmesh.n_cells == 0:
+        return
+    pvmesh.point_data[vector_name] = vectors
+    pvmesh.point_data[scalar_name] = magnitudes
+    velocity_points.point_data[vector_name] = arrows
 
     # Build scalar bar label with units if available
     scalar_bar_title = scalar_name
     if hasattr(pvmesh, '_last_scalar_units') and pvmesh._last_scalar_units:
         scalar_bar_title = f"{scalar_name} ({pvmesh._last_scalar_units})"
 
-    velocity_points = meshVariable_to_pv_cloud(vector)
-    velocity_points.point_data[vector_name] = vector_fn_to_pv_points(velocity_points, vector.sym)
 
     pl = pv.Plotter(window_size=window_size)
     if clip_angle != 0.0:
@@ -1514,7 +1647,7 @@ def plot_vector(
 
 
 def save_colorbar(
-    colormap="",
+    colormap=None,
     cb_bounds=None,
     vmin=None,
     vmax=None,
@@ -1535,7 +1668,7 @@ def save_colorbar(
     -----------
     colormap : str, optional
         The name of the colormap to be used for the colorbar. This should be a valid Matplotlib colormap name.
-        Default is an empty string, which uses the default colormap.
+        Default is None, which uses Matplotlib's default colormap.
 
     cb_bounds : list or array-like, optional
         The bounds to be used for the colorbar. If provided, the colorbar will be generated with these bounds.

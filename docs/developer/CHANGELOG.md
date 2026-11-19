@@ -6,6 +6,46 @@ This log tracks significant development work at a conceptual level, suitable for
 
 ## 2026 Q4 (October – December)
 
+### A units model refuses bare numbers for dimensional parameters, and plain arrays in `mesh.deform` (November 2026, #1182, #1081)
+
+Two API breaks, both following the units ruling of 2026-11-13: in a model with
+reference quantities an ambiguous number is refused rather than guessed at.
+
+- **Parameters.** A finite nonzero bare number assigned to a parameter that declares
+  a dimension (a viscosity, a diffusivity, a stress) is refused at the setter; the
+  message shows the `uw.quantity(value, "<units>")` form. A dimensional parameter
+  left at its bare-number default (the viscosity's 1) is refused when a solve or an
+  `evaluate` first reads it. Zero and infinity, numbers inside expressions, and
+  models without reference quantities are unchanged. Scripts that set
+  `Parameters.shear_viscosity_0 = 1.0` in a units model now give units; a value
+  meant as one model unit is `uw.dimensionalise(1.0, target_dimensionality=...)`
+  (the test suite's `model_units` helper). (#1182)
+- **`mesh.deform`.** A plain array is refused in a units model, whatever its values:
+  it could be metres or model units, and the size-based guess that decided it
+  before failed when the length scale is near 1. Pass coordinates with units
+  (`mesh.X.coords` plus a displacement with units) or model coordinates marked
+  `units="dimensionless"`. Coordinates marked dimensionless are taken as model
+  coordinates whatever their size: the mark is the caller's statement, and no
+  size check second-guesses it. (#1081)
+- **`SwarmVariable.array`.** Assignment goes through the view, as for a
+  `MeshVariable`: a unit-aware value is converted, and a plain array in a units
+  model is refused as ambiguous. It used to be stored as non-dimensional, 1000
+  times too large for a 1000 K reference. (#993)
+
+### adapt's node_budget is one budget for the whole mesh (November 2026, #1122)
+
+`Mesh.adapt(..., node_budget=N)` caps the cells marked in each refinement pass at
+N, highest metric first. Each rank applied the cap to its own cells, so P ranks
+marked up to N x P cells per pass, and which cells they were depended on the
+partition: the refined mesh, and the multigrid levels built from it, changed with
+the rank count. The cap is now taken over the whole mesh, and cells of equal
+metric are ordered by centroid (smallest x, then y, then z), so the adapted mesh
+is the same at any rank count. In serial only the choice among cells of equal
+metric changes, which argsort made before: on a guide-surface fixture with
+`node_budget=50` the last edge_split level goes from 2956 to 2690 cells, and nvb
+and sbr are unchanged. Iteration counts recorded on such a budgeted mesh may
+move. Without a budget nothing changes.
+
 ### The monotone clamp bounds a value by the cell it was interpolated in (November 2026, #682, #994)
 
 `evaluate` and `global_evaluate` with `monotone="clamp"` (or `True`) used to clip each

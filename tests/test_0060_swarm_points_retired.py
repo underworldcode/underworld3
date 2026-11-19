@@ -96,18 +96,25 @@ def test_mesh_deform_marks_swarm_for_migration(swarm):
     collective point that notices a mesh coordinate change; it must mark
     the swarm for deferred migration so deformed meshes cannot strand
     particles permanently (#379 review round 1)."""
-    swarm._needs_migration = False
-    swarm._mesh_version = swarm.mesh._mesh_version - 1  # simulate a deform bump
-    swarm._sync_before_assembly()
-    assert swarm._mesh_version == swarm.mesh._mesh_version
+    calls = []
+    original = swarm.migrate
+    swarm.migrate = lambda *a, **k: (calls.append(1), original(*a, **k))[1]
+    try:
+        swarm._needs_migration = False
+        swarm._mesh_geometry_version = swarm.mesh._geometry_version - 1  # simulate a deform
+        swarm._sync_before_assembly()
+    finally:
+        del swarm.migrate
+    assert calls == [1]
+    assert swarm._mesh_geometry_version == swarm.mesh._geometry_version
 
 
 def test_deform_mesh_bumps_version_for_swarm_rebinning(swarm):
-    """mesh.deform() must bump the mesh version so solve-entry sync can
+    """mesh.deform() must bump the mesh geometry version so solve-entry sync can
     mark registered swarms for migration — previously only the
     mesh.X.coords callback path bumped it, so the sanctioned deform path
     left swarms stranded (#379 review round 2)."""
     mesh = swarm.mesh
-    before = mesh._mesh_version
+    before = mesh._geometry_version
     mesh.deform(np.asarray(mesh._coords) + 1.0e-6)
-    assert mesh._mesh_version > before
+    assert mesh._geometry_version > before

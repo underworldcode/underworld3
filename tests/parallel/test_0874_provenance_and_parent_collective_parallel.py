@@ -193,3 +193,304 @@ def test_base_parent_location_failure_is_raised_on_every_rank():
     assert np.array_equal(located, np.asarray(out._addon_parent))
     _same_error_everywhere(lambda: ap._base_parent_addresses(below, hidden, comm),
                            "locate_in_cells_exhaustive", "No recorded cell")
+
+
+# --------------------------------------------------------------------------- #
+#  The record itself (#874, finding 4 of the #1165 review)
+# --------------------------------------------------------------------------- #
+def _with_record(args, record_on_last_rank):
+    """The captured provenance call with ``pre``'s record replaced on the last
+    rank only (every other rank keeps its own)."""
+    coarse, fine, pre = args[:3]
+    record = np.asarray(pre._addon_parent)
+    if uw.mpi.rank == uw.mpi.size - 1:
+        record = record_on_last_rank(record)
+    return (coarse, fine, _Hidden(pre, _addon_parent=record)) + tuple(args[3:])
+
+
+def _raised_everywhere(call, message):
+    caught = None
+    try:
+        call()
+    except CollectiveBuildError as err:
+        caught = str(err)
+    messages = uw.mpi.comm.allgather(caught)
+    assert all(m is not None and message in m for m in messages), messages
+    assert len(set(messages)) == 1, messages
+
+
+@pytest.mark.parametrize("damage, message", [
+    (lambda r: r[: max(len(r) // 2, 0)], "does not describe this mesh"),
+    (lambda r: np.column_stack([np.full(len(r), 10 ** 6), r[:, 1]]),
+     "name a rank or a cell that does not exist"),
+    (lambda r: np.column_stack([r[:, 0], np.full(len(r), 10 ** 9)]),
+     "name a rank or a cell that does not exist"),
+], ids=["short", "no-such-rank", "no-such-cell"])
+def test_a_damaged_record_on_one_rank_is_refused_on_every_rank(damage, message):
+    args, kwargs = _captured_provenance_call()
+    damaged = _with_record(args, damage)
+    _raised_everywhere(lambda: fault_mg.provenance_transfer_parallel(*damaged, **kwargs),
+                       message)
+
+
+def test_a_cell_table_failure_before_the_parent_location_is_raised_on_every_rank():
+    child = adapted_2d(K)
+    tail = child._custom_mg_coarse_meshes
+    levels = [tail[i] for i in addon_level_indices(tail)] + [child]
+    original = ap._cell_centroids
+
+    def failing(mesh):
+        if uw.mpi.rank == uw.mpi.size - 1:
+            raise IndexError("cell table (forced on one rank)")
+        return original(mesh)
+
+    ap._cell_centroids = failing
+    try:
+        caught = None
+        try:
+            ap._parent_cells_local(levels[0], levels[1])
+        except RuntimeError as err:
+            caught = str(err)
+    finally:
+        ap._cell_centroids = original
+    messages = uw.mpi.comm.allgather(caught)
+    assert all(m is not None and "cell table" in m for m in messages), messages
+    assert len(set(messages)) == 1, messages
+
+
+# --------------------------------------------------------------------------- #
+#  The transfer's opening reads, and _resolve_parents' records (#874, the
+#  follow-ups to #1201's review)
+# --------------------------------------------------------------------------- #
+def test_an_opening_read_failure_in_the_provenance_transfer_is_raised_on_every_rank():
+    args, kwargs = _captured_provenance_call()
+    _same_error_everywhere(lambda: fault_mg.provenance_transfer_parallel(*args, **kwargs),
+                           "_cell_vertex_table", "Level table",
+                           when=_caller("provenance_transfer_parallel"),
+                           error=CollectiveBuildError)
+
+
+def _captured_resolve_call():
+    calls = []
+    original = ap._resolve_parents
+
+    def spy(below, lev):
+        calls.append((below, lev, np.asarray(lev._addon_parent_old).copy()))
+        return original(below, lev)
+
+    ap._resolve_parents = spy
+    try:
+        ap.partition_addon(adapted_2d(K), ap.mark_polylines([TRACE]), layers=1,
+                           tolerance=0.1)
+    finally:
+        ap._resolve_parents = original
+    moved = [c for c in calls if getattr(c[0], "_addon_self_old", None) is not None]
+    assert uw.mpi.comm.allreduce(len(moved), op=__import__("mpi4py").MPI.MIN) > 0, \
+        "no level below moved: _resolve_parents never reached its star forests"
+    return moved[0]
+
+
+@pytest.mark.parametrize("damage, message", [
+    (lambda r: r[: max(len(r) // 2, 0)], "have shape"),
+    (lambda r: np.column_stack([np.full(len(r), 10 ** 6), r[:, 1]]),
+     "name a rank or a cell that does not exist"),
+    (lambda r: np.column_stack([r[:, 0], np.full(len(r), 10 ** 9)]),
+     "name a rank or a cell that does not exist"),
+], ids=["short", "no-such-rank", "no-such-cell"])
+@pytest.mark.parametrize("which", ["_addon_parent_old", "_addon_self_old"])
+def test_a_damaged_old_address_is_refused_on_every_rank(damage, message, which):
+    below, lev, _parent_old = _captured_resolve_call()
+    owner = lev if which == "_addon_parent_old" else below
+    record = np.asarray(getattr(owner, which))
+    if uw.mpi.rank == uw.mpi.size - 1:
+        record = damage(record)
+    if which == "_addon_parent_old":
+        lev = _Hidden(lev, _addon_parent_old=record)
+    else:
+        below = _Hidden(below, _addon_self_old=record)
+    caught = None
+    try:
+        ap._resolve_parents(below, lev)
+    except RuntimeError as err:
+        caught = str(err)
+    messages = uw.mpi.comm.allgather(caught)
+    assert all(m is not None and message in m for m in messages), messages
+    assert len(set(messages)) == 1, messages
+
+
+# --------------------------------------------------------------------------- #
+#  The sweep (#874): every rank-local step of the remaining builders is raised
+#  on every rank. Each case forces one failure on the last rank only.
+# --------------------------------------------------------------------------- #
+def test_a_failure_after_the_parent_fetch_is_raised_on_every_rank():
+    args, kwargs = _captured_provenance_call()
+    _same_error_everywhere(lambda: fault_mg.provenance_transfer_parallel(*args, **kwargs),
+                           "reference_vertices", "Reference vertices",
+                           when=_caller("provenance_transfer_parallel"),
+                           error=CollectiveBuildError)
+
+
+def _captured_cell_located_call():
+    calls = []
+    original = fault_mg.cell_located_transfer_parallel
+
+    def spy(*args, **kwargs):
+        if not calls:
+            calls.append((args, kwargs))
+        return original(*args, **kwargs)
+
+    fault_mg.cell_located_transfer_parallel = spy
+    try:
+        shear_fault_solve(adapted_2d(K).add_fault([("Flt", TRACE)]))
+    finally:
+        fault_mg.cell_located_transfer_parallel = original
+    assert uw.mpi.comm.allreduce(len(calls)) == uw.mpi.size
+    return calls[0]
+
+
+def test_an_opening_read_failure_in_the_cell_located_transfer_is_raised_on_every_rank():
+    args, kwargs = _captured_cell_located_call()
+    _same_error_everywhere(lambda: fault_mg.cell_located_transfer_parallel(*args, **kwargs),
+                           "_cell_vertex_table", "Level table",
+                           when=_caller("cell_located_transfer_parallel"),
+                           error=CollectiveBuildError)
+
+
+def _captured_inheritance():
+    """``(child, host)`` of the cut's provenance inheritance in a partitioned
+    add_fault (the host carries the add-on record)."""
+    calls = []
+    original = ap.inherit_provenance
+
+    def spy(child, host):
+        if getattr(host, "_addon_parent", None) is not None and not calls:
+            calls.append((child, host))
+        return original(child, host)
+
+    ap.inherit_provenance = spy
+    try:
+        adapted_2d(K).add_fault([("Flt", TRACE)])
+    finally:
+        ap.inherit_provenance = original
+    assert uw.mpi.comm.allreduce(len(calls), op=__import__("mpi4py").MPI.MIN) > 0
+    return calls[0]
+
+
+def test_a_short_host_record_in_the_inheritance_is_refused_on_every_rank():
+    child, host = _captured_inheritance()
+    record = np.asarray(host._addon_parent)
+    if uw.mpi.rank == uw.mpi.size - 1:
+        record = record[: len(record) // 2]
+    hidden = _Hidden(host, _addon_parent=record)
+    caught = None
+    try:
+        ap.inherit_provenance(_Hidden(child), hidden)
+    except RuntimeError as err:
+        caught = str(err)
+    messages = uw.mpi.comm.allgather(caught)
+    assert all(m is not None and "host's record" in m for m in messages), messages
+    assert len(set(messages)) == 1, messages
+
+
+def test_a_short_record_in_the_base_parent_addresses_is_refused_on_every_rank():
+    out = ap.partition_addon(adapted_2d(K), ap.mark_polylines([TRACE]), layers=1,
+                             tolerance=0.1)
+    below = out._addon_below
+    comm = out.dm.getComm().tompi4py()
+    record = np.asarray(out._addon_parent)
+    if uw.mpi.rank == uw.mpi.size - 1:
+        record = record[: len(record) // 2]
+    pre = _Hidden(out, _addon_parent=record)
+    lev = _Hidden(out, _addon_below=None, _addon_parent=None, parent=pre)
+    caught = None
+    try:
+        ap._base_parent_addresses(below, lev, comm)
+    except RuntimeError as err:
+        caught = str(err)
+    messages = uw.mpi.comm.allgather(caught)
+    assert all(m is not None and "provenance is on holds" in m for m in messages), messages
+    assert len(set(messages)) == 1, messages
+
+
+def test_a_failure_reading_the_carried_reference_is_raised_on_every_rank():
+    calls = []
+    original = ap._carried_reference
+
+    def spy(moved, carried, comm):
+        calls.append((moved, carried, comm))
+        return original(moved, carried, comm)
+
+    ap._carried_reference = spy
+    try:
+        ap.partition_addon(_moved_box(), ap.mark_polylines([TRACE]), layers=1,
+                           tolerance=0.1)
+    finally:
+        ap._carried_reference = original
+    assert uw.mpi.comm.allreduce(len(calls), op=__import__("mpi4py").MPI.MIN) > 0
+    moved, carried, comm = calls[0]
+    _same_error_everywhere(lambda: ap._carried_reference(moved, carried, comm),
+                           "_cell_vertex_table", "Vertex table",
+                           when=_caller("_carried_reference"))
+
+
+def _captured_level_rotation():
+    """A split coarse level's rotation call from a solve with a fault and a
+    rotated free-slip wall, so both the pair and the wall rotations run."""
+    calls = []
+    original = fault_mg.level_rotation
+
+    def spy(level, solver, field_id):
+        if fault_mg.is_split_level(level) and not calls:
+            calls.append((level, solver, field_id))
+        return original(level, solver, field_id)
+
+    fault_mg.level_rotation = spy
+    try:
+        mesh = adapted_2d(K).add_fault([("Flt", TRACE)])
+        x, y = mesh.X
+        s = uw.systems.Stokes(mesh)
+        s.constitutive_model = uw.constitutive_models.ViscousFlowModel
+        s.constitutive_model.Parameters.shear_viscosity_0 = 1
+        s.petsc_use_pressure_nullspace = True
+        for wall in ("Top", "Bottom", "Right"):
+            s.add_dirichlet_bc((y - 0.5, 0.0), wall)
+        s.add_rotated_freeslip_bc(0.0, "Left")
+        s.add_fault_bc(0, "Flt")
+        s.solve()
+    finally:
+        fault_mg.level_rotation = original
+    assert uw.mpi.comm.allreduce(len(calls), op=__import__("mpi4py").MPI.MIN) > 0
+    return calls[0]
+
+
+def _csr_failing_on_last_rank(message):
+    import scipy.sparse as real_sp
+    from types import SimpleNamespace
+
+    def failing(*a, **k):
+        if uw.mpi.rank == uw.mpi.size - 1:
+            raise IndexError(f"{message} (forced on one rank)")
+        return real_sp.csr_matrix(*a, **k)
+
+    names = {n: getattr(real_sp, n) for n in dir(real_sp) if not n.startswith("__")}
+    names["csr_matrix"] = failing
+    return SimpleNamespace(**names)
+
+
+@pytest.mark.parametrize("builder", ["level_pair_rotation", "level_wall_rotation"])
+def test_a_failure_building_a_level_rotation_is_raised_on_every_rank(builder):
+    level, solver, field_id = _captured_level_rotation()
+    real_sp = fault_mg.sp
+    fault_mg.sp = _csr_failing_on_last_rank("Rotation blocks")
+    try:
+        caught = None
+        try:
+            getattr(fault_mg, builder)(level, solver, field_id)
+        except RuntimeError as err:
+            assert isinstance(err, CollectiveBuildError), type(err)
+            caught = str(err)
+    finally:
+        fault_mg.sp = real_sp
+    messages = uw.mpi.comm.allgather(caught)
+    assert all(m is not None and "Rotation blocks" in m for m in messages), messages
+    assert len(set(messages)) == 1, messages
