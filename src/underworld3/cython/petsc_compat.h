@@ -16,8 +16,10 @@ static inline PetscErrorCode UW_DMPlexFilter(DM dm, DMLabel label, PetscInt valu
 #endif
 }
 
-// Add 1 boundary condition at a time (1 boundary, 1 component etc etc)
-
+// Add one boundary condition (one boundary, one set of components) and return
+// its index in *bd. Every failure is an error code for the caller to raise: a
+// label the DM does not hold (#1138), and whatever DMAddBoundary refuses, such
+// as a field number the DM does not have (found in the review of PR #1170).
 PetscErrorCode PetscDSAddBoundary_UW(DM dm,
                                      DMBoundaryConditionType type,
                                      const char name[],
@@ -29,17 +31,28 @@ PetscErrorCode PetscDSAddBoundary_UW(DM dm,
                                      void (*bcFunc_t)(void),
                                      const PetscInt ids,
                                      const PetscInt *id_values,
-                                     void *ctx)
+                                     void *ctx,
+                                     PetscInt *bd)
 {
+    DMLabel   label;
+    PetscBool held;
 
-    DMLabel label;
-    DMGetLabel(dm, labelname, &label);
-
-    PetscInt bd; // This is a return value that we pass back.
-
-    DMAddBoundary(dm, type, name, label, ids, id_values, field, num_const_components, components, bcFunc, bcFunc_t, ctx, &bd);
-
-    return bd;
+    PetscFunctionBeginUser;
+    PetscCall(DMGetLabel(dm, labelname, &label));
+    // A label made after distribution can exist only where it has points, so
+    // the ranks agree on it before any of them refuses, and a rank without it
+    // gets it empty: DMAddBoundary must be given a label on every rank.
+    held = label ? PETSC_TRUE : PETSC_FALSE;
+    PetscCallMPI(MPIU_Allreduce(MPI_IN_PLACE, &held, 1, MPIU_BOOL, MPI_LOR, PetscObjectComm((PetscObject)dm)));
+    PetscCheck(held, PetscObjectComm((PetscObject)dm), PETSC_ERR_ARG_WRONG,
+               "The DM has no label named %s for the boundary condition %s", labelname, name);
+    if (!label) {
+        PetscCall(DMCreateLabel(dm, labelname));
+        PetscCall(DMGetLabel(dm, labelname, &label));
+    }
+    PetscCall(DMAddBoundary(dm, type, name, label, ids, id_values, field, num_const_components,
+                            components, bcFunc, bcFunc_t, ctx, bd));
+    PetscFunctionReturn(PETSC_SUCCESS);
 }
 
 PetscErrorCode DMSetAuxiliaryVec_UW(DM dm, DMLabel label, PetscInt value, PetscInt part, Vec aux)
@@ -84,32 +97,12 @@ PetscErrorCode UW_DMPlexComputeResidualByKeyVolumeOnly(DM dm, PetscFormKey key, 
 #define UW_SIG_F0 PetscInt, PetscInt, PetscInt, const PetscInt[], const PetscInt[], const PetscScalar[], const PetscScalar[], const PetscScalar[], const PetscInt[], const PetscInt[], const PetscScalar[], const PetscScalar[], const PetscScalar[], PetscReal, const PetscReal[], const PetscReal[], PetscInt, const PetscScalar[], PetscScalar[]
 #define UW_SIG_G0 PetscInt, PetscInt, PetscInt, const PetscInt[], const PetscInt[], const PetscScalar[], const PetscScalar[], const PetscScalar[], const PetscInt[], const PetscInt[], const PetscScalar[], const PetscScalar[], const PetscScalar[], PetscReal, PetscReal, const PetscReal[], const PetscReal[], PetscInt, const PetscScalar[], PetscScalar[]
 
-PetscErrorCode UW_PetscDSSetBdTerms(PetscDS ds, DMLabel label, PetscInt label_val, PetscInt bd,
-                                    PetscInt f, PetscInt g, PetscInt part,
-                                    void (*bcFunc_f0)(UW_SIG_F0),
-                                    void (*bcFunc_f1)(UW_SIG_F0),
-                                    void (*bcFunc_g0)(UW_SIG_G0),
-                                    void (*bcFunc_g1)(UW_SIG_G0),
-                                    void (*bcFunc_g2)(UW_SIG_G0),
-                                    void (*bcFunc_g3)(UW_SIG_G0))
-
-{
-    PetscWeakForm wf;
-
-    // int idx0 = 0;
-    // int idx1 = 0;
-
-    PetscCall(PetscDSGetBoundary(ds, bd, &wf, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL));
-    // PetscCall(PetscDSGetWeakForm(ds, &wf));
-    PetscCall(PetscWeakFormAddBdResidual(wf, label, label_val, f, part, bcFunc_f0, bcFunc_f1));
-    // PetscCall(PetscWeakFormSetIndexBdResidual(wf, label, label_val, f, part, idx0, bcFunc_f0, idx1, bcFunc_f1));
-    //  PetscCall(PetscWeakFormAddBdJacobian(wf, label, label_val, f, g, part, bcFunc_g0, bcFunc_g1, bcFunc_g2, bcFunc_g3));
-    //  PetscCall(PetscWeakFormAddBdJacobianPreconditioner(wf, label, label_val, f, g, part, bcFunc_g0, bcFunc_g1, bcFunc_g2, bcFunc_g3));
-
-    return 1;
-}
-
-// These use the older interface :
+// These register a boundary's kernels with replace semantics: a solver that
+// rewires its kernels in place registers them again, and appending left every
+// earlier module's kernels on the boundary, each called and overwritten (#1069).
+// A NULL kernel is passed to PETSc as a NULL array, which deletes the key: a
+// non-NULL array of length 0 would keep a kernel already there, and leave a
+// zero-length entry that PETSc cannot enlarge later.
 
 PetscErrorCode
 UW_PetscDSSetBdResidual(PetscDS ds, DMLabel label, PetscInt label_val, PetscInt bd,
@@ -121,9 +114,11 @@ UW_PetscDSSetBdResidual(PetscDS ds, DMLabel label, PetscInt label_val, PetscInt 
     PetscWeakForm wf;
 
     PetscCall(PetscDSGetBoundary(ds, bd, &wf, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL));
-    PetscCall(PetscWeakFormAddBdResidual(wf, label, label_val, f, part, bcFunc_f0, bcFunc_f1));
+    PetscCall(PetscWeakFormSetBdResidual(wf, label, label_val, f, part,
+                                         bcFunc_f0 ? 1 : 0, bcFunc_f0 ? &bcFunc_f0 : NULL,
+                                         bcFunc_f1 ? 1 : 0, bcFunc_f1 ? &bcFunc_f1 : NULL));
 
-    return 1;
+    return PETSC_SUCCESS;
 }
 
 PetscErrorCode UW_PetscDSSetBdJacobian(PetscDS ds, DMLabel label, PetscInt label_val, PetscInt bd,
@@ -136,9 +131,11 @@ PetscErrorCode UW_PetscDSSetBdJacobian(PetscDS ds, DMLabel label, PetscInt label
     PetscWeakForm wf;
 
     PetscCall(PetscDSGetBoundary(ds, bd, &wf, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL));
-    PetscCall(PetscWeakFormAddBdJacobian(wf, label, label_val, f, g, part, bcFunc_g0, bcFunc_g1, bcFunc_g2, bcFunc_g3));
+    PetscCall(PetscWeakFormSetBdJacobian(wf, label, label_val, f, g, part,
+                                         bcFunc_g0 ? 1 : 0, bcFunc_g0 ? &bcFunc_g0 : NULL, bcFunc_g1 ? 1 : 0, bcFunc_g1 ? &bcFunc_g1 : NULL,
+                                         bcFunc_g2 ? 1 : 0, bcFunc_g2 ? &bcFunc_g2 : NULL, bcFunc_g3 ? 1 : 0, bcFunc_g3 ? &bcFunc_g3 : NULL));
 
-    return 1;
+    return PETSC_SUCCESS;
 }
 
 PetscErrorCode UW_PetscDSSetBdJacobianPreconditioner(PetscDS ds, DMLabel label, PetscInt label_val, PetscInt bd,
@@ -151,9 +148,11 @@ PetscErrorCode UW_PetscDSSetBdJacobianPreconditioner(PetscDS ds, DMLabel label, 
     PetscWeakForm wf;
 
     PetscCall(PetscDSGetBoundary(ds, bd, &wf, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL));
-    PetscCall(PetscWeakFormAddBdJacobianPreconditioner(wf, label, label_val, f, g, part, bcFunc_g0, bcFunc_g1, bcFunc_g2, bcFunc_g3));
+    PetscCall(PetscWeakFormSetBdJacobianPreconditioner(wf, label, label_val, f, g, part,
+                                                       bcFunc_g0 ? 1 : 0, bcFunc_g0 ? &bcFunc_g0 : NULL, bcFunc_g1 ? 1 : 0, bcFunc_g1 ? &bcFunc_g1 : NULL,
+                                                       bcFunc_g2 ? 1 : 0, bcFunc_g2 ? &bcFunc_g2 : NULL, bcFunc_g3 ? 1 : 0, bcFunc_g3 ? &bcFunc_g3 : NULL));
 
-    return 1;
+    return PETSC_SUCCESS;
 }
 
 PetscErrorCode UW_PetscDSViewWF(PetscDS ds)

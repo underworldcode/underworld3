@@ -368,6 +368,60 @@ def _jacobian_unwrap(expr, route=None):
 include "petsc_extras.pxi"
 
 
+cdef PetscInt _add_boundary(DM cdm, DMBoundaryConditionType bc_type, bytes name, bytes label_name,
+                            PetscInt field, PetscInt n_components, const PetscInt *components,
+                            void (*bc_fn)() noexcept, void (*bc_fn_t)() noexcept,
+                            PetscInt n_ids, const PetscInt *ids) except? -1:
+    """Add one boundary condition to ``cdm`` and return its PETSc index.
+
+    One rule for every condition, essential or natural, whatever label it is
+    keyed on: it is refused here, naming what is wrong, when
+
+    - no rank holds its label (#1138: it would go in on a null label, which
+      ends the process at the solve);
+    - its label values mark no point on any rank (a boundary the mesh lists
+      but has no faces for: the condition would go in on nothing and the solve
+      would run without it, silently);
+    - its field is not one of the solver's DM fields (found in the review of
+      PR #1170: DMAddBoundary refused it and the refusal was discarded).
+
+    Each test is decided over every rank before any rank refuses. A label made
+    after distribution exists only on the ranks that hold its points; the C
+    wrapper gives the other ranks an empty one, so every rank adds the
+    condition.
+    """
+    cdef PetscInt bd = -1
+    cdef PetscInt i
+    comm = cdm.getComm().tompi4py()
+    label = label_name.decode()
+    condition = name.decode()
+    here = cdm.getLabel(label) if cdm.hasLabel(label) else None
+    if not comm.allreduce(here is not None, op=uw.MPI.LOR):
+        # Each rank holds its own labels; the message names all of them, so it
+        # is the same text on every rank.
+        held = {cdm.getLabelName(k) for k in range(cdm.getNumLabels())}
+        labels = sorted(set().union(*comm.allgather(held)))
+        raise ValueError(
+            f"The boundary condition '{condition}' names the label '{label}', which "
+            f"this mesh's DM does not hold. Its labels are: {', '.join(labels)}.")
+    values = [ids[i] for i in range(n_ids)]
+    marked = sum(here.getStratumSize(v) for v in values) if here is not None else 0
+    if comm.allreduce(int(marked), op=uw.MPI.SUM) == 0:
+        raise ValueError(
+            f"The boundary condition '{condition}' is on label '{label}' with value(s) "
+            f"{values}, which mark no point of this mesh: the mesh lists the boundary "
+            f"but has no faces for it, and the condition would act on nothing.")
+    n_fields = cdm.getNumFields()
+    if not 0 <= field < n_fields:
+        raise ValueError(
+            f"The boundary condition '{condition}' is on field {field}, and the solver's "
+            f"DM has fields 0 to {n_fields - 1}. A solver's field numbers are its own "
+            f"(velocity 0, pressure 1, multipliers from 2), not a variable's field_id.")
+    CHKERRQ(PetscDSAddBoundary_UW(cdm.dm, bc_type, name, label_name, field, n_components,
+                                  <PetscInt *> components, bc_fn, bc_fn_t, n_ids, ids, NULL, &bd))
+    return bd
+
+
 def _discard_preconditioner_setup(pc):
     """Make ``pc`` build itself afresh on its next setup, as it would in a new run.
 
@@ -7093,7 +7147,7 @@ class SNES_Scalar(SolverBaseClass):
             bc_type = 6
             num_constrained_components = bc.components.shape[0]
             comps_view = bc.components
-            bc = PetscDSAddBoundary_UW(cdm.dm,
+            bc = _add_boundary(cdm,
                                 bc_type,
                                 str(boundary+f"{bc.components}").encode('utf8'),
                                 "UW_Boundaries".encode('utf8'),   # consolidated boundary label
@@ -7103,8 +7157,7 @@ class SNES_Scalar(SolverBaseClass):
                                 <void (*)() noexcept>NULL,
                                 NULL,
                                 1,
-                                <const PetscInt *> &ind,
-                                NULL, )
+                                <const PetscInt *> &ind)
 
             self.natural_bcs[index] = self.natural_bcs[index]._replace(PETScID=bc, boundary_label_val=ind)
 
@@ -7130,7 +7183,7 @@ class SNES_Scalar(SolverBaseClass):
             fn_index = self.ext_dict.ebc[sympy.Matrix([[bc.fn]]).as_immutable()]
             num_constrained_components = bc.components.shape[0]
             comps_view = bc.components
-            bc = PetscDSAddBoundary_UW(cdm.dm,
+            bc = _add_boundary(cdm,
                                 bc_type,
                                 str(boundary+f"{bc.components}").encode('utf8'),
                                 str(boundary).encode('utf8'),
@@ -7140,8 +7193,7 @@ class SNES_Scalar(SolverBaseClass):
                                 <void (*)() noexcept>ext.fns_bcs[fn_index],
                                 NULL,
                                 1,
-                                <const PetscInt *> &ind,
-                                NULL, )
+                                <const PetscInt *> &ind)
 
             self.essential_bcs[index] = self.essential_bcs[index]._replace(PETScID=bc, boundary_label_val=value)
 
@@ -7369,19 +7421,19 @@ class SNES_Scalar(SolverBaseClass):
 
             if bc.fn_f is not None:
 
-                UW_PetscDSSetBdResidual(ds.ds, c_label.dmlabel, label_val, boundary_id,
+                CHKERRQ(UW_PetscDSSetBdResidual(ds.ds, c_label.dmlabel, label_val, boundary_id,
                                 0, 0,
                                 ext.fns_bd_residual[i_bd_res[bc.fns["u_f0"]]],
                                 NULL,
-                                )
+                                ))
 
-                UW_PetscDSSetBdJacobian(ds.ds, c_label.dmlabel, label_val, boundary_id,
+                CHKERRQ(UW_PetscDSSetBdJacobian(ds.ds, c_label.dmlabel, label_val, boundary_id,
                                 0, 0, 0,
                                 ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G0"]]],
                                 ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G1"]]],
                                 NULL,
                                 NULL,
-                                )
+                                ))
 
                 # no UW_PetscDSSetBdJacobianPreconditioner: the Jacobian and the
                 # preconditioner are one matrix here, and a boundary preconditioner
@@ -8093,7 +8145,7 @@ class SNES_Vector(SolverBaseClass):
             bc_type = 6
             num_constrained_components = bc.components.shape[0]
             comps_view = bc.components
-            bc = PetscDSAddBoundary_UW(cdm.dm,
+            bc = _add_boundary(cdm,
                                 bc_type,
                                 str(boundary+f"{bc.components}").encode('utf8'),
                                 "UW_Boundaries".encode('utf8'),   # was: str(boundary)
@@ -8103,8 +8155,7 @@ class SNES_Vector(SolverBaseClass):
                                 <void (*)() noexcept>NULL,
                                 NULL,
                                 1,
-                                <const PetscInt *> &ind,
-                                NULL, )
+                                <const PetscInt *> &ind)
 
             self.natural_bcs[index] = self.natural_bcs[index]._replace(PETScID=bc, boundary_label_val=ind)
 
@@ -8128,7 +8179,7 @@ class SNES_Vector(SolverBaseClass):
             fn_index = self.ext_dict.ebc[sympy.Matrix([[bc.fn]]).as_immutable()]
             num_constrained_components = bc.components.shape[0]
             comps_view = bc.components
-            bc = PetscDSAddBoundary_UW(cdm.dm,
+            bc = _add_boundary(cdm,
                                 bc_type,
                                 str(boundary+f"{bc.components}").encode('utf8'),
                                 "UW_Boundaries".encode('utf8'),   # was: str(boundary)
@@ -8138,8 +8189,7 @@ class SNES_Vector(SolverBaseClass):
                                 <void (*)() noexcept>ext.fns_bcs[fn_index],
                                 NULL,
                                 1,
-                                <const PetscInt *> &ind,
-                                NULL, )
+                                <const PetscInt *> &ind)
 
             self.essential_bcs[index] = self.essential_bcs[index]._replace(PETScID=bc, boundary_label_val=value)
 
@@ -8457,33 +8507,33 @@ class SNES_Vector(SolverBaseClass):
                 _has_f1 = "u_F1" in bc.fns
 
                 if _has_f1:
-                    UW_PetscDSSetBdResidual(ds.ds, c_label.dmlabel, label_val, boundary_id,
+                    CHKERRQ(UW_PetscDSSetBdResidual(ds.ds, c_label.dmlabel, label_val, boundary_id,
                                     0, 0,
                                     ext.fns_bd_residual[i_bd_res[bc.fns["u_f0"]]],
                                     ext.fns_bd_residual[i_bd_res[bc.fns["u_F1"]]],
-                                    )
+                                    ))
                 else:
-                    UW_PetscDSSetBdResidual(ds.ds, c_label.dmlabel, label_val, boundary_id,
+                    CHKERRQ(UW_PetscDSSetBdResidual(ds.ds, c_label.dmlabel, label_val, boundary_id,
                                     0, 0,
                                     ext.fns_bd_residual[i_bd_res[bc.fns["u_f0"]]],
                                     NULL,
-                                    )
+                                    ))
 
                 if _has_f1:
-                    UW_PetscDSSetBdJacobian(ds.ds, c_label.dmlabel, label_val, boundary_id,
+                    CHKERRQ(UW_PetscDSSetBdJacobian(ds.ds, c_label.dmlabel, label_val, boundary_id,
                                     0, 0, 0,
                                     ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G0"]]],
                                     ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G1"]]],
                                     ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G2"]]],
                                     ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G3"]]],
-                                    )
+                                    ))
                 else:
-                    UW_PetscDSSetBdJacobian(ds.ds, c_label.dmlabel, label_val, boundary_id,
+                    CHKERRQ(UW_PetscDSSetBdJacobian(ds.ds, c_label.dmlabel, label_val, boundary_id,
                                     0, 0, 0,
                                     ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G0"]]],
                                     ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G1"]]],
                                     NULL, NULL,
-                                    )
+                                    ))
 
                 # no UW_PetscDSSetBdJacobianPreconditioner: the Jacobian and the
                 # preconditioner are one matrix here, and a boundary preconditioner
@@ -8907,7 +8957,7 @@ class SNES_MultiComponent(SolverBaseClass):
             bc_type = 6
             num_constrained_components = bc.components.shape[0]
             comps_view = bc.components
-            bc = PetscDSAddBoundary_UW(cdm.dm,
+            bc = _add_boundary(cdm,
                                 bc_type,
                                 str(boundary+f"{bc.components}").encode('utf8'),
                                 "UW_Boundaries".encode('utf8'),
@@ -8917,8 +8967,7 @@ class SNES_MultiComponent(SolverBaseClass):
                                 <void (*)() noexcept>NULL,
                                 NULL,
                                 1,
-                                <const PetscInt *> &ind,
-                                NULL, )
+                                <const PetscInt *> &ind)
 
             self.natural_bcs[index] = self.natural_bcs[index]._replace(PETScID=bc, boundary_label_val=ind)
 
@@ -8938,7 +8987,7 @@ class SNES_MultiComponent(SolverBaseClass):
             fn_index = self.ext_dict.ebc[sympy.Matrix([[bc.fn]]).as_immutable()]
             num_constrained_components = bc.components.shape[0]
             comps_view = bc.components
-            bc = PetscDSAddBoundary_UW(cdm.dm,
+            bc = _add_boundary(cdm,
                                 bc_type,
                                 str(boundary+f"{bc.components}").encode('utf8'),
                                 "UW_Boundaries".encode('utf8'),
@@ -8948,8 +8997,7 @@ class SNES_MultiComponent(SolverBaseClass):
                                 <void (*)() noexcept>ext.fns_bcs[fn_index],
                                 NULL,
                                 1,
-                                <const PetscInt *> &ind,
-                                NULL, )
+                                <const PetscInt *> &ind)
 
             self.essential_bcs[index] = self.essential_bcs[index]._replace(PETScID=bc, boundary_label_val=value)
 
@@ -9217,33 +9265,33 @@ class SNES_MultiComponent(SolverBaseClass):
                 _has_f1 = "u_F1" in bc.fns
 
                 if _has_f1:
-                    UW_PetscDSSetBdResidual(ds.ds, c_label.dmlabel, label_val, boundary_id,
+                    CHKERRQ(UW_PetscDSSetBdResidual(ds.ds, c_label.dmlabel, label_val, boundary_id,
                                     0, 0,
                                     ext.fns_bd_residual[i_bd_res[bc.fns["u_f0"]]],
                                     ext.fns_bd_residual[i_bd_res[bc.fns["u_F1"]]],
-                                    )
+                                    ))
                 else:
-                    UW_PetscDSSetBdResidual(ds.ds, c_label.dmlabel, label_val, boundary_id,
+                    CHKERRQ(UW_PetscDSSetBdResidual(ds.ds, c_label.dmlabel, label_val, boundary_id,
                                     0, 0,
                                     ext.fns_bd_residual[i_bd_res[bc.fns["u_f0"]]],
                                     NULL,
-                                    )
+                                    ))
 
                 if _has_f1:
-                    UW_PetscDSSetBdJacobian(ds.ds, c_label.dmlabel, label_val, boundary_id,
+                    CHKERRQ(UW_PetscDSSetBdJacobian(ds.ds, c_label.dmlabel, label_val, boundary_id,
                                     0, 0, 0,
                                     ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G0"]]],
                                     ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G1"]]],
                                     ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G2"]]],
                                     ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G3"]]],
-                                    )
+                                    ))
                 else:
-                    UW_PetscDSSetBdJacobian(ds.ds, c_label.dmlabel, label_val, boundary_id,
+                    CHKERRQ(UW_PetscDSSetBdJacobian(ds.ds, c_label.dmlabel, label_val, boundary_id,
                                     0, 0, 0,
                                     ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G0"]]],
                                     ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G1"]]],
                                     NULL, NULL,
-                                    )
+                                    ))
 
                 # no UW_PetscDSSetBdJacobianPreconditioner: the Jacobian and the
                 # preconditioner are one matrix here, and a boundary preconditioner
@@ -12076,7 +12124,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             bc_type = 6
             num_constrained_components = bc.components.shape[0]
             comps_view = bc.components
-            bc = PetscDSAddBoundary_UW(cdm.dm,
+            bc = _add_boundary(cdm,
                                 bc_type,
                                 str(boundary+f"{bc.components}").encode('utf8'),
                                 str("UW_Boundaries").encode('utf8'),
@@ -12086,8 +12134,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                                 <void (*)() noexcept>NULL,
                                 NULL,
                                 1,
-                                <const PetscInt *> &ind,
-                                NULL, )
+                                <const PetscInt *> &ind)
 
 
             self.natural_bcs[index] = self.natural_bcs[index]._replace(PETScID=bc, boundary_label_val=value)
@@ -12100,7 +12147,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             if getattr(self.natural_bcs[index], "fn_p", None) is not None:
                 continuity_comps = np.array([0], dtype=PETSc.IntType)
                 continuity_comps_view = continuity_comps
-                self._continuity_row_boundary_ids[index] = PetscDSAddBoundary_UW(cdm.dm,
+                self._continuity_row_boundary_ids[index] = _add_boundary(cdm,
                                 bc_type,
                                 str(boundary + "_continuity").encode('utf8'),
                                 str("UW_Boundaries").encode('utf8'),
@@ -12110,8 +12157,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                                 <void (*)() noexcept>NULL,
                                 NULL,
                                 1,
-                                <const PetscInt *> &ind,
-                                NULL, )
+                                <const PetscInt *> &ind)
 
 
         # Lagrange-multiplier constraint boundaries (block-constrained Stokes).
@@ -12131,7 +12177,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
             cbc_comps = np.arange(mesh.dim, dtype=PETSc.IntType)
             cbc_comps_view = cbc_comps
-            cbc.petsc_id_u = PetscDSAddBoundary_UW(cdm.dm,
+            cbc.petsc_id_u = _add_boundary(cdm,
                                 6,
                                 str(cbc_boundary + "_constraint_u").encode('utf8'),
                                 str("UW_Boundaries").encode('utf8'),
@@ -12141,12 +12187,11 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                                 <void (*)() noexcept>NULL,
                                 NULL,
                                 1,
-                                <const PetscInt *> &ind,
-                                NULL, )
+                                <const PetscInt *> &ind)
 
             cbc_hcomps = np.array([0], dtype=PETSc.IntType)
             cbc_hcomps_view = cbc_hcomps
-            cbc.petsc_id_h = PetscDSAddBoundary_UW(cdm.dm,
+            cbc.petsc_id_h = _add_boundary(cdm,
                                 6,
                                 str(cbc_boundary + "_constraint_h").encode('utf8'),
                                 str("UW_Boundaries").encode('utf8'),
@@ -12156,8 +12201,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                                 <void (*)() noexcept>NULL,
                                 NULL,
                                 1,
-                                <const PetscInt *> &ind,
-                                NULL, )
+                                <const PetscInt *> &ind)
             cbc.label_val = cbc_value
 
 
@@ -12181,7 +12225,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
             fn_index = self.ext_dict.ebc[sympy.Matrix([[bc.fn]]).as_immutable()]
             num_constrained_components = bc.components.shape[0]
             comps_view = bc.components
-            bc = PetscDSAddBoundary_UW(cdm.dm,
+            bc = _add_boundary(cdm,
                                 bc_type,
                                 str(boundary+f"{bc.components}").encode('utf8'),
                                 str(boundary).encode('utf8'),
@@ -12191,8 +12235,7 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                                 <void (*)() noexcept>ext.fns_bcs[fn_index],
                                 NULL,
                                 1,
-                                <const PetscInt *> &ind,
-                                NULL, )
+                                <const PetscInt *> &ind)
 
             self.essential_bcs[index] = self.essential_bcs[index]._replace(PETScID=bc, boundary_label_val=value)
 
@@ -12503,115 +12546,115 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
                 # Velocity boundary residual: f0 (value) + f1 (gradient, if present)
                 if _has_f1:
-                    UW_PetscDSSetBdResidual(ds.ds, c_label.dmlabel, label_val, boundary_id,
+                    CHKERRQ(UW_PetscDSSetBdResidual(ds.ds, c_label.dmlabel, label_val, boundary_id,
                                     0, 0,
                                     ext.fns_bd_residual[i_bd_res[bc.fns["u_f0"]]],
                                     ext.fns_bd_residual[i_bd_res[bc.fns["u_F1"]]],
-                                    )
+                                    ))
                 else:
-                    UW_PetscDSSetBdResidual(ds.ds, c_label.dmlabel, label_val, boundary_id,
+                    CHKERRQ(UW_PetscDSSetBdResidual(ds.ds, c_label.dmlabel, label_val, boundary_id,
                                     0, 0,
                                     ext.fns_bd_residual[i_bd_res[bc.fns["u_f0"]]],
                                     NULL,
-                                    )
+                                    ))
 
                 # Pressure boundary residual (Nitsche: f0_p = g - u.n)
                 if "p_f0" in bc.fns:
-                    UW_PetscDSSetBdResidual(ds.ds, c_label.dmlabel, label_val, continuity_boundary_id,
+                    CHKERRQ(UW_PetscDSSetBdResidual(ds.ds, c_label.dmlabel, label_val, continuity_boundary_id,
                                     1, 0,
                                     ext.fns_bd_residual[i_bd_res[bc.fns["p_f0"]]],
-                                    NULL)
+                                    NULL))
                 else:
-                    UW_PetscDSSetBdResidual(ds.ds, c_label.dmlabel, label_val, boundary_id, 1, 0, NULL, NULL)
+                    CHKERRQ(UW_PetscDSSetBdResidual(ds.ds, c_label.dmlabel, label_val, boundary_id, 1, 0, NULL, NULL))
 
                 # Velocity-velocity boundary Jacobian: g0, g1 always; g2, g3 if f1_bd present
                 if _has_f1:
-                    UW_PetscDSSetBdJacobian(ds.ds, c_label.dmlabel, label_val, boundary_id,
+                    CHKERRQ(UW_PetscDSSetBdJacobian(ds.ds, c_label.dmlabel, label_val, boundary_id,
                                     0, 0, 0,
                                     ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G0"]]],
                                     ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G1"]]],
                                     ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G2"]]],
                                     ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G3"]]],
-                                    )
+                                    ))
                 else:
-                    UW_PetscDSSetBdJacobian(ds.ds, c_label.dmlabel, label_val, boundary_id,
+                    CHKERRQ(UW_PetscDSSetBdJacobian(ds.ds, c_label.dmlabel, label_val, boundary_id,
                                     0, 0, 0,
                                     ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G0"]]],
                                     ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G1"]]],
                                     NULL, NULL,
-                                    )
+                                    ))
 
                 # Velocity-pressure boundary Jacobian
                 if _has_f1:
-                    UW_PetscDSSetBdJacobian(ds.ds, c_label.dmlabel, label_val, boundary_id,
+                    CHKERRQ(UW_PetscDSSetBdJacobian(ds.ds, c_label.dmlabel, label_val, boundary_id,
                                     0, 1, 0,
                                     ext.fns_bd_jacobian[i_bd_jac[bc.fns["up_G0"]]],
                                     ext.fns_bd_jacobian[i_bd_jac[bc.fns["up_G1"]]],
                                     ext.fns_bd_jacobian[i_bd_jac[bc.fns["up_G2"]]],
                                     ext.fns_bd_jacobian[i_bd_jac[bc.fns["up_G3"]]],
-                                    )
+                                    ))
                 else:
-                    UW_PetscDSSetBdJacobian(ds.ds, c_label.dmlabel, label_val, boundary_id,
+                    CHKERRQ(UW_PetscDSSetBdJacobian(ds.ds, c_label.dmlabel, label_val, boundary_id,
                                     0, 1, 0,
                                     ext.fns_bd_jacobian[i_bd_jac[bc.fns["up_G0"]]],
                                     ext.fns_bd_jacobian[i_bd_jac[bc.fns["up_G1"]]],
-                                    NULL, NULL)
+                                    NULL, NULL))
 
                 # Pressure-velocity boundary Jacobian (pu block)
-                UW_PetscDSSetBdJacobian(ds.ds, c_label.dmlabel, label_val, continuity_boundary_id,
+                CHKERRQ(UW_PetscDSSetBdJacobian(ds.ds, c_label.dmlabel, label_val, continuity_boundary_id,
                                 1, 0, 0,
                                 ext.fns_bd_jacobian[i_bd_jac[bc.fns["pu_G0"]]],
                                 ext.fns_bd_jacobian[i_bd_jac[bc.fns["pu_G1"]]],
-                                NULL, NULL)
+                                NULL, NULL))
 
                 # Pressure-pressure boundary Jacobian (pp block)
-                UW_PetscDSSetBdJacobian(ds.ds, c_label.dmlabel, label_val, boundary_id,
+                CHKERRQ(UW_PetscDSSetBdJacobian(ds.ds, c_label.dmlabel, label_val, boundary_id,
                                 1, 1, 0,
                                 ext.fns_bd_jacobian[i_bd_jac[bc.fns["pp_G0"]]],
-                                NULL, NULL, NULL)
+                                NULL, NULL, NULL))
 
                 # Preconditioner: mirror the Jacobian structure
                 if _has_f1:
-                    UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, boundary_id,
+                    CHKERRQ(UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, boundary_id,
                                     0, 0, 0,
                                     ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G0"]]],
                                     ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G1"]]],
                                     ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G2"]]],
                                     ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G3"]]],
-                                    )
+                                    ))
                 else:
-                    UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, boundary_id,
+                    CHKERRQ(UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, boundary_id,
                                     0, 0, 0,
                                     ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G0"]]],
                                     ext.fns_bd_jacobian[i_bd_jac[bc.fns["uu_G1"]]],
                                     NULL, NULL,
-                                    )
+                                    ))
 
                 if _has_f1:
-                    UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, boundary_id,
+                    CHKERRQ(UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, boundary_id,
                                     0, 1, 0,
                                     ext.fns_bd_jacobian[i_bd_jac[bc.fns["up_G0"]]],
                                     ext.fns_bd_jacobian[i_bd_jac[bc.fns["up_G1"]]],
                                     ext.fns_bd_jacobian[i_bd_jac[bc.fns["up_G2"]]],
                                     ext.fns_bd_jacobian[i_bd_jac[bc.fns["up_G3"]]],
-                                    )
+                                    ))
                 else:
-                    UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, boundary_id,
+                    CHKERRQ(UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, boundary_id,
                                     0, 1, 0,
                                     ext.fns_bd_jacobian[i_bd_jac[bc.fns["up_G0"]]],
                                     ext.fns_bd_jacobian[i_bd_jac[bc.fns["up_G1"]]],
-                                    NULL, NULL)
+                                    NULL, NULL))
 
-                UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, continuity_boundary_id,
+                CHKERRQ(UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, continuity_boundary_id,
                                 1, 0, 0,
                                 ext.fns_bd_jacobian[i_bd_jac[bc.fns["pu_G0"]]],
                                 ext.fns_bd_jacobian[i_bd_jac[bc.fns["pu_G1"]]],
-                                NULL, NULL)
+                                NULL, NULL))
 
-                UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, boundary_id,
+                CHKERRQ(UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, boundary_id,
                                 1, 1, 0,
                                 ext.fns_bd_jacobian[i_bd_jac[bc.fns["pp_G0"]]],
-                                NULL, NULL, NULL)
+                                NULL, NULL, NULL))
 
         # Lagrange-multiplier boundary coupling DS registration (block-constrained
         # Stokes). Attaches the field-0 traction, field-h constraint, and the
@@ -12629,44 +12672,44 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
                 # --- field-0 entry: u-row residual + uu (AL) + uh Jacobians ---
                 # traction + AL penalty residual  fn_f = h n + r(n·u−g) n
-                UW_PetscDSSetBdResidual(ds.ds, c_label.dmlabel, label_val, bid_u,
+                CHKERRQ(UW_PetscDSSetBdResidual(ds.ds, c_label.dmlabel, label_val, bid_u,
                                 0, 0,
                                 ext.fns_bd_residual[i_bd_res[cbc.fns["u_f0"]]],
-                                NULL)
+                                NULL))
                 # uu (0, 0):  ∂fn_f/∂u = r·(n⊗n)  — augmented-Lagrangian stiffness
-                UW_PetscDSSetBdJacobian(ds.ds, c_label.dmlabel, label_val, bid_u,
+                CHKERRQ(UW_PetscDSSetBdJacobian(ds.ds, c_label.dmlabel, label_val, bid_u,
                                 0, 0, 0,
                                 ext.fns_bd_jacobian[i_bd_jac[cbc.fns["uu_G0"]]],
-                                NULL, NULL, NULL)
-                UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, bid_u,
+                                NULL, NULL, NULL))
+                CHKERRQ(UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, bid_u,
                                 0, 0, 0,
                                 ext.fns_bd_jacobian[i_bd_jac[cbc.fns["uu_G0"]]],
-                                NULL, NULL, NULL)
+                                NULL, NULL, NULL))
                 # uh (0, h):  ∂fn_f/∂h = n
-                UW_PetscDSSetBdJacobian(ds.ds, c_label.dmlabel, label_val, bid_u,
+                CHKERRQ(UW_PetscDSSetBdJacobian(ds.ds, c_label.dmlabel, label_val, bid_u,
                                 0, fid_h, 0,
                                 ext.fns_bd_jacobian[i_bd_jac[cbc.fns["uh_G0"]]],
-                                NULL, NULL, NULL)
-                UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, bid_u,
+                                NULL, NULL, NULL))
+                CHKERRQ(UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, bid_u,
                                 0, fid_h, 0,
                                 ext.fns_bd_jacobian[i_bd_jac[cbc.fns["uh_G0"]]],
-                                NULL, NULL, NULL)
+                                NULL, NULL, NULL))
 
                 # --- field-h entry: h-row constraint + hu Jacobian ---
                 # constraint residual  fn_h = n·u − g
-                UW_PetscDSSetBdResidual(ds.ds, c_label.dmlabel, label_val, bid_h,
+                CHKERRQ(UW_PetscDSSetBdResidual(ds.ds, c_label.dmlabel, label_val, bid_h,
                                 fid_h, 0,
                                 ext.fns_bd_residual[i_bd_res[cbc.fns["h_f0"]]],
-                                NULL)
+                                NULL))
                 # hu (h, 0):  ∂fn_h/∂u = n
-                UW_PetscDSSetBdJacobian(ds.ds, c_label.dmlabel, label_val, bid_h,
+                CHKERRQ(UW_PetscDSSetBdJacobian(ds.ds, c_label.dmlabel, label_val, bid_h,
                                 fid_h, 0, 0,
                                 ext.fns_bd_jacobian[i_bd_jac[cbc.fns["hu_G0"]]],
-                                NULL, NULL, NULL)
-                UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, bid_h,
+                                NULL, NULL, NULL))
+                CHKERRQ(UW_PetscDSSetBdJacobianPreconditioner(ds.ds, c_label.dmlabel, label_val, bid_h,
                                 fid_h, 0, 0,
                                 ext.fns_bd_jacobian[i_bd_jac[cbc.fns["hu_G0"]]],
-                                NULL, NULL, NULL)
+                                NULL, NULL, NULL))
 
         if verbose:
             print(f"Weak form (DS)", flush=True)
