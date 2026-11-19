@@ -1,5 +1,6 @@
 #include "petsc.h"
 #include <petsc/private/petscdsimpl.h>   // the kernel tables of a PetscWeakForm
+#include "uw_face_orientation.h"     // boundary terms on rotated triangular faces (#1188)
 
 // Version-compatible wrapper for DMPlexFilter.
 // PETSc 3.25 added an MPI_Comm argument before the SF pointer.
@@ -478,6 +479,7 @@ PetscErrorCode UW_DMCreateBdIntegralSandbox(DM src, DM *sandbox)
         PetscCall(DMSetField(sdm, i, label, obj));
     }
     PetscCall(DMCreateDS(sdm));
+    PetscCall(UW_DMPairFaceQuadratureByOrientation(sdm));
     PetscCall(DMSetLocalSection(sdm, srcSec));
 
     // Copy auxiliary data (viscosity, etc.) — just a pointer, no mutation

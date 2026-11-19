@@ -271,6 +271,227 @@ def as_built_nodes(mesh, degree, continuous):
 
 
 # --------------------------------------------------------------------------- #
+#  The recorded parent of a split cell (#1120)
+# --------------------------------------------------------------------------- #
+# A fault copy's column of the located transfer is "weak" when its norm (the sum
+# of |weight| over the fine rows that read it) is below this fraction of the
+# median fault-copy column norm. It bounds how little fine image a coarse fault
+# copy may have before the recorded parent's rows are taken for it. It scales
+# with the copies' own norms, so it does not depend on the mesh size or the
+# degree's weight scale; it is dimensionless.
+#
+# Measured on the #1120 fixture (the transfer between the two finest split
+# levels, degree 2), as a fraction of the median copy column:
+#   at rest:                    flagged 4 copies, all 0;      smallest kept 0.255
+#   every add-on level moved
+#     by 0.002 across the fault: flagged 5, all 0;            smallest kept 0.221
+#     by 0.015 across the fault: flagged 13, largest 0.069;   smallest kept 0.379
+# so 0.1 sits in the gap 0.069 to 0.221 (1.45x above its lower edge, 2.2x below
+# its upper edge). Over 13 split pairs on 8 variants of the fixture (other
+# amplitudes, two other traces, a three-level add-on) the pooled gap is 0.069 to
+# 0.182 (1.8x below the upper edge). Every weak copy's rows come from its own side of the fault,
+# so the side alone does not tell a weak copy from a sound one.
+# tests/test_1120_split_transfer_fault_copies.py fails if the value leaves that
+# gap.
+_WEAK_COPY = 0.1
+
+# The hybrid's record of its last build (``cell_located_prolongation`` and the
+# parallel transfer): weak copy columns found, rows taken from the recorded
+# parent, and fine nodes whose star held no same-side candidate.
+last_parent_rows = None
+
+
+def _split_record(mesh):
+    """``(host_cell_of_each_cell, host)`` that ``fault_split.add_fault`` recorded
+    on a cut-and-split mesh, or None."""
+    record = getattr(mesh, "_cut_parent", None)
+    host = getattr(mesh, "_cut_host", None)
+    if record is None or host is None:
+        return None
+    return np.asarray(record, dtype=np.int64), host
+
+
+def _moved_off_build(mesh):
+    """Whether ``mesh`` sits off the geometry it was made in. Collective (the
+    move check reads every rank's coordinates)."""
+    return bool(mesh._moved_since_built and mesh.isSimplex
+                and mesh._moved_off_transfer_geometry())
+
+
+def _built_cell_table(mesh, moved=None):
+    """:func:`_cell_vertex_table` on the geometry ``mesh`` was made in: the
+    nesting of two adapt levels is that of their built grids. Collective unless
+    ``moved`` (from :func:`_moved_off_build`, read on every rank) is given;
+    rank-local then."""
+    if moved is None:
+        moved = _moved_off_build(mesh)
+    vxy, cv = _cell_vertex_table(mesh)
+    if moved:
+        vxy = np.asarray(mesh._transfer_vertices)
+    return vxy, cv
+
+
+def _cell_fault_sides(mesh):
+    """``(n_cells, n_faults)``: +1 for a cell touching the Plus copy of a point of
+    that fault, -1 the Minus copy, 0 neither (topological, from
+    ``_fault_point_pairs``: keys Minus, values Plus)."""
+    dm = mesh.dm
+    cS, cE = dm.getHeightStratum(0)
+    pairs = getattr(mesh, "_fault_point_pairs", None) or {}
+    names = sorted(pairs)
+    side = np.zeros((cE - cS, len(names)), dtype=np.int64)
+    for j, name in enumerate(names):
+        for q_minus, q_plus in pairs[name].items():
+            for q, sign in ((q_minus, -1), (q_plus, 1)):
+                star = np.asarray(dm.getTransitiveClosure(int(q), useCone=False)[0])
+                cells = star[(star >= cS) & (star < cE)] - cS
+                side[cells, j] = sign
+    return side, names
+
+
+def _fault_copy_nodes(mesh, degree, continuous):
+    """Rows of ``mesh``'s nodes (as :meth:`Mesh._cell_node_indices` numbers them)
+    that sit on a split fault point, either copy: read from the section of the
+    paired points, not from coordinates."""
+    pairs = getattr(mesh, "_fault_point_pairs", None) or {}
+    points = sorted({int(q) for pp in pairs.values() for kv in pp.items() for q in kv})
+    # built on every rank, a rank holding no fault point too: making the
+    # basis DM is collective
+    dmb = mesh._basis_coordinate_dm(degree, continuous)
+    sec = dmb.getLocalSection()
+    cdim = mesh.cdim
+    rows = []
+    for q in points:
+        dof = sec.getDof(q)
+        if dof:
+            off = sec.getOffset(q)
+            rows.extend(range(off // cdim, (off + dof) // cdim))
+    dmb.destroy()
+    return np.unique(np.asarray(rows, dtype=np.int64))
+
+
+def _recorded_parent_cells(coarse, fine, Xf, fn, vxy_c, cv_c, vxy_f, cv_f,
+                           host_tables=None):
+    """Per fine node, the coarse cell its row is read in under the recorded
+    parent rule, or -1; and the number of fine cells whose own candidates were
+    all across the fault and whose face neighbours lent none. ``None`` when the
+    pair carries no record.
+
+    A fine cell's parent is one of the cut pieces of the coarse host cell that
+    its host cell nests in (the two hosts are adapt levels, nested in the grids
+    they were built on). Pieces on the other side of a fault are not
+    candidates. A cell left with none borrows the candidates of its face
+    neighbours (which never lie across the split fault). A fine node takes,
+    among the candidates of every fine cell in its star, the one that holds it
+    best: the largest smallest barycentric coordinate.
+
+    ``host_tables`` are the two hosts' :func:`_built_cell_table`, which is
+    collective: a parallel caller reads them on every rank first."""
+    rf, rc = _split_record(fine), _split_record(coarse)
+    if rf is None or rc is None:
+        return None
+    pf, host_f = rf
+    pc, host_c = rc
+    (vh_f, ch_f), (vh_c, ch_c) = (host_tables if host_tables is not None
+                                  else (_built_cell_table(host_f),
+                                        _built_cell_table(host_c)))
+    if pf.shape[0] != cv_f.shape[0] or pc.shape[0] != cv_c.shape[0]:
+        return None
+    nest = np.full(ch_f.shape[0], -1, dtype=np.int64)
+    if ch_f.shape[0] and ch_c.shape[0]:
+        cell, lam = locate_in_cells_exhaustive(vh_f[ch_f].mean(axis=1), vh_c, ch_c)
+        nest = np.where(lam.min(axis=1) < -_INSIDE_TOL, -1, cell)
+    # the cut pieces of each coarse host cell
+    order = np.argsort(pc, kind="stable")
+    sorted_pc = pc[order]
+    side_f, names_f = _cell_fault_sides(fine)
+    side_c, names_c = _cell_fault_sides(coarse)
+    common = [n for n in names_f if n in names_c]
+    sf = side_f[:, [names_f.index(n) for n in common]]
+    sc = side_c[:, [names_c.index(n) for n in common]]
+
+    def pieces(host_cell):
+        lo = np.searchsorted(sorted_pc, host_cell, side="left")
+        hi = np.searchsorted(sorted_pc, host_cell, side="right")
+        return order[lo:hi]
+
+    def same_side(k, cand):
+        if not common or not cand.size:
+            return cand
+        across = (sf[k][None, :] * sc[cand] == -1).any(axis=1)
+        return cand[~across]
+
+    n_fine = cv_f.shape[0]
+    cands = []
+    for k in range(n_fine):
+        h = pf[k]
+        cand = pieces(nest[h]) if h >= 0 and nest[h] >= 0 else np.zeros(0, np.int64)
+        cands.append(same_side(k, cand))
+    # a cell whose candidates are all across the fault borrows its face
+    # neighbours' (W1's rule): the split separates the two sides, so a face
+    # neighbour is on the same side
+    dm = fine.dm
+    cS = dm.getHeightStratum(0)[0]
+    stranded = 0
+    for k in [k for k in range(n_fine) if not cands[k].size]:
+        lent = []
+        for f in dm.getCone(k + cS):
+            for other in dm.getSupport(f):
+                o = int(other) - cS
+                if o != k and 0 <= o < n_fine and cands[o].size:
+                    lent.append(cands[o])
+        cands[k] = same_side(k, np.unique(np.concatenate(lent))) if lent else cands[k]
+        stranded += not cands[k].size
+    # each node: the candidate of its star that holds it best
+    nb = fn.shape[1]
+    kk = np.repeat(np.arange(n_fine), [c.size for c in cands])
+    cc = np.concatenate(cands) if kk.size else np.zeros(0, np.int64)
+    n_nodes = Xf.shape[0]
+    best = np.full(n_nodes, -np.inf)
+    cells = np.full(n_nodes, -1, dtype=np.int64)
+    if kk.size:
+        nodes = fn[kk].ravel()                                 # (npair * nb,)
+        cand = np.repeat(cc, nb)
+        lam = _barycentric(Xf[nodes], vxy_c[cv_c[cand]])
+        score = lam.min(axis=1)
+        # the highest score per node: sort by (node, score), keep the last
+        o = np.lexsort((score, nodes))
+        last = np.r_[nodes[o][1:] != nodes[o][:-1], True]
+        best[nodes[o][last]] = score[o][last]
+        cells[nodes[o][last]] = cand[o][last]
+    return cells, stranded
+
+
+_warned_unrepaired = False
+
+
+def _warn_unrepaired(remaining, weak):
+    """Once per Python session: fault copies the repair left weak. COLLECTIVE
+    callers pass agreed counts; rank 0 prints."""
+    global _warned_unrepaired
+    if not remaining or _warned_unrepaired or uw.mpi.rank != 0:
+        return
+    _warned_unrepaired = True
+    import warnings
+
+    warnings.warn(
+        f"fault_mg: {remaining} of {weak} weak coarse fault copies in a split-level "
+        f"transfer have no recorded-parent row to repair them, so they keep a "
+        f"(nearly) empty column and the coarse level may have null directions "
+        f"(#1120). This happens when the coarse levels do not follow a move of "
+        f"the finest; the count is in solve_report.config['multigrid_hierarchy']"
+        f"['unrepaired_fault_copies'].", stacklevel=4)
+
+
+def _weak_copy_columns(norms):
+    """The copies whose column norm is below ``_WEAK_COPY`` of the median."""
+    if not norms.size:
+        return np.zeros(0, dtype=bool)
+    med = float(np.median(norms))
+    return norms < _WEAK_COPY * med
+
+
+# --------------------------------------------------------------------------- #
 #  Serial transfer
 # --------------------------------------------------------------------------- #
 def cell_located_prolongation(coarse, fine, degree, continuous=True,
@@ -304,6 +525,8 @@ def cell_located_prolongation(coarse, fine, degree, continuous=True,
     lam = _barycentric(Xf, vxy_c[cv_c[cells]])
     W = _node_weights(Xf, cells, lam, Xc, cn, vxy_c, cv_c, degree)
     nb = W.shape[1]
+    cells, W = _recorded_rows_where_weak(coarse, fine, degree, continuous, Xf, Xc,
+                                         cn, fn, vxy_c, cv_c, vxy_f, cv_f, cells, W)
     rows = np.repeat(np.arange(Xf.shape[0]), nb)
     cols = cn[cells].ravel()
     vals = W.ravel()
@@ -312,6 +535,56 @@ def cell_located_prolongation(coarse, fine, degree, continuous=True,
                       shape=(Xf.shape[0], Xc.shape[0]))
     P.sum_duplicates()
     return P
+
+
+def _recorded_rows_where_weak(coarse, fine, degree, continuous, Xf, Xc, cn, fn,
+                              vxy_c, cv_c, vxy_f, cv_f, cells, W):
+    """The located rows, with the recorded parent's rows taken where the located
+    rule leaves a fault copy (nearly) without a fine image (#1120): a coarse
+    fault-pair node whose copy has no fine image on its own side makes the
+    rotated pair's mean and jump columns proportional, and the Galerkin level
+    singular. Only those rows change: the parent rule everywhere puts nodes in
+    the thin pieces the coarse cut leaves, which costs smoother work for no
+    gain (W1's decision on #1120). Serial."""
+    global last_parent_rows
+    last_parent_rows = None
+    copies = _fault_copy_nodes(coarse, degree, continuous)
+    if not copies.size:
+        return cells, W
+    norms = np.zeros(Xc.shape[0])
+    np.add.at(norms, cn[cells].ravel(), np.abs(W).ravel())
+    weak = copies[_weak_copy_columns(norms[copies])]
+    if not weak.size:
+        last_parent_rows = dict(weak_copies=0, rows=0, stranded_cells=0, remaining=0)
+        return cells, W
+    rec = _recorded_parent_cells(coarse, fine, Xf, fn, vxy_c, cv_c, vxy_f, cv_f)
+    if rec is None:
+        # no record (a label-embedded fault, a 3-D sheet): nothing to repair with
+        last_parent_rows = dict(weak_copies=int(weak.size), rows=0,
+                                stranded_cells=None, remaining=int(weak.size))
+        _warn_unrepaired(int(weak.size), int(weak.size))
+        return cells, W
+    pcells, stranded = rec
+    have = np.flatnonzero(pcells >= 0)
+    lam = _barycentric(Xf[have], vxy_c[cv_c[pcells[have]]])
+    Wp = _node_weights(Xf[have], pcells[have], lam, Xc, cn, vxy_c, cv_c, degree)
+    is_weak = np.zeros(Xc.shape[0], dtype=bool)
+    is_weak[weak] = True
+    reach = (is_weak[cn[pcells[have]]] & (np.abs(Wp) > 1e-13)).any(axis=1)
+    rows = have[reach]
+    cells = cells.copy()
+    W = W.copy()
+    cells[rows] = pcells[rows]
+    W[rows] = Wp[reach]
+    # the copies still weak afterwards, against the same bar
+    after = np.zeros(Xc.shape[0])
+    np.add.at(after, cn[cells].ravel(), np.abs(W).ravel())
+    bar = _WEAK_COPY * float(np.median(norms[copies]))
+    remaining = int((after[weak] < bar).sum())
+    last_parent_rows = dict(weak_copies=int(weak.size), rows=int(rows.size),
+                            stranded_cells=int(stranded), remaining=remaining)
+    _warn_unrepaired(remaining, int(weak.size))
+    return cells, W
 
 
 # --------------------------------------------------------------------------- #
@@ -339,30 +612,40 @@ def cell_located_transfer_parallel(coarse, fine, degree, continuous,
     from underworld3.utilities.fault_contact import _collective_raise
 
     m4 = comm.tompi4py()
+    # The node tables build a basis DM, which is collective, so they are read
+    # on every rank first (and cached on the mesh); the rest of the opening is
+    # rank-local and read under one guard, raised on every rank (#874)
     cn = np.asarray(coarse._cell_node_indices(degree, continuous))
     fn = np.asarray(fine._cell_node_indices(degree, continuous))
-    Xc = np.asarray(coarse_coords)
-    Xf = np.asarray(fine_coords)
-    vxy_c, cv_c = _cell_vertex_table(coarse)
-    vxy_f, cv_f = _cell_vertex_table(fine)
-    if fine_vertices is not None:
-        vxy_f = fine_vertices
-    l2g_c = np.asarray(coarse_layout.l2g, dtype=np.int64).reshape(-1, ncomp)
-    l2g_f = np.asarray(fine_layout.l2g, dtype=np.int64).reshape(-1, ncomp)
-    fstart, fend = fine_layout.rstart, fine_layout.rend
-    cstart, cend = coarse_layout.rstart, coarse_layout.rend
-    n_f = Xf.shape[0]
-    nb = cn.shape[1]
+    problem = None
+    try:
+        Xc = np.asarray(coarse_coords)
+        Xf = np.asarray(fine_coords)
+        vxy_c, cv_c = _cell_vertex_table(coarse)
+        vxy_f, cv_f = _cell_vertex_table(fine)
+        if fine_vertices is not None:
+            vxy_f = fine_vertices
+        l2g_c = np.asarray(coarse_layout.l2g, dtype=np.int64).reshape(-1, ncomp)
+        l2g_f = np.asarray(fine_layout.l2g, dtype=np.int64).reshape(-1, ncomp)
+        fstart, fend = fine_layout.rstart, fine_layout.rend
+        cstart, cend = coarse_layout.rstart, coarse_layout.rend
+        n_f = Xf.shape[0]
+        nb = cn.shape[1]
+        owner = _fine_cell_of_node(fn, n_f)
+        # the fine nodes with at least one owned row (ghost nodes are another
+        # rank's)
+        mine = np.flatnonzero(((l2g_f >= fstart) & (l2g_f < fend)).any(axis=1))
+        fcent = vxy_f[cv_f].mean(axis=1)
+    except Exception as err:   # sanctioned: raised on every rank just below
+        problem = (f"fault_mg: the cell-located transfer failed to read the level "
+                   f"tables: {type(err).__name__}: {err}")
+    _collective_raise(problem, error=CollectiveBuildError)
 
-    owner = _fine_cell_of_node(fn, n_f)
     # A failure on one rank is raised on every rank, at the next collective
     # (fault_contact._collective_raise), never alone: a rank-local raise left
     # the others waiting in the stats allreduce (#874).
     problem = ("fault_mg: a fine node belongs to no cell"
                if (owner < 0).any() else None)
-    # the fine nodes with at least one owned row (ghost nodes are another rank's)
-    mine = np.flatnonzero(((l2g_f >= fstart) & (l2g_f < fend)).any(axis=1))
-    fcent = vxy_f[cv_f].mean(axis=1)
     pcell = np.full(mine.size, -1)
     lam_c = np.full((mine.size, cv_c.shape[1]), -np.inf)
     if cv_c.shape[0] and problem is None:
@@ -483,9 +766,154 @@ def cell_located_transfer_parallel(coarse, fine, degree, continuous,
     Wall = np.vstack(hit_W)
     Call = np.concatenate(hit_cols) if len(hit_cols) > 1 else hit_cols[0]
 
+    # --- the recorded parent's rows where a fault copy is left weak (#1120) -- #
+    Wall, Call = _recorded_rows_where_weak_parallel(
+        coarse, fine, degree, continuous, Xf, Xc, cn, fn, vxy_c, cv_c, vxy_f, cv_f,
+        nodes, Wall, Call, l2g_c, l2g_f, fstart, fend, ncomp, m4)
+
     # --- assemble owned rows ---------------------------------------------- #
     return _assemble_owned_rows(nodes, Wall, Call, l2g_f, fstart, fend, cstart,
                                 cend, ncomp, nb, comm)
+
+
+def _recorded_rows_where_weak_parallel(coarse, fine, degree, continuous, Xf, Xc, cn,
+                                       fn, vxy_c, cv_c, vxy_f, cv_f, nodes, Wall,
+                                       Call, l2g_c, l2g_f, fstart, fend, ncomp, m4):
+    """:func:`_recorded_rows_where_weak` for the parallel transfer, on its
+    reduced global columns. A copy column's norm sums the owned rows of every
+    rank (one allreduce over the copies' global columns, which every rank
+    learns by one allgather), so every rank agrees which copies are weak. The
+    record and the parent rows are rank-local: the add-on partition makes the
+    fault region rank-interior, so the cut, the split and the nesting of the
+    two hosts are. COLLECTIVE: every rank reaches every exchange, and a
+    rank-local failure is raised on every rank."""
+    from underworld3.utilities.custom_mg import CollectiveBuildError
+    from underworld3.utilities.fault_contact import _collective_raise
+
+    global last_parent_rows
+    problem = None
+    copy_cols = np.zeros(0, dtype=np.int64)
+    copy_nodes = np.zeros((0, ncomp), dtype=np.int64)
+    try:
+        copies = _fault_copy_nodes(coarse, degree, continuous)
+        # each copy node by its global columns (one per component): the counts
+        # below are of nodes, as in serial, not of columns (#1206 review)
+        copy_nodes = l2g_c[copies]
+        copy_nodes = copy_nodes[(copy_nodes >= 0).any(axis=1)]
+        copy_cols = np.unique(copy_nodes.ravel())
+        copy_cols = copy_cols[copy_cols >= 0]
+    except Exception as err:   # sanctioned: raised on every rank just below
+        problem = (f"fault_mg: reading the coarse fault copies failed: "
+                   f"{type(err).__name__}: {err}")
+    _collective_raise(problem, error=CollectiveBuildError)
+    every = np.unique(np.concatenate(m4.allgather(copy_cols)))
+    node_table = np.unique(np.vstack(m4.allgather(copy_nodes)), axis=0) \
+        if every.size else np.zeros((0, ncomp), dtype=np.int64)
+
+    def nodes_touching(cols):
+        """How many copy nodes have a column in ``cols`` (every rank agrees)."""
+        return int(np.isin(node_table, cols).any(axis=1).sum()) if cols.size else 0
+    if not every.size:
+        last_parent_rows = None
+        return Wall, Call
+    owned_row = (l2g_f[nodes] >= fstart) & (l2g_f[nodes] < fend)     # (n, ncomp)
+
+    def column_norms(W, C):
+        """This rank's owned rows' share of each copy column's norm."""
+        local = np.zeros(every.size)
+        for c in range(ncomp):
+            cols = C[:, :, c]                                          # (n, nb)
+            use = owned_row[:, c][:, None] & (cols >= 0)
+            pos = np.searchsorted(every, cols[use])
+            hit = (pos < every.size) & (every[np.minimum(pos, every.size - 1)]
+                                        == cols[use])
+            np.add.at(local, pos[hit], np.abs(W)[use][hit])
+        return local
+
+    problem = None
+    local = np.zeros(every.size)
+    try:
+        local = column_norms(Wall, Call)
+    except Exception as err:   # sanctioned: raised on every rank just below
+        problem = (f"fault_mg: summing the fault-copy columns failed: "
+                   f"{type(err).__name__}: {err}")
+    _collective_raise(problem, error=CollectiveBuildError)
+    norms = np.empty_like(local)
+    m4.Allreduce(local, norms)
+    weak_mask = _weak_copy_columns(norms)
+    weak_cols = every[weak_mask]
+    n_weak = int(weak_cols.size)
+    rows_taken = 0
+    stranded = None
+    # the hosts' built geometry is read collectively, on every rank, before
+    # anything rank-local can fail: the record is on every rank or on none
+    tables = None
+    have_record = bool(m4.allreduce(int(_split_record(fine) is not None
+                                        and _split_record(coarse) is not None),
+                                    op=MPI.MIN)) if n_weak else False
+    if have_record:
+        problem = None
+        try:
+            hosts = (_split_record(fine)[1], _split_record(coarse)[1])
+        except Exception as err:   # sanctioned: raised on every rank just below
+            problem = (f"fault_mg: reading the split record failed: "
+                       f"{type(err).__name__}: {err}")
+        _collective_raise(problem, error=CollectiveBuildError)
+        # the move check is collective, so it runs on every rank before the
+        # guard; the tables themselves are rank-local and read inside it
+        moved = (_moved_off_build(hosts[0]), _moved_off_build(hosts[1]))
+    problem = None
+    if have_record:
+        try:
+            tables = (_built_cell_table(hosts[0], moved[0]),
+                      _built_cell_table(hosts[1], moved[1]))
+            rec = _recorded_parent_cells(coarse, fine, Xf, fn, vxy_c, cv_c, vxy_f, cv_f,
+                                         host_tables=tables)
+            if rec is not None:
+                pcells, stranded = rec
+                pc_nodes = pcells[nodes]
+                have = np.flatnonzero(pc_nodes >= 0)
+                if have.size:
+                    at = nodes[have]
+                    lam = _barycentric(Xf[at], vxy_c[cv_c[pc_nodes[have]]])
+                    Wp = _node_weights(Xf[at], pc_nodes[have], lam, Xc, cn, vxy_c,
+                                       cv_c, degree)
+                    Cp = l2g_c[cn[pc_nodes[have]]]                     # (h, nb, ncomp)
+                    reach = (np.isin(Cp, weak_cols)
+                             & (np.abs(Wp) > 1e-13)[:, :, None]).any(axis=(1, 2))
+                    take = have[reach]
+                    Wall = Wall.copy()
+                    Call = Call.copy()
+                    Wall[take] = Wp[reach]
+                    Call[take] = Cp[reach]
+                    rows_taken = int(take.size)
+        except Exception as err:   # sanctioned: raised on every rank just below
+            problem = (f"fault_mg: the recorded-parent rows failed: "
+                       f"{type(err).__name__}: {err}")
+    _collective_raise(problem, error=CollectiveBuildError)
+    # the copies still weak afterwards, against the same bar
+    remaining = 0
+    if n_weak:
+        problem = None
+        after_local = np.zeros(every.size)
+        try:
+            after_local = column_norms(Wall, Call)
+        except Exception as err:   # sanctioned: raised on every rank just below
+            problem = (f"fault_mg: summing the fault-copy columns failed: "
+                       f"{type(err).__name__}: {err}")
+        _collective_raise(problem, error=CollectiveBuildError)
+        after = np.empty_like(after_local)
+        m4.Allreduce(after_local, after)
+        bar = _WEAK_COPY * float(np.median(norms))
+        remaining = nodes_touching(every[weak_mask][after[weak_mask] < bar])
+    n_weak = nodes_touching(weak_cols)
+    last_parent_rows = dict(
+        weak_copies=n_weak,
+        rows=int(m4.allreduce(rows_taken)),
+        stranded_cells=int(m4.allreduce(int(stranded or 0))),
+        remaining=remaining)
+    _warn_unrepaired(remaining, n_weak)
+    return Wall, Call
 
 
 def locate_in_cells_exhaustive(points, vxy, cv):
@@ -558,32 +986,40 @@ def provenance_transfer_parallel(coarse, fine, pre, degree, continuous,
     cell of ``pre``, which is affine, so the pair has the transfer it had
     before the move (#1091).
     """
-    m4 = comm.tompi4py()
-    cn = np.asarray(coarse._cell_node_indices(degree, continuous))
-    fn = np.asarray(fine._cell_node_indices(degree, continuous))
-    Xc = np.asarray(coarse_coords)
-    Xf = np.asarray(fine_coords)
-    vxy_c, cv_c = _cell_vertex_table(coarse)
-    vxy_f, cv_f = _cell_vertex_table(fine)
-    vxy_p, cv_p = _cell_vertex_table(pre)
-    l2g_c = np.asarray(coarse_layout.l2g, dtype=np.int64).reshape(-1, ncomp)
-    l2g_f = np.asarray(fine_layout.l2g, dtype=np.int64).reshape(-1, ncomp)
-    fstart, fend = fine_layout.rstart, fine_layout.rend
-    cstart, cend = coarse_layout.rstart, coarse_layout.rend
-    n_f = Xf.shape[0]
-    nb = cn.shape[1]
-    nv = cv_c.shape[1]
-    dim = Xc.shape[1]
-
     # Every failure below is raised on every rank together, as a
     # CollectiveBuildError, so the hierarchy build degrades on all of them
     # (#886, #874): the checks on allreduced counts directly, the rank-local
-    # location and weighting through fault_contact._collective_raise. None
-    # passes builder_failure: another builder cannot change a location or a
-    # weight that failed, so a retry would fail the same way.
+    # reads, location and weighting through fault_contact._collective_raise.
+    # None passes builder_failure: another builder cannot change a location or
+    # a weight that failed, so a retry would fail the same way.
     from underworld3.utilities.custom_mg import CollectiveBuildError
     from underworld3.utilities.fault_contact import _collective_raise
-    owner = _fine_cell_of_node(fn, n_f)
+    m4 = comm.tompi4py()
+    # The node tables build a basis DM, which is collective, so they are read
+    # on every rank first (and cached on the mesh); everything else the
+    # transfer opens with is rank-local and read under one guard.
+    cn = np.asarray(coarse._cell_node_indices(degree, continuous))
+    fn = np.asarray(fine._cell_node_indices(degree, continuous))
+    problem = None
+    try:
+        Xc = np.asarray(coarse_coords)
+        Xf = np.asarray(fine_coords)
+        vxy_c, cv_c = _cell_vertex_table(coarse)
+        vxy_f, cv_f = _cell_vertex_table(fine)
+        vxy_p, cv_p = _cell_vertex_table(pre)
+        l2g_c = np.asarray(coarse_layout.l2g, dtype=np.int64).reshape(-1, ncomp)
+        l2g_f = np.asarray(fine_layout.l2g, dtype=np.int64).reshape(-1, ncomp)
+        fstart, fend = fine_layout.rstart, fine_layout.rend
+        cstart, cend = coarse_layout.rstart, coarse_layout.rend
+        n_f = Xf.shape[0]
+        nb = cn.shape[1]
+        nv = cv_c.shape[1]
+        dim = Xc.shape[1]
+        owner = _fine_cell_of_node(fn, n_f)
+    except Exception as err:   # sanctioned: raised on every rank just below
+        problem = (f"fault_mg: the provenance transfer failed to read the level "
+                   f"tables: {type(err).__name__}: {err}")
+    _collective_raise(problem, error=CollectiveBuildError)
     if m4.allreduce(int((owner < 0).sum())):
         raise CollectiveBuildError("fault_mg: a fine node belongs to no cell")
     mine = np.flatnonzero(((l2g_f >= fstart) & (l2g_f < fend)).any(axis=1))
@@ -614,20 +1050,50 @@ def provenance_transfer_parallel(coarse, fine, pre, degree, continuous,
         raise CollectiveBuildError(
             f"fault_mg: {n_out} fine node(s) lie in no cell of the level as the "
             f"add-on partition left it; the surgery was not rank-local.")
-    parent = np.asarray(pre._addon_parent, dtype=np.int32)[pcell]   # (nm, 2)
-
-    # one fetch per distinct parent: node columns, node coordinates and
-    # vertex coordinates, packed as doubles (indices exact below 2**53)
-    uniq, inv = np.unique(parent, axis=0, return_inverse=True)
-    inv = inv.ravel()
+    # The record is read, and each address checked, before the star forest is
+    # built on it: one cell per cell of ``pre``, each a (rank, local cell) that
+    # exists. A short or stale record on one rank raised an IndexError there
+    # alone, or built an SF with an address out of range, while the other
+    # ranks waited (#874). Every rank-local step up to the SF is under the
+    # guard, and a failure is raised on every rank together.
     width = nb * ncomp + nb * dim + nv * dim
     nc_loc = cv_c.shape[0]
-    root = np.empty((nc_loc, width))
-    # explicit widths: a rank can own no cell of the coarse level, and
-    # reshape(0, -1) cannot infer one
-    root[:, : nb * ncomp] = l2g_c[cn].reshape(nc_loc, nb * ncomp)
-    root[:, nb * ncomp: nb * ncomp + nb * dim] = Xc[cn].reshape(nc_loc, nb * dim)
-    root[:, nb * ncomp + nb * dim:] = vxy_c[cv_c].reshape(nc_loc, nv * dim)
+    coarse_cells = np.asarray(m4.allgather(int(nc_loc)), dtype=np.int64)
+    uniq = np.zeros((0, 2), dtype=np.int32)
+    inv = np.zeros(0, dtype=np.int64)
+    root = np.zeros((nc_loc, width))
+    problem = None
+    try:
+        record = np.asarray(pre._addon_parent)
+        if record.ndim != 2 or record.shape != (cv_p.shape[0], 2):
+            problem = (f"fault_mg: the add-on record of the level holds "
+                       f"{tuple(record.shape)} entries for {cv_p.shape[0]} cells; "
+                       f"it does not describe this mesh")
+        else:
+            parent = record.astype(np.int64)[pcell]                      # (nm, 2)
+            rank_ok = (parent[:, 0] >= 0) & (parent[:, 0] < m4.size)
+            cell_ok = rank_ok & (parent[:, 1] >= 0) & (
+                parent[:, 1] < coarse_cells[np.where(rank_ok, parent[:, 0], 0)])
+            if not cell_ok.all():
+                problem = (f"fault_mg: {int((~cell_ok).sum())} recorded parent(s) "
+                           f"name a rank or a cell that does not exist")
+            else:
+                # one fetch per distinct parent: node columns, node coordinates
+                # and vertex coordinates, packed as doubles (indices exact
+                # below 2**53)
+                uniq, inv = np.unique(parent.astype(np.int32), axis=0,
+                                      return_inverse=True)
+                inv = inv.ravel()
+                # explicit widths: a rank can own no cell of the coarse
+                # level, and reshape(0, -1) cannot infer one
+                root[:, : nb * ncomp] = l2g_c[cn].reshape(nc_loc, nb * ncomp)
+                root[:, nb * ncomp: nb * ncomp + nb * dim] = (
+                    Xc[cn].reshape(nc_loc, nb * dim))
+                root[:, nb * ncomp + nb * dim:] = vxy_c[cv_c].reshape(nc_loc, nv * dim)
+    except Exception as err:   # sanctioned: raised on every rank just below
+        problem = (f"fault_mg: the provenance transfer failed to read the "
+                   f"add-on record: {type(err).__name__}: {err}")
+    _collective_raise(problem, error=CollectiveBuildError)
     sf = PETSc.SF().create(comm=comm)
     sf.setGraph(nc_loc, None, np.ascontiguousarray(uniq, dtype=np.int32))
     sf.setUp()
@@ -638,31 +1104,34 @@ def provenance_transfer_parallel(coarse, fine, pre, degree, continuous,
     sf.bcastEnd(unit, root, got, MPI.REPLACE)
     unit.Free()
     sf.destroy()
-    cols_u = np.rint(got[:, : nb * ncomp]).astype(np.int64).reshape(-1, nb, ncomp)
-    Xn_u = got[:, nb * ncomp: nb * ncomp + nb * dim].reshape(-1, dim)
-    V_u = got[:, nb * ncomp + nb * dim:].reshape(-1, dim)
-    # the fetched parents as a virtual coarse mesh: cell k has nodes
-    # k*nb .. and vertices k*nv ..
-    nu = uniq.shape[0]
-    cn_u = np.arange(nu * nb).reshape(nu, nb)
-    cv_u = np.arange(nu * nv).reshape(nu, nv)
-    Xw = Xf[mine]
-    reference = reference_vertices(pre, coarse)
+    # Everything from the fetched parents to the weights is rank-local, and
+    # every rank enters the guard, a rank with no owned node too: a failure is
+    # raised on every rank just below (#874)
     W = np.zeros((mine.size, nb))
+    gcols = np.zeros((mine.size, nb, ncomp), dtype=np.int64)
     problem = None
-    if mine.size:
-        # rank-local: a failure is raised on every rank just below (#874)
-        try:
+    try:
+        cols_u = np.rint(got[:, : nb * ncomp]).astype(np.int64).reshape(-1, nb, ncomp)
+        Xn_u = got[:, nb * ncomp: nb * ncomp + nb * dim].reshape(-1, dim)
+        V_u = got[:, nb * ncomp + nb * dim:].reshape(-1, dim)
+        # the fetched parents as a virtual coarse mesh: cell k has nodes
+        # k*nb .. and vertices k*nv ..
+        nu = uniq.shape[0]
+        cn_u = np.arange(nu * nb).reshape(nu, nb)
+        cv_u = np.arange(nu * nv).reshape(nu, nv)
+        Xw = Xf[mine]
+        reference = reference_vertices(pre, coarse)
+        if mine.size:
             if reference is not None:
                 at = _barycentric(Xw, vxy_p[cv_p[pcell]])
                 Xw = np.einsum("nv,nvd->nd", at, reference[cv_p[pcell]])
             lam = _barycentric(Xw, V_u[cv_u[inv]])
             W = _node_weights(Xw, inv, lam, Xn_u, cn_u, V_u, cv_u, degree)
-        except Exception as err:   # sanctioned: raised on every rank just below
-            problem = (f"fault_mg: the provenance transfer failed to weight "
-                       f"the fine nodes: {type(err).__name__}: {err}")
+        gcols = cols_u[inv]                                    # (nm, nb, ncomp)
+    except Exception as err:   # sanctioned: raised on every rank just below
+        problem = (f"fault_mg: the provenance transfer failed to weight "
+                   f"the fine nodes: {type(err).__name__}: {err}")
     _collective_raise(problem, error=CollectiveBuildError)
-    gcols = cols_u[inv]                                        # (nm, nb, ncomp)
 
     global last_transfer_stats
     last_transfer_stats = {
@@ -855,20 +1324,25 @@ def level_pair_rotation(level, solver, field_id, cdm=None, layout=None):
                 if manifold:
                     normal_rows.append(gm[2])
                     normal_rows.append(gp[2])
-    except (RuntimeError, ValueError) as err:
-        problem = str(err)
-    fault_contact._collective_raise(problem)
+        rows = np.concatenate(rows)
+        cols = np.concatenate(cols)
+        vals = np.concatenate(vals)
+        # drop the identity entry of every block row (the first nloc entries)
+        keep = np.ones(len(rows), dtype=bool)
+        keep[:nloc] = ~is_block_row
+        loc = sp.csr_matrix((vals[keep], (rows[keep] - rstart, cols[keep])),
+                            shape=(nloc, N))
+        loc.sum_duplicates()
+        loc.sort_indices()
+    except Exception as err:   # sanctioned: raised on every rank just below
+        # any exception, not only the straddle refusal: an IndexError from an
+        # offset on one rank left the others waiting (#874)
+        problem = (str(err) if isinstance(err, RuntimeError)
+                   else f"fault_mg: the pair rotation failed: "
+                        f"{type(err).__name__}: {err}")
+    from underworld3.utilities.custom_mg import CollectiveBuildError
+    fault_contact._collective_raise(problem, error=CollectiveBuildError)
 
-    rows = np.concatenate(rows)
-    cols = np.concatenate(cols)
-    vals = np.concatenate(vals)
-    # drop the identity entry of every block row (the first nloc entries)
-    keep = np.ones(len(rows), dtype=bool)
-    keep[:nloc] = ~is_block_row
-    loc = sp.csr_matrix((vals[keep], (rows[keep] - rstart, cols[keep])),
-                        shape=(nloc, N))
-    loc.sum_duplicates()
-    loc.sort_indices()
     Q = PETSc.Mat().createAIJ(
         size=((nloc, None), (nloc, None)),
         csr=(loc.indptr.astype(PETSc.IntType), loc.indices.astype(PETSc.IntType),
@@ -948,39 +1422,52 @@ def level_wall_rotation(level, solver, field_id, cdm=None, layout=None):
     nloc = rend - rstart
     comm = cdm.getComm()
     N = int(comm.tompi4py().allreduce(nloc))
-    rows = [np.arange(rstart, rend)]
-    cols = [np.arange(rstart, rend)]
-    vals = [np.ones(nloc)]
-    is_block_row = np.zeros(nloc, dtype=bool)
     normal_rows = []
-    for q, nrms in node_normals.items():
-        off = lsec_sub.getOffset(q)
-        g = [int(l2g[off + c]) for c in range(dim)]
-        if any(gi < 0 for gi in g):
-            # a component pinned by an essential condition on the level: the
-            # wall meets an essential wall there; left Cartesian, as the
-            # finest's partially constrained nodes are handled separately
-            continue
-        if not (rstart <= g[0] < rend):
-            continue
-        M = np.array(nrms, dtype=float)
-        _u, sv, Vt = np.linalg.svd(M)
-        r = int((sv > 1e-8 * (sv[0] if sv.size else 1.0)).sum())
-        is_block_row[np.array(g) - rstart] = True
-        for i in range(dim):
-            rows.append(np.full(dim, g[i]))
-            cols.append(np.array(g))
-            vals.append(np.asarray(Vt[i], dtype=float))
-        normal_rows.extend(g[:r])
-    rows = np.concatenate(rows)
-    cols = np.concatenate(cols)
-    vals = np.concatenate(vals)
-    keep = np.ones(len(rows), dtype=bool)
-    keep[:nloc] = ~is_block_row
-    loc = sp.csr_matrix((vals[keep], (rows[keep] - rstart, cols[keep])),
-                        shape=(nloc, N))
-    loc.sum_duplicates()
-    loc.sort_indices()
+    # The blocks are built rank-locally (an offset and an SVD per node) before
+    # the collective createAIJ: a failure on one rank is raised on every rank
+    # (#874)
+    from underworld3.utilities.custom_mg import CollectiveBuildError
+    from underworld3.utilities.fault_contact import _collective_raise
+    problem = None
+    loc = None
+    try:
+        rows = [np.arange(rstart, rend)]
+        cols = [np.arange(rstart, rend)]
+        vals = [np.ones(nloc)]
+        is_block_row = np.zeros(nloc, dtype=bool)
+        for q, nrms in node_normals.items():
+            off = lsec_sub.getOffset(q)
+            g = [int(l2g[off + c]) for c in range(dim)]
+            if any(gi < 0 for gi in g):
+                # a component pinned by an essential condition on the level:
+                # the wall meets an essential wall there; left Cartesian, as
+                # the finest's partially constrained nodes are handled
+                # separately
+                continue
+            if not (rstart <= g[0] < rend):
+                continue
+            M = np.array(nrms, dtype=float)
+            _u, sv, Vt = np.linalg.svd(M)
+            r = int((sv > 1e-8 * (sv[0] if sv.size else 1.0)).sum())
+            is_block_row[np.array(g) - rstart] = True
+            for i in range(dim):
+                rows.append(np.full(dim, g[i]))
+                cols.append(np.array(g))
+                vals.append(np.asarray(Vt[i], dtype=float))
+            normal_rows.extend(g[:r])
+        rows = np.concatenate(rows)
+        cols = np.concatenate(cols)
+        vals = np.concatenate(vals)
+        keep = np.ones(len(rows), dtype=bool)
+        keep[:nloc] = ~is_block_row
+        loc = sp.csr_matrix((vals[keep], (rows[keep] - rstart, cols[keep])),
+                            shape=(nloc, N))
+        loc.sum_duplicates()
+        loc.sort_indices()
+    except Exception as err:   # sanctioned: raised on every rank just below
+        problem = (f"fault_mg: the wall rotation failed: "
+                   f"{type(err).__name__}: {err}")
+    _collective_raise(problem, error=CollectiveBuildError)
     Q = PETSc.Mat().createAIJ(
         size=((nloc, None), (nloc, None)),
         csr=(loc.indptr.astype(PETSc.IntType), loc.indices.astype(PETSc.IntType),
@@ -1253,7 +1740,7 @@ def _fold_rows(T, fold, comm):
     return out
 
 
-def record_repairs(solver, repairs):
+def record_repairs(solver, repairs, hierarchy=None):
     """Record what one install's #1101 merges did, on the solver.
 
     Not a preconditioner fallback: the merge is an exact change of basis, and
@@ -1269,6 +1756,13 @@ def record_repairs(solver, repairs):
     solver._mg_merged_coarse_unknowns = {
         "levels": {int(level): int(n) for level, n in sorted(repairs)},
         "installs_with_merges": installs}
+    # the split-level fault-copy repair's leftovers (#1120): per coarse level,
+    # the fault copies still weak after it, the same on every rank. The coarse
+    # level of transfer l is level l - 1.
+    stats = getattr(hierarchy, "level_parent_rows", None) or []
+    solver._mg_unrepaired_fault_copies = {
+        int(l) - 1: int(rec["remaining"]) for l, rec in enumerate(stats)
+        if rec and rec.get("remaining")}
 
 
 def restrict_unreached(Ps, comm, repairs=None):
@@ -1395,7 +1889,7 @@ def rotated_split_transfers(solver, hierarchy, Ps, Q, normal_rows):
         kept[l] = adm
         out[l] = T
     Qv.destroy()                    # only the products are kept
-    record_repairs(solver, repairs)
+    record_repairs(solver, repairs, hierarchy)
     hierarchy.level_kept = kept
     # The restriction renumbers every coarse level, so any FAC patch rows the
     # builder recorded for them (keyed to the unrestricted layouts) no longer

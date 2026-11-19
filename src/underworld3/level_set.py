@@ -174,8 +174,11 @@ def interface_thickness(
             cell_epsilon[i] = factor * float(np.asarray(vol).ravel()[0]) ** (1.0 / dim)
             cell_centroids[i, :] = np.asarray(centroid).ravel()[:dim]
 
+    # One per level-set variable, named after it: a field of its own, which
+    # neither another level set nor a user variable called epsilon shares.
     epsilon = discretisation.MeshVariable(
-        r"\epsilon", mesh, 1, degree=phi.degree, continuous=phi.continuous)
+        f"epsilon_{phi.clean_name}", mesh, 1, degree=phi.degree, continuous=phi.continuous,
+        varsymbol=r"\epsilon")
     _, nearest = cKDTree(cell_centroids).query(np.asarray(phi.coords))
     epsilon.array[:, 0, 0] = cell_epsilon[nearest]
     return epsilon

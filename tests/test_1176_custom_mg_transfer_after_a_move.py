@@ -169,10 +169,15 @@ def test_the_transfers_after_a_move_are_those_before_it(build, move):
 
 
 def test_a_split_level_solve_after_a_move_keeps_its_iterations():
-    """5 velocity iterations at rest and 6 after each of three moves, which is
+    """6 velocity iterations at rest and after each of three moves, which is
     what a solver built on the moved mesh takes. With the transfer rebuilt from
     the moved coordinates each move takes 13. The fixture carries no FAC
-    patch."""
+    patch.
+
+    The count is the last velocity application's. At rest it was 5 before the
+    split-level transfer gave every coarse fault copy a fine image (#1120): the
+    total over the solve's 17 velocity applications is unchanged (116), and the
+    last one now goes on to 4e-9 where it stopped at 1.2e-8."""
     s, mesh = _split_level_stokes()
     s.solve()
     counts = [max(s._rotated_freeslip_info["vel_its_last"])]
@@ -181,7 +186,7 @@ def test_a_split_level_solve_after_a_move_keeps_its_iterations():
         s.solve()
         assert s.snes.getConvergedReason() > 0
         counts.append(max(s._rotated_freeslip_info["vel_its_last"]))
-    assert counts == [5, 6, 6, 6]
+    assert counts == [6, 6, 6, 6]
 
     built_after = _fault_stokes(mesh)
     built_after.solve()
@@ -192,7 +197,7 @@ def test_a_fault_cut_into_a_moved_mesh_is_read_where_it_is():
     """The child moved before the fault was cut into it, so the fault lies on
     its trace in the moved geometry on the new mesh and on the split level
     under it. The new mesh has not moved since it was made and is read on its
-    own coordinates: 6 velocity iterations (5 with the child at rest)."""
+    own coordinates: 6 velocity iterations, as with the child at rest."""
     s, mesh = _split_level_stokes(move_the_host=_deform_across_the_fault)
     s.solve()
     assert s.snes.getConvergedReason() > 0

@@ -1,10 +1,11 @@
-"""A field that enters only through an essential datum, ``u|_G = f``, refuses (#787).
+"""A field that enters only through an essential datum, ``u|_G = f`` (#787).
 
 The field route differentiates the residual, and a datum is not in it: the
 dual came back exactly zero (finite difference: 0.31), which reads as "no
-influence". Until the reaction term is mapped onto the field's nodes, asking
-for that dual raises, on the one-solve route and on the transcript walk. A
-field read by the residual is unaffected.
+influence", and was then refused. On the one-solve route the dual is now the
+reaction of the adjoint constraint mapped onto the field's nodes, for a field
+on the unknown's own space (``Solver._essential_datum_field_dual``); the
+transcript walk still refuses it. A field read by the residual is unaffected.
 """
 import numpy as np
 import pytest
@@ -36,15 +37,29 @@ def _poisson(tag, datum_field=True):
     return mesh, T, f, poisson
 
 
+def _dual_against_fd(mesh, f, poisson, misfit):
+    def J(F):
+        f.array[:, 0, 0] = F
+        poisson.solve(zero_init_guess=True)
+        return float(uw.maths.Integral(mesh, misfit).evaluate())
+
+    F0 = np.array(np.asarray(f.array)[:, 0, 0], copy=True)
+    J(F0)
+    dual = poisson.gradient(misfit, fields=[f])["fields"][f]
+    direction = np.sin(np.pi * np.asarray(f.coords)[:, 0]) + 0.5
+    h = 1e-4
+    fd = (J(F0 + h * direction) - J(F0 - h * direction)) / (2 * h)
+    J(F0)
+    return uw.adjoint.inner(f, dual, direction), fd
+
+
 @pytest.mark.tier_a
-def test_a_field_in_a_dirichlet_datum_refuses_rather_than_return_zero():
+def test_a_field_in_a_dirichlet_datum_gets_its_dual_through_the_reaction():
+    """The case #787 measured: the dual was 0 against a finite difference of 0.31."""
     mesh, T, f, poisson = _poisson("datum")
-    poisson.solve(zero_init_guess=True)
-    with pytest.raises(NotImplementedError, match=r"'f_datum'.*essential"):
-        poisson.gradient(T.sym[0] ** 2 / 2, fields=[f])
-    # the parameter-only call is unaffected
-    out = poisson.gradient(T.sym[0] ** 2 / 2)
-    assert out["J"] > 0
+    adjoint, fd = _dual_against_fd(mesh, f, poisson, T.sym[0] ** 2 / 2)
+    assert abs(fd) > 1e-2
+    assert adjoint == pytest.approx(fd, rel=1e-5), (adjoint, fd)
 
 
 @pytest.mark.tier_a
@@ -95,14 +110,14 @@ def _poisson_on(mesh, T, source, top):
 
 
 @pytest.mark.tier_a
-def test_a_field_behind_a_nested_expression_in_the_datum_still_refuses():
+def test_a_field_behind_a_nested_expression_in_the_datum_gets_its_dual():
     mesh, T, f, _ = _poisson("nested", datum_field=False)
     a = uw.expression(r"a_{787}", f.sym[0], "wraps the field")
     b = uw.expression(r"b_{787}", 2 * a, "wraps the wrapper")
     poisson = _poisson_on(mesh, T, 1.0, sympy.Matrix([b]))
-    poisson.solve(zero_init_guess=True)
-    with pytest.raises(NotImplementedError, match="f_nested"):
-        poisson.gradient(T.sym[0] ** 2 / 2, fields=[f])
+    adjoint, fd = _dual_against_fd(mesh, f, poisson, T.sym[0] ** 2 / 2)
+    assert abs(fd) > 1e-2
+    assert adjoint == pytest.approx(fd, rel=1e-5), (adjoint, fd)
 
 
 @pytest.mark.tier_a

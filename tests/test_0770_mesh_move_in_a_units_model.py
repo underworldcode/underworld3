@@ -31,10 +31,10 @@ def _dm_coords(mesh):
     return np.array(mesh.dm.getCoordinatesLocal().array).reshape(-1, mesh.cdim)
 
 
-@pytest.mark.parametrize("form", ["metres", "kilometres", "model", "dimensionless", "pint dimensionless"])
+@pytest.mark.parametrize("form", ["metres", "kilometres", "dimensionless", "pint dimensionless"])
 def test_deform_keeps_the_mesh_in_its_frame(units_model, form):
-    """Coordinates with units are converted, in whatever length unit; a plain array is
-    model coordinates, as evaluate reads one, and so are dimensionless coordinates."""
+    """Coordinates with units are converted, in whatever length unit; coordinates
+    marked dimensionless are model coordinates. A plain array is refused (#1081)."""
     mesh = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.5, cellSize=1 / 8, qdegree=3)
     start = _dm_coords(mesh)
     assert np.linalg.norm(start, axis=1).max() == pytest.approx(1.0)
@@ -42,9 +42,7 @@ def test_deform_keeps_the_mesh_in_its_frame(units_model, form):
     radius = np.linalg.norm(start, axis=1)
     inside = (radius > 0.5 + 1.0e-9) & (radius < 1.0 - 1.0e-9)
     scale = np.where(inside, 1.02, 1.0)[:, None]
-    if form == "model":
-        target = start * scale
-    elif form == "dimensionless":
+    if form == "dimensionless":
         target = uw.utilities.unit_aware_array.UnitAwareArray(start * scale, units="dimensionless")
     elif form == "pint dimensionless":
         target = (start * scale) * uw.units("dimensionless")
@@ -114,14 +112,14 @@ def test_a_submesh_follows_its_parent_in_its_frame(units_model):
 
 
 def test_deform_refuses_coordinates_it_cannot_place(units_model):
-    """A plain array the size of the physical domain would be read as model coordinates
-    and scale the mesh by the length scale; a unit that is not a length has no place."""
+    """A plain array is ambiguous in a units model, metres or model units, whatever
+    its values, and is refused (#1081): no guess from its size, which failed when the
+    length scale is near 1. A unit that is not a length has no place either."""
     mesh = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.5, cellSize=1 / 8, qdegree=3)
-    with pytest.raises(ValueError, match="physical domain"):
+    with pytest.raises(ValueError, match="ambiguous"):
         mesh.deform(np.array(mesh.X.coords))
-    with pytest.raises(ValueError, match="physical domain"):
-        mesh.deform(uw.utilities.unit_aware_array.UnitAwareArray(
-            np.array(mesh.X.coords), units="dimensionless"))
+    with pytest.raises(ValueError, match="ambiguous"):
+        mesh.deform(_dm_coords(mesh) * 1.01)
     with pytest.raises(ValueError, match="must be a length"):
         mesh.deform(uw.utilities.unit_aware_array.UnitAwareArray(
             _dm_coords(mesh), units="s"))

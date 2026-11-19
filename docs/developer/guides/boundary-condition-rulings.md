@@ -69,6 +69,13 @@ PETSc's normal is orientation-ambiguous (#327). A parameter in a natural
 condition is differentiated by the adjoint as a facet part with nothing
 further from the user.
 
+In 3-D, an expression in the coordinates (a load, a radial normal) is
+evaluated at the point where the fields and basis are, on every triangular
+face whatever its orientation in its cell, so a load on a refined mesh keeps
+its moments, and a load on an internal surface does not depend on which of a
+face's two cells assembles it (#1188). Quadrilateral faces of hexahedral
+meshes are not covered.
+
 ## Essential data
 
 `add_essential_bc` and `add_dirichlet_bc` are the same call. Components

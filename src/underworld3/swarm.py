@@ -39,6 +39,7 @@ from underworld3.utilities._api_tools import uw_object
 from underworld3.utilities.mathematical_mixin import MathematicalMixin
 
 import underworld3.timing as timing
+from underworld3.discretisation.discretisation_mesh_variables import _mark_made_by, _owned_name
 
 comm = uw.mpi.comm
 
@@ -1343,6 +1344,10 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
         self._meshVar = None
 
         if self._proxy:
+            proxy_name = _owned_name(
+                self.swarm.mesh, "proxy_" + self.clean_name,
+                lambda k: f"proxy_{k}_{self.clean_name}", self)
+
             # REINIT policy: a swarm proxy is re-projected from the
             # *particles* on next access, so a mesh adapt should NOT
             # interpolate the old proxy values onto the new node
@@ -1355,7 +1360,7 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
                 # Particles -> integration points directly: the assembler reads
                 # the stored values at the rule with no basis interpolation.
                 self._meshVar = uw.discretisation.IntegrationPointVariable(
-                    "proxy_" + self.clean_name,
+                    proxy_name,
                     self.swarm.mesh,
                     self.shape,
                     self._vtype,
@@ -1367,7 +1372,7 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
                 # Particles -> a polynomial per cell (least squares); read by
                 # the assembler through the ordinary discontinuous basis.
                 self._meshVar = uw.discretisation.MeshVariable(
-                    "proxy_" + self.clean_name,
+                    proxy_name,
                     self.swarm.mesh,
                     self.shape,
                     self._vtype,
@@ -1380,7 +1385,7 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
                 self._cell_projector = None
             else:
                 self._meshVar = uw.discretisation.MeshVariable(
-                    "proxy_" + self.clean_name,
+                    proxy_name,
                     self.swarm.mesh,
                     self.shape,
                     self._vtype,
@@ -1395,6 +1400,7 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
                     # (issue #439). Stored data stays non-dimensional either way.
                     units=self._units,
                 )
+            _mark_made_by(self._meshVar, self)
             # The remesh helper calls this on REINIT vars after an
             # adapt. It holds the SwarmVariable weakly: the proxy's mesh
             # owns the proxy, and a strong capture made that mesh keep the
@@ -1519,7 +1525,7 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
             if (
                 projector is None
                 or projector.var is not meshVar
-                or projector.mesh_version != self.swarm.mesh._mesh_version
+                or projector.geometry_version != self.swarm.mesh._geometry_version
             ):
                 projector = CellPolynomialProjector(meshVar)
                 self._cell_projector = projector
@@ -2106,17 +2112,22 @@ class SwarmVariable(DimensionalityMixin, MathematicalMixin, Stateful, uw_object)
     @array.setter
     def array(self, array_value):
         """
-        Set variable data through canonical data property with format conversion.
-        """
-        if self._is_simple_variable():
-            # Simple case: reshape array format (N,a,b) to canonical format (N,components)
-            canonical_data = array_value.reshape(array_value.shape[0], -1)
-        else:
-            # Complex case: use pack operations for tensor layout conversion
-            canonical_data = self._pack_array_to_data_format(array_value)
+        Set variable data through the view's write path, as MeshVariable does.
 
-        # Assign to canonical data property (triggers PETSc sync)
-        self.data[:] = canonical_data
+        The view's ``__setitem__`` converts units and packs tensor layouts.
+        Writing the magnitude straight into ``.data`` stored a dimensional
+        number as non-dimensional (#993).
+        """
+        view = self.array
+        shape = tuple(np.shape(view))
+        given = tuple(np.shape(array_value))
+        if (hasattr(array_value, "reshape") and given != shape and given[:1] == shape[:1]
+                and tuple(d for d in given[1:] if d != 1) == tuple(d for d in shape[1:] if d != 1)):
+            # Shapes that differ only by axes of length one, (N, 2, 1) for a
+            # vector viewed as (N, 1, 2) say, hold the entries in the same order;
+            # the old setter accepted them, so this one does too.
+            array_value = array_value.reshape(shape)
+        view[...] = array_value
 
     @property
     def sym(self):
@@ -2799,7 +2810,11 @@ class IndexSwarmVariable(SwarmVariable):
         self._meshLevelSetVars = [None] * self.indices
 
         for i in range(indices):
-            lname = name + R"^{[" + str(i) + R"]}"
+            # "_<k>_" keeps its trailing separator through cleaning, so the
+            # numbered names of different indices cannot coincide.
+            lname = _owned_name(
+                self.swarm.mesh, name + R"^{[" + str(i) + R"]}",
+                lambda k, i=i: f"{name}_{k}_" + R"^{[" + str(i) + R"]}", self)
             if proxy_location == "integration_points":
                 self._meshLevelSetVars[i] = uw.discretisation.IntegrationPointVariable(
                     lname, self.swarm.mesh,
@@ -2814,6 +2829,7 @@ class IndexSwarmVariable(SwarmVariable):
                     lname, self.swarm.mesh, num_components=1,
                     degree=proxy_degree, continuous=proxy_continuous,
                 )
+            _mark_made_by(self._meshLevelSetVars[i], self)
             self._MaskArray[0, i] = self._meshLevelSetVars[i].sym[0, 0]
 
         # Initialize lazy evaluation state
@@ -3100,7 +3116,7 @@ class IndexSwarmVariable(SwarmVariable):
         # "cells": one fit for every index at once (the level sets share a basis)
         projector = self._cell_projector
         if (projector is None or projector.var is not self._meshLevelSetVars[0]
-                or projector.mesh_version != self.swarm.mesh._mesh_version):
+                or projector.geometry_version != self.swarm.mesh._geometry_version):
             projector = CellPolynomialProjector(self._meshLevelSetVars[0])
             self._cell_projector = projector
         old = np.column_stack([np.asarray(v.data[:, 0]) for v in self._meshLevelSetVars])
@@ -3415,8 +3431,8 @@ class Swarm(Stateful, uw_object):
         self.dim = mesh.dim
         self.cdim = mesh.cdim
 
-        # Mesh version tracking for coordinate change detection
-        self._mesh_version = mesh._mesh_version
+        # The mesh geometry the particles were last binned on
+        self._mesh_geometry_version = mesh._geometry_version
 
         # Informational counter incremented at every particle-population
         # mutation site (populate, migrate, add_particles_*, advection
@@ -3498,7 +3514,7 @@ class Swarm(Stateful, uw_object):
         # stencil and shared by every proxied variable of this swarm. Entries
         # carry the kd-tree they were built from, so they self-invalidate.
         self._proxy_interpolation_cache = {}
-        self._proxy_cache_mesh_version = None
+        self._proxy_cache_geometry_version = None
         self._migration_disabled = False
 
         # Deterministic (SPMD-consistent) creation index — used to order
@@ -3664,14 +3680,26 @@ class Swarm(Stateful, uw_object):
         if global_count == 0:
             return
 
-        # A mesh coordinate change (deform / adaptation) strands particles
-        # in cells that moved; nothing re-bins them since the read-trigger
-        # on swarm.points was retired (#379 item 1 — a collective on READ
-        # was itself a parallel hazard). Solve entry is the collective
-        # point that notices the mesh version changed.
-        if getattr(self, "_mesh_version", None) != self.mesh._mesh_version:
+        # A mesh coordinate change (deform, adaptation, a mover, a snapshot
+        # restore) strands particles in cells that moved; nothing re-bins them
+        # since the read-trigger on swarm.points was retired (#379 item 1: a
+        # collective on READ was itself a parallel hazard). Solve entry is the
+        # collective point that notices the mesh geometry changed.
+        #
+        # Not while the coordinates are being changed: the field transfer of a
+        # move evaluates on the pre-move nodes, and ephemeral_coords evaluates
+        # on a trial geometry. Re-binning onto those would cost a migration for
+        # nothing and would delete particles that lie outside them. Both
+        # scopes are entered on every rank together. After an ephemeral
+        # excursion the geometry is the committed one again under a new
+        # version, which costs one migration at the next solve.
+        mesh = self.mesh
+        changing = (getattr(mesh, "_in_remesh_transfer", False)
+                    or getattr(mesh, "_coord_mutation_depth", 0) > 0)
+        if (not changing
+                and getattr(self, "_mesh_geometry_version", None) != mesh._geometry_version):
             self._needs_migration = True
-            self._mesh_version = self.mesh._mesh_version
+            self._mesh_geometry_version = mesh._geometry_version
 
         if not self._deferred_migration_suspended:
             needs_migration = bool(self._needs_migration)
@@ -3725,17 +3753,20 @@ class Swarm(Stateful, uw_object):
         # handled where it can be detected structurally rather than by a flag
         # someone has to remember to set:
         #
-        #   mesh geometry  -- a deform or adapt bumps _mesh_version. The whole
+        #   mesh geometry  -- any change of the node coordinates (a deform, an
+        #                     adaptation, a mover, a snapshot restore, and the
+        #                     transient ones of a field transfer or
+        #                     ephemeral_coords) bumps mesh._geometry_version. The whole
         #                     cache is dropped, because every entry was built
         #                     against the old node positions. Keying on the
         #                     version instead would keep the dead entries
         #                     forever, one set per mesh generation.
         #   particle motion -- migrate() replaces the kd-tree, so an entry that
         #                     does not carry the current tree is stale.
-        version = self.mesh._mesh_version
-        if self._proxy_cache_mesh_version != version:
+        version = self.mesh._geometry_version
+        if self._proxy_cache_geometry_version != version:
             self._proxy_interpolation_cache.clear()
-            self._proxy_cache_mesh_version = version
+            self._proxy_cache_geometry_version = version
 
         kdtree = self._get_kdtree()
         key = (meshVar.degree, meshVar.continuous, nnn, p, order)
@@ -3898,8 +3929,7 @@ class Swarm(Stateful, uw_object):
         for var in self._vars.values():
             var._create_proxy_variable()  # Safe for all variables (proxied or not)
 
-        # Update mesh version tracking
-        self._mesh_version = new_mesh._mesh_version
+        self._mesh_geometry_version = new_mesh._geometry_version
 
     @property
     def local_size(self):

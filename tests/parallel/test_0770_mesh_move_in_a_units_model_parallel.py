@@ -39,9 +39,10 @@ def test_deform_keeps_the_mesh_in_its_frame_and_remaps_a_field_with_units():
 @pytest.mark.mpi(min_size=2)
 @pytest.mark.timeout(60)
 def test_deform_returns_on_a_rank_with_no_vertices():
-    """The physical-size check reduces over every rank. A one-cell mesh leaves all
-    ranks but one with no vertices, and those ranks still enter the reductions.
-    Before the fix they skipped them and the move hung."""
+    """A one-cell mesh leaves all ranks but one with no vertices, and every rank
+    must return from the move. Before a fix the physical-size check's reductions
+    were skipped on such ranks and the move hung; that check is now a refusal of
+    plain arrays (#1081), so the target is model coordinates marked as such."""
     uw.reset_default_model()
     uw.get_default_model().set_reference_quantities(
         length=uw.quantity(1000, "km"), temperature_diff=uw.quantity(1000, "K"),
@@ -50,7 +51,7 @@ def test_deform_returns_on_a_rank_with_no_vertices():
     start = np.array(mesh.dm.getCoordinatesLocal().array).reshape(-1, mesh.cdim)
     assert min(uw.mpi.comm.allgather(start.shape[0])) == 0
 
-    mesh.deform(start * 1.0)
+    mesh.deform(uw.utilities.unit_aware_array.UnitAwareArray(start * 1.0, units="dimensionless"))
 
     moved = np.array(mesh.dm.getCoordinatesLocal().array).reshape(-1, mesh.cdim)
     assert np.allclose(moved, start)

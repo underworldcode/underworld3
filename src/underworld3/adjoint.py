@@ -390,15 +390,52 @@ def _boundary_reads_of(solver, variables):
             continue
         own = set(sympy.Matrix(var.sym).atoms(sympy.Function))
         derivative = re.compile(re.escape(_token_of(var)) + r"_\{ ?(\d*),(\d+)\}\(")
+        # Every kind of condition that reads the variable: a field in a datum
+        # AND a natural condition was reported as the first only, so the
+        # natural part was dropped (#787 review).
+        kinds = []
         for kind, found in atoms:
-            if own & found or any(derivative.match(str(a)) for a in found):
-                out.append((var, kind))
-                break
+            if (own & found or any(derivative.match(str(a)) for a in found)) and kind not in kinds:
+                kinds.append(kind)
+        out += [(var, kind) for kind in kinds]
     return out
 
 
+def _owned_to_ghosts(variable, values):
+    """``values`` (a local array set on the owned nodes) with each ghost copy
+    given its owner's value, through the field's own local-global scatter.
+    Collective on the mesh."""
+    _is, subdm = variable.mesh.dm.createSubDM(variable.field_id)
+    local = subdm.getLocalVec()
+    glob = subdm.getGlobalVec()
+    try:
+        local.array[:] = np.asarray(values, dtype=float).ravel()
+        subdm.localToGlobal(local, glob)
+        subdm.globalToLocal(glob, local)
+        out = np.array(local.array, copy=True).reshape(np.asarray(values).shape)
+    finally:
+        subdm.restoreLocalVec(local)
+        subdm.restoreGlobalVec(glob)
+    return out
+
+
+def _datum_reads_gradient(solver, var):
+    """Whether an essential datum of ``solver`` reads a derivative of ``var``
+    (``{f}_{,0}``). Decided from the conditions alone, the same on every rank."""
+    derivative = re.compile(re.escape(_token_of(var)) + r"_\{ ?(\d*),(\d+)\}\(")
+    for bc in (getattr(solver, "essential_bcs", None) or []):
+        for element in sympy.Matrix(bc.fn):
+            found = unwrap_expression(sympy.sympify(element)).atoms(sympy.Function)
+            if any(derivative.match(str(a)) for a in found):
+                return True
+    return False
+
+
 def _refuse_boundary_fields(solver, reads, where, why):
-    names = ", ".join(f"'{v.name}' (in a {kind} condition)" for v, kind in reads)
+    where_read = {"essential": "in an essential condition",
+                  "natural": "in a natural condition",
+                  "essential-gradient": "in an essential condition, through its gradient"}
+    names = ", ".join(f"'{v.name}' ({where_read.get(kind, kind)})" for v, kind in reads)
     raise NotImplementedError(
         f"{where}: {type(solver).__name__}({solver.u.name}) reads {names}, {why}. "
         f"The field route does not assemble the derivative through a boundary "
@@ -557,8 +594,20 @@ def gradient(solver, misfit, parameters=(), fields=(), scratch=None, boundary=No
     read_vars = [f for f in fields if f is not u] + list(route)
     if u in duals:
         reads = _boundary_reads_of(solver, [f for f in fields if f is not u])
-        if reads:
-            _refuse_boundary_fields(solver, reads, "gradient", "which was asked for")
+        # A field read only in an essential datum has its dual through the
+        # reaction (solver._essential_datum_field_dual, #787); one read in a
+        # natural condition has no assembled facet term on this route yet.
+        natural = [(v, k) for v, k in reads if k != "essential"]
+        if natural:
+            _refuse_boundary_fields(solver, natural, "gradient", "which was asked for")
+        in_datum = [v for v, k in reads if k == "essential"]
+        # The reaction maps onto the field's nodal VALUES. A datum through the
+        # field's gradient reads its neighbours' values too, and that map is not
+        # built: refused (measured: dual 0 against -0.896 for df/dx).
+        through_gradient = [(v, "essential-gradient") for v in in_datum
+                            if _datum_reads_gradient(solver, v)]
+        if through_gradient:
+            _refuse_boundary_fields(solver, through_gradient, "gradient", "which was asked for")
         rhs = duals.pop(u)
         # dJ/du on every node, the constrained ones included: the rows the
         # solve leaves out are the misfit reading the prescribed data, and
@@ -580,6 +629,13 @@ def gradient(solver, misfit, parameters=(), fields=(), scratch=None, boundary=No
         # parameter in a velocity datum reads it through the divergence block
         for p in parameters:
             grad[p] += solver.sensitivity(mu, p, lam=lam, misfit_dual=misfit_dual)
+        for field in in_datum:
+            through_datum = solver._essential_datum_field_dual(
+                mu, field, lam=lam, misfit_dual=misfit_dual)
+            if through_datum is not None:
+                through_datum = _owned_to_ghosts(field, through_datum)
+                out_fields[field] = out_fields[field] + through_datum.reshape(
+                    np.asarray(out_fields[field]).shape)
         if lam is not None:
             scratch.give(lam)
         for var, dual in field_duals(solver, mu, read_vars, scratch).items():

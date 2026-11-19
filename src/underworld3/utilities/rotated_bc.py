@@ -137,6 +137,17 @@ def _normal_source(solver, normal, boundary):
         comps = [sympy.sympify(unwrap(normal[0, k], keep_constants=False,
                                       return_self=False))
                  for k in range(cdim)]
+        # unwrap returns raw coordinate BaseScalars, and SymPy's global cache can
+        # hand back a structurally equal expression built on an EARLIER mesh's
+        # scalars (same name, same hash, not equal to this mesh's UWCoordinates).
+        # Re-tag by name onto this solver's mesh before the stray check, as
+        # fault_contact does (#501). A second FreeSurface in a units model after
+        # reset_default_model was refused here.
+        by_name = {str(xk): xk for xk in solver.mesh.X}
+        retag = {sym: by_name[str(sym)] for c in comps for sym in c.free_symbols
+                 if str(sym) in by_name and sym is not by_name[str(sym)]}
+        if retag:
+            comps = [c.subs(retag) for c in comps]
         stray = set().union(*[c.free_symbols for c in comps]) \
             - set(solver.mesh.X)
         if stray:
@@ -2512,7 +2523,7 @@ def _build_rotated_custom_Pl(solver, Q, normal_rows):
         from underworld3.utilities.fault_mg import record_repairs, restrict_unreached
         repairs = []
         Pl = restrict_unreached(Pl, solver.dm.comm, repairs)
-        record_repairs(solver, repairs)
+        record_repairs(solver, repairs, h)
         rows = getattr(h, "level_patch_rows", None)
         if rows is not None:
             h.level_patch_rows = [None] * (len(rows) - 1) + [rows[-1]]
