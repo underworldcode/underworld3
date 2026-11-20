@@ -44,7 +44,10 @@ __all__ = ["partition_addon", "mark_labels", "mark_polylines", "mark_sheets",
 def _allreduce(comm, values, op=MPI.SUM):
     """Reduce a float array over the communicator (buffer-based; the
     pickling form applies the operator to Python objects)."""
+    from underworld3.utilities.agreed_build import agree
+
     out = np.array(values, dtype=float)
+    agree()                    # inside an agreed_build, an agreement point (#874)
     comm.Allreduce(MPI.IN_PLACE, out, op=op)
     return out
 
@@ -124,7 +127,11 @@ def mark_polylines(polylines):
             CV = closure_points(dm, np.arange(cS, cE), 0) - pStart
             np.maximum.at(h_chart, CV, np.broadcast_to(h_cell[:, None], CV.shape))
         # a seam vertex sees only its local cells: the largest incident cell
-        # over every rank, so the reach is a function of the mesh alone
+        # over every rank, so the reach is a function of the mesh alone. The
+        # reconciliation is collective: inside partition_addon's agreed build
+        # a failure above is agreed first (#874)
+        from underworld3.utilities.agreed_build import agree
+        agree()
         h_chart = _propagate_vertex(dm, h_chart, MPI.MAX, np.maximum)
         h_vertex = h_chart[vS - pStart: vE - pStart]
         ids = np.zeros(pEnd - pStart, dtype=np.int32)
@@ -151,6 +158,8 @@ def mark_sheets(sheets, clearance):
         pStart, pEnd = dm.getChart()
         X = _coords(dm)[: vE - vS]
         cells = _tet_vertices(dm)
+        from underworld3.utilities.agreed_build import agree
+        agree()                   # _vertex_h_3d reconciles collectively (#874)
         h_vertex, _h_cell = _vertex_h_3d(dm, cells, len(X))
         reach = (float(clearance) + 1.0) * h_vertex
         ids = np.zeros(pEnd - pStart, dtype=np.int32)
@@ -184,8 +193,10 @@ def mark_band(paths, width, clearance):
         vS, vE = dm.getDepthStratum(0)
         pStart, pEnd = dm.getChart()
         X = _coords(dm)[: vE - vS]
-        h_vertex, _h_cell = _vertex_h_3d(dm, _tet_vertices(dm) if dm.getDimension() == 3
-                                         else _cell_vertices(dm), len(X))
+        cells = _tet_vertices(dm) if dm.getDimension() == 3 else _cell_vertices(dm)
+        from underworld3.utilities.agreed_build import agree
+        agree()                   # _vertex_h_3d reconciles collectively (#874)
+        h_vertex, _h_cell = _vertex_h_3d(dm, cells, len(X))
         reach = (np.maximum(float(clearance) * h_vertex, 0.6 * float(width))
                  + h_vertex + float(width))
         ids = np.zeros(pEnd - pStart, dtype=np.int32)
@@ -363,9 +374,9 @@ def inherit_provenance(child, host):
 # --------------------------------------------------------------------------- #
 #  The parent relation and the units
 # --------------------------------------------------------------------------- #
-def _cell_centroids(mesh):
+def _cell_centroids(mesh, as_built=False):
     from underworld3.utilities.fault_mg import _cell_vertex_table
-    vxy, cv = _cell_vertex_table(mesh)
+    vxy, cv = _cell_vertex_table(mesh, as_built=as_built)
     return vxy[cv].mean(axis=1), vxy, cv
 
 
@@ -378,8 +389,9 @@ def _parent_cells_local(coarse, fine):
 
     The centroid is the one ``fine`` has in the geometry of ``coarse``
     (``fault_mg.reference_vertices``): a move changes the coordinates of
-    ``fine`` and not of ``coarse``, and the parent of a cell is the one it was
-    made in, not the one its moved centroid lies over (#1091)."""
+    ``fine``, and the parent of a cell is the one it was made in, not the one its
+    moved centroid lies over (#1091). A coarse level that moved with the finest
+    is then read where it was made too."""
     from underworld3.utilities.fault_mg import (locate_in_cells_exhaustive,
                                                 reference_vertices)
     comm = fine.dm.getComm().tompi4py()
@@ -391,7 +403,8 @@ def _parent_cells_local(coarse, fine):
     problem = None
     try:
         fcent, _vf, cvf = _cell_centroids(fine)
-        _cc, vxy_c, cv_c = _cell_centroids(coarse)
+        # read where it was made when the fine centroids are (the reference)
+        _cc, vxy_c, cv_c = _cell_centroids(coarse, as_built=reference is not None)
         n_f, n_c = cvf.shape[0], cv_c.shape[0]
         cell = np.full(n_f, -1, dtype=np.int64)
         if reference is not None:
@@ -626,7 +639,7 @@ def _peel_balance(dm, unit_of_cell, assign_unit, weight, unit_region,
                 assign_unit[u] = s
                 budget -= w
                 moved += 1
-        if comm.allreduce(moved) == 0:
+        if int(_allreduce(comm, np.array([moved], dtype=np.int64))[0]) == 0:
             break
     return assign_unit, n_sweeps
 
@@ -815,6 +828,27 @@ def partition_addon(mesh, region_marks, layers=1, tolerance=0.1,
     comm = mesh.dm.getComm().tompi4py()
     if comm.size == 1:
         return mesh
+    # One agreement context over the partition (#874): a rank-local exception
+    # anywhere in it is raised on every rank as the same CollectiveBuildError
+    # (a RuntimeError, not a builder failure: this is not a transfer build), at
+    # the next agreement point or at the partition's end. The body has an
+    # agreement point before each collective it makes; the helpers it calls
+    # keep their own guards until they are converted.
+    from underworld3.utilities.agreed_build import agreed_build
+    with agreed_build("addon_partition.partition_addon", builder_failure=False):
+        return _partition_addon_body(mesh, region_marks, layers, tolerance,
+                                     verbose, comm)
+
+
+def _partition_addon_body(mesh, region_marks, layers, tolerance, verbose, comm):
+    """The body of :func:`partition_addon`, inside its agreement context."""
+    from underworld3.utilities.agreed_build import (
+        agree, allgather as agreed_allgather, allreduce as agreed_allreduce)
+    from underworld3.utilities.fault_mg import (_cell_vertex_table,
+                                                reference_vertices)
+    from underworld3.utilities.fault_split import redistribute_by_assignment
+    from underworld3.utilities.place_surface import _merge_regions, _region_cells
+
     base, static, addon = _levels_of(mesh)
     levels = addon + [mesh]
     # the add-on levels are co-partitioned with each other (adapt made them
@@ -823,7 +857,9 @@ def partition_addon(mesh, region_marks, layers=1, tolerance=0.1,
     # partition moved it, in which case the recorded address is used
     parents = [None]
     for l in range(1, len(levels)):
+        agree()
         parents.append(_parent_cells_local(levels[l - 1], levels[l]))
+    agree()
     base_parent = (None if base is None
                    else _base_parent_addresses(base, levels[0], comm))
     cS0, cE0 = levels[0].dm.getHeightStratum(0)
@@ -836,17 +872,25 @@ def partition_addon(mesh, region_marks, layers=1, tolerance=0.1,
     # fault regions on every level, lifted to units: the faults asked for,
     # and every interior surface the levels already carry (placed or split
     # by an earlier call), so a second partition keeps those whole
-    marks = [np.asarray(region_marks(lev.dm), dtype=np.int32) for lev in levels]
-    n_asked = int(comm.allreduce(max((int(m.max()) for m in marks if m.size),
-                                     default=0), op=MPI.MAX))
-    glued = sorted(set().union(*comm.allgather(
-        set().union(*[embedded_surface_names(lev) for lev in levels]))))
+    # region_marks is the caller's, and collective (mark_polylines reconciles
+    # over the point star-forest), so it is an agreement point like the
+    # helpers: the collective-guard scan cannot see into it
+    marks = []
+    for lev in levels:
+        agree()
+        marks.append(np.asarray(region_marks(lev.dm), dtype=np.int32))
+    n_asked = int(agreed_allreduce(
+        comm, max((int(m.max()) for m in marks if m.size), default=0), op=MPI.MAX))
+    glued = sorted(set().union(*agreed_allgather(
+        comm, set().union(*[embedded_surface_names(lev) for lev in levels]))))
     for l, lev in enumerate(levels):
+        agree()
         marks[l] = np.maximum(marks[l],
                               _embedded_surface_marks(lev, glued, n_asked + 1))
     unit_region = np.zeros(n_units, dtype=np.int32)
     pairs = set()
     for l, lev in enumerate(levels):
+        agree()
         cell_region, _canon, _regions = _region_cells(
             lev.dm, marks[l], layers=layers)
         sel = np.flatnonzero(cell_region)
@@ -863,8 +907,9 @@ def partition_addon(mesh, region_marks, layers=1, tolerance=0.1,
                                   axis=0).tolist():
                 pairs.add((int(a), int(b)))
         unit_region = best
-    n_ids = int(comm.allreduce(int(unit_region.max()) if n_units else 0,
-                               op=MPI.MAX))
+    n_ids = int(agreed_allreduce(comm, int(unit_region.max()) if n_units else 0,
+                                 op=MPI.MAX))
+    agree()
     canon = _merge_regions(pairs, n_ids, comm)
     lookup = np.zeros(n_ids + 1, dtype=np.int32)
     for key, value in canon.items():
@@ -872,7 +917,7 @@ def partition_addon(mesh, region_marks, layers=1, tolerance=0.1,
     unit_region = lookup[unit_region]
     regions = sorted(set(canon.values()))
     local = np.array([float(weight[unit_region == k].sum()) for k in regions])
-    counts = np.asarray(comm.allgather(local)).reshape(comm.size, len(regions))
+    counts = np.asarray(agreed_allgather(comm, local)).reshape(comm.size, len(regions))
     # an id no level marked anywhere (a fault outside the mesh, a glued
     # surface absent from these levels) is not a region
     present = counts.sum(axis=0) > 0
@@ -897,12 +942,13 @@ def partition_addon(mesh, region_marks, layers=1, tolerance=0.1,
     centres = np.asarray(centres).reshape(len(regions), -1)
     load_before = _allreduce(comm, np.bincount(assign, weights=weight,
                                                minlength=comm.size))
+    agree()
     assign, n_sweeps = _peel_balance(levels[0].dm, unit_of[0], assign, weight,
                                      unit_region, unit_centroid, centres,
                                      tolerance, comm)
     load_after = _allreduce(comm, np.bincount(assign, weights=weight,
                                               minlength=comm.size))
-    n_moved_units = int(comm.allreduce(int((assign != comm.rank).sum())))
+    n_moved_units = int(agreed_allreduce(comm, int((assign != comm.rank).sum())))
     record = {
         "regions": len(regions), "owners": owner,
         "region_weight": {k: float(counts[:, j].sum())
@@ -937,8 +983,8 @@ def partition_addon(mesh, region_marks, layers=1, tolerance=0.1,
     # points and carries the pairing only: refuse, collectively, rather than
     # hand on normals that name other points. A second add_fault reaches here
     # with the earlier faults' record (#1099).
-    through_seams = sorted(set().union(*comm.allgather(
-        {name for lev in levels
+    through_seams = sorted(set().union(*agreed_allgather(
+        comm, {name for lev in levels
          for name, by_point in (getattr(lev, "_fault_seam_normals", None)
                                 or {}).items() if by_point})))
     if through_seams:
@@ -970,8 +1016,8 @@ def partition_addon(mesh, region_marks, layers=1, tolerance=0.1,
         below = base if l == 0 else levels[l - 1]
         reference = None if below is None else reference_vertices(lev, below)
         vS, vE = lev.dm.getDepthStratum(0)
-        held = comm.allgather(None if reference is None else
-                              reference.shape == (vE - vS, lev.dm.getCoordinateDim()))
+        held = agreed_allgather(comm, None if reference is None else
+                                reference.shape == (vE - vS, lev.dm.getCoordinateDim()))
         if len(set(held)) > 1 or False in held:
             # The reference rides a collective call below, and is laid out
             # there rank by rank: a rank without one, or with other rows than
@@ -983,6 +1029,7 @@ def partition_addon(mesh, region_marks, layers=1, tolerance=0.1,
         riding = (None if reference is None
                   else [_cell_vertex_table(lev)[0], reference])
         old_pairs = getattr(lev, "_fault_point_pairs", None)
+        agree()
         dm, new_pairs, dropped, new_fields, carried = redistribute_by_assignment(
             lev.dm, a_level, pairs=old_pairs, fields=fields,
             vertex_fields=riding)
@@ -992,10 +1039,15 @@ def partition_addon(mesh, region_marks, layers=1, tolerance=0.1,
                 f"by the move on level {l}")
         # every unit has a cell on every level, so a moved unit moves every
         # level and the shell partition never hands the input back here
+        agree()
         moved.append(_moved_wrap(lev, dm, new_fields, new_pairs))
+        agree()
         references.append(None if carried is None
                           else _carried_reference(moved[-1], carried, comm))
     for l, lev in enumerate(moved):
+        # one agreement per level, outside the branches below, before the
+        # parent resolution's collectives
+        agree()
         below = base if l == 0 else moved[l - 1]
         lev._addon_below = below
         lev._addon_reference = (None if references[l] is None

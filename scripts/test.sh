@@ -484,6 +484,16 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   batch 4 tests/test_117*py
   batch 4 tests/test_118*py
   batch 4 tests/test_119*py
+  batch 4 tests/test_120*py
+  batch 4 tests/test_121*py
+  batch 4 tests/test_122*py
+  batch 4 tests/test_123*py
+  batch 4 tests/test_124*py
+  batch 4 tests/test_125*py
+  batch 4 tests/test_126*py
+  batch 4 tests/test_127*py
+  batch 4 tests/test_128*py
+  batch 4 tests/test_129*py
   batch 4 tests/test_1450*py
 
   # Named (un-numbered) test files - JIT, docstrings, projections
@@ -516,6 +526,7 @@ PTEST_FILES=(
   tests/parallel/ptest_0844_reconnect_parallel.py
   tests/parallel/ptest_0845_fault_split_parallel.py
   tests/parallel/ptest_0845_relax_pinned_band_parallel.py
+  tests/parallel/ptest_0851_fault_network_3d_parallel.py
   tests/parallel/ptest_0852_place_split_contact.py
   tests/parallel/ptest_0853_place_lines_parallel.py
   tests/parallel/ptest_0854_place_sheet_parallel.py
@@ -686,6 +697,11 @@ if [ $PARALLEL_RANKS -gt 0 ] && shard_owns 6 && command -v mpirun &> /dev/null; 
     # rank's global_evaluate with no points; at three ranks two of them do.
     OMPI_MCA_rmaps_base_oversubscribe=1 $SUPERVISE mpirun -n 3 python -m pytest --with-mpi \
       tests/parallel/test_1243_parallel_plot_helpers_parallel.py || status=1
+
+    # add_particles_with_coordinates with a rank without cells: the triangle of
+    # cells leaves a rank empty only from np 3, so this file runs at np 3 always.
+    OMPI_MCA_rmaps_base_oversubscribe=1 $SUPERVISE mpirun -n 3 python -m pytest --with-mpi \
+      tests/parallel/test_1260_add_particles_one_owner_per_point_parallel.py || status=1
     # adapt(engine='nvb') with a rank without cells: the box that leaves a rank
     # empty does so from np 3 (at np 2 the test skips), so it runs at np 3 always.
     OMPI_MCA_rmaps_base_oversubscribe=1 $SUPERVISE mpirun -n 3 python -m pytest --with-mpi \
@@ -697,6 +713,10 @@ if [ $PARALLEL_RANKS -gt 0 ] && shard_owns 6 && command -v mpirun &> /dev/null; 
     # An SLCN step with an empty rank: the fixture empties a rank from np 3 only.
     OMPI_MCA_rmaps_base_oversubscribe=1 $SUPERVISE mpirun -n 3 python -m pytest --with-mpi \
       tests/parallel/test_1236_slcn_step_on_an_empty_rank_parallel.py || status=1
+    # A static field under the semi-Lagrangian history, with and without an empty
+    # rank: the same fixture, so np 3 always.
+    OMPI_MCA_rmaps_base_oversubscribe=1 $SUPERVISE mpirun -n 3 python -m pytest --with-mpi \
+      tests/parallel/test_1244_semi_lagrangian_static_field_parallel.py || status=1
     # A free surface with a rank without cells: the shell partition empties a rank
     # from np 3 (at np 2 it would leave one rank holding every cell), so np 3 always.
     OMPI_MCA_rmaps_base_oversubscribe=1 $SUPERVISE mpirun -n 3 python -m pytest --with-mpi \
