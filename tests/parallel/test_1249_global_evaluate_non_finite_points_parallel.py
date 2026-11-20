@@ -11,7 +11,7 @@ every rank, counted over all ranks: a rank whose own points are finite raises
 too. An infinite coordinate is refused the same way, also when
 ``check_extrapolated=True`` turns the far-outside refusal off.
 
-    python scripts/mpi_supervisor.py --silence 120 -- mpirun -n 2 python -m pytest --with-mpi tests/parallel/test_1247_global_evaluate_non_finite_points_parallel.py
+    python scripts/mpi_supervisor.py --silence 120 -- mpirun -n 2 python -m pytest --with-mpi tests/parallel/test_1249_global_evaluate_non_finite_points_parallel.py
 """
 import numpy as np
 import pytest
@@ -25,7 +25,7 @@ pytestmark = [pytest.mark.level_1, pytest.mark.tier_b,
 def _field():
     mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0),
                                              cellSize=0.2)
-    T = uw.discretisation.MeshVariable("T1247", mesh, 1, degree=2)
+    T = uw.discretisation.MeshVariable("T1249", mesh, 1, degree=2)
     T.array[:, 0, 0] = np.asarray(T.coords)[:, 0]
     return T
 
