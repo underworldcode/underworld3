@@ -435,6 +435,8 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   batch 3 tests/parallel/test_1169_solver_reset_scopes_parallel.py
   # So is a constrained Stokes solve with a P3 velocity, the essential-wall solution.
   batch 3 tests/parallel/test_1200_constrained_stokes_p3_velocity_parallel.py
+  # So is the refusal of a Stokes solve whose pressure preconditioner cannot be factored (#1059).
+  batch 3 tests/parallel/test_1059_stokes_unfactorable_pressure_pc_refused_parallel.py
   # So is #1123's sheared mesh: every inside point owned at any rank count, exact serially.
   batch 3 tests/parallel/test_1123_exact_locator_parallel.py
   # So are the contained points the walk misses on that mesh, found by the exact fallback (#1183).
