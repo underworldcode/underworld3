@@ -110,5 +110,5 @@ def test_without_a_temperature_reference_kelvin_is_the_scale():
 def test_an_energy_per_mole_round_trips(thermal_model):
     """dimensionalise used the same scale, and refused where it raised."""
     q = uw.quantity(_E, "J/mol")
-    back = uw.dimensionalise(uw.non_dimensionalise(q), q.dimensionality if hasattr(q, "dimensionality") else None)
+    back = uw.dimensionalise(uw.non_dimensionalise(q), q.dimensionality)
     assert float(back.to("J/mol").magnitude) == pytest.approx(_E)
