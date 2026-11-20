@@ -240,7 +240,7 @@ else:
     t = -n.cross(s) # complete the coordinate triad
     R = sympy.BlockMatrix((s,t,n)).as_explicit()
 
-display(R)
+print(R)
 
 # print(sympy.latex(R, mode='plain'))
 # -
@@ -267,7 +267,7 @@ display(R)
 
 eta0 = sympy.symbols("\eta_0")
 C_IJm = 2 * sympy.Matrix.diag([eta0]*6)
-display(C_IJm)
+print(C_IJm)
 
 ## Rotate the matrix 
 
@@ -275,7 +275,7 @@ c_ijkl = uw.maths.tensor.mandel_to_rank4(C_IJm, 3)
 C_IJv = uw.maths.tensor.rank4_to_voigt(c_ijkl, 3)
 c_ijkl_R = sympy.simplify(uw.maths.tensor.tensor_rotation(R, c_ijkl))
 C_IJm_R = sympy.simplify(uw.maths.tensor.rank4_to_mandel(c_ijkl_R, 3))
-display(C_IJm_R)
+print(C_IJm_R)
 
 ## Is this really invariant under rotation ?? 
 ## Have to do some manipulation to identify the unit-vector component relationships
@@ -320,7 +320,7 @@ C_IJm_MM[3,3] = 2*(eta0-delta_eta)  # yz
 C_IJm_MM[4,4] = 2*(eta0-delta_eta)  # xz
 C_IJm_MM[5,5] = 2*eta0  # xy
 
-display(C_IJm_MM)
+print(C_IJm_MM)
 
 ## We know that the isotropic part is invariant under rotation, so we only need to 
 ## examine the non-isotropic part.
@@ -331,11 +331,11 @@ C_ijkl_MM_R = sympy.simplify(uw.maths.tensor.tensor_rotation(R, C_ijkl_MM))
 C_IJm_MM_R = sympy.simplify(uw.maths.tensor.rank4_to_mandel(C_ijkl_MM_R, 3)) + C_IJm
 C_IJv_MM_R = sympy.simplify(uw.maths.tensor.rank4_to_voigt(C_ijkl_MM_R, 3)) + C_IJv
 
-display(C_IJm_MM_R)
+print(C_IJm_MM_R)
 
 # Check what happens if we set delta eta to zero
 C_IJm_MM_iso = C_IJm_MM_R.subs(delta_eta,0).applyfunc(sympy.factor).subs(n[0]**2+n[1]**2, 1-n[2]**2).simplify()
-display(C_IJm_MM_iso)
+print(C_IJm_MM_iso)
 
 # -
 
@@ -373,7 +373,7 @@ C_IJm_HW[3,3] = 2 * (eta0 - delta_eta) # yz
 C_IJm_HW[4,4] = 2 * (eta0 - delta_eta)  # xz
 C_IJm_HW[5,5] = 2 * eta0  # xy
 
-display(C_IJm_HW)
+print(C_IJm_HW)
 # -
 
 # ## Rotation (symbolic)
@@ -387,14 +387,14 @@ display(uw.maths.tensor.rank4_to_mandel(C_ijkl_HW, 3))
 C_ijkl_HW_R = sympy.simplify(uw.maths.tensor.tensor_rotation(R, C_ijkl_HW))
 C_IJm_HW_R = sympy.simplify(uw.maths.tensor.rank4_to_mandel(C_ijkl_HW_R, 3)) + C_IJm
 
-display(C_IJm_HW_R)
+print(C_IJm_HW_R)
 
 # +
 ## Maybe this can be simplified if we use the unit vector relationships among n0,n1,n2
 
 C_IJm_HW_R_s1 = C_IJm_HW_R.subs(n[0]**2+n[1]**2+n[2]**2,1)
 C_IJm_HW_R_s2 = C_IJm_HW_R_s1.subs(n[0]**2+n[1]**2, 1-n[2]**2).applyfunc(sympy.factor)
-display(C_IJm_HW_R_s2)
+print(C_IJm_HW_R_s2)
 
 ## Yeah, maybe not ... 
 # -
@@ -512,7 +512,7 @@ uw.maths.tensor.rank4_to_mandel(C_ijkl_BC_R, 3)
 print(sympy.latex(uw.maths.tensor.rank4_to_mandel(C_ijkl_BC_R, 3)))
 
 # -
-display(C_ijkl_BC_R)
+print(C_ijkl_BC_R)
 
 
 

@@ -64,8 +64,8 @@ PXs = sympy.Function(r"\mathcal{P}")(*mesh.N.base_scalars()[0 : mesh.dim])
 VXs = sympy.Matrix.zeros(1, mesh.dim)
 for i in range(mesh.dim):
     VXs[i] = sympy.Function(rf"\mathcal{{V}}_{i}")(*mesh.N.base_scalars()[0 : mesh.dim])
-display(PXs)
-display(VXs)
+print(PXs)
+print(VXs)
 # -
 
 # ## Symbolic forms v. mesh variables
@@ -78,13 +78,13 @@ display(VXs)
 
 # +
 gradPXs = meshdisc_xyz.vector.gradient(PXs)
-display(gradPXs)
+print(gradPXs)
 
 divgradPXs = meshdisc_xyz.vector.divergence(gradPXs)
-display(divgradPXs)
+print(divgradPXs)
 
 curlgradPXs = meshdisc_xyz.vector.curl(gradPXs)
-display(curlgradPXs)
+print(curlgradPXs)
 
 # +
 ## Create a Cylindrical Mesh with a Native Coordinate System
@@ -123,18 +123,18 @@ PCs = sympy.Function(r"\mathcal{P}")(*mesh.N.base_scalars()[0 : mesh.dim])
 VCs = sympy.Matrix.zeros(1, mesh.dim)
 for i in range(mesh.dim):
     VCs[i] = sympy.Function(rf"\mathcal{{V}}_{i}")(*mesh.N.base_scalars()[0 : mesh.dim])
-display(PCs)
-display(VCs)
+print(PCs)
+print(VCs)
 
 # +
 gradPCs = meshdisc.vector.gradient(PCs)
-display(gradPCs)
+print(gradPCs)
 
 divgradPCs = meshdisc.vector.divergence(gradPCs)
-display(divgradPCs)
+print(divgradPCs)
 
 curlgradPCs = meshdisc.vector.curl(gradPCs)
-display(curlgradPCs)
+print(curlgradPCs)
 
 # +
 ## Create a Spherical Mesh with a Native Coordinate System
@@ -183,21 +183,21 @@ PSs = sympy.Function(r"\mathcal{P}")(*mesh.N.base_scalars())
 VSs = sympy.Matrix.zeros(1, mesh.dim)
 for i in range(mesh.dim):
     VSs[i] = sympy.Function(rf"\mathcal{{V}}_{i}")(*mesh.N.base_scalars())
-display(PSs)
-display(VSs)
+print(PSs)
+print(VSs)
 
 # +
 gradPSs = meshball.vector.gradient(PSs)
-display(gradPSs)
+print(gradPSs)
 
 divVSs = meshball.vector.divergence(VSs)
-display(divVSs)
+print(divVSs)
 
 divgradPSs = meshball.vector.divergence(gradPSs)
-display(divgradPSs)
+print(divgradPSs)
 
 curlgradPSs = meshball.vector.curl(gradPSs)
-display(curlgradPSs)
+print(curlgradPSs)
 
 # Note
 sympy.simplify(curlgradPSs)
@@ -224,8 +224,8 @@ sympy.simplify(curlgradPSs)
 #     pl.show(cpos="xy")
 # -
 
-display(meshball.CoordinateSystem.rRotN)
-display(meshball.CoordinateSystem.xRotN)
+print(meshball.CoordinateSystem.rRotN)
+print(meshball.CoordinateSystem.xRotN)
 
 # +
 # We can validate using the pure symbolic forms

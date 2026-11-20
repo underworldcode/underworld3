@@ -310,7 +310,7 @@ for step in range(0, 51):
 
     stokes.solve(verbose=False, zero_init_guess=False, picard=0)
 
-    delta_t = adv_diff.estimate_dt(v_factor=2.0)
+    delta_t = adv_diff.estimate_dt()
     adv_diff.solve(timestep=delta_t, zero_init_guess=False)
 
     stats = t_soln.stats()

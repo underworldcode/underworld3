@@ -63,7 +63,7 @@ import meshio
 #     dim=2, radius_outer=1.0, radius_inner=0.0, cell_size=0.075, degree=1, verbose=False
 # )
 
-meshball = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.0, cellSize=0.05, degree=1, centre=False, verbosity=True)
+meshball = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.0, cellSize=0.05, degree=1, centre=False, gmsh_verbosity=1)
 
 # +
 v_soln = uw.discretisation.MeshVariable("U", meshball, 2, degree=2)

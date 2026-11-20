@@ -115,7 +115,9 @@ timing.start()
 meshball = uw.meshing.RegionalSphericalBox(
     radiusInner=r_i,
     radiusOuter=r_o,
-    numElements=els,
+    numElementsLon=els,
+    numElementsLat=els,
+    numElementsDepth=els,
     refinement=grid_refinement,
     qdegree=2,
     simplex=grid_simplex,
