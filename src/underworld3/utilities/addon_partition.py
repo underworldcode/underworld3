@@ -44,7 +44,10 @@ __all__ = ["partition_addon", "mark_labels", "mark_polylines", "mark_sheets",
 def _allreduce(comm, values, op=MPI.SUM):
     """Reduce a float array over the communicator (buffer-based; the
     pickling form applies the operator to Python objects)."""
+    from underworld3.utilities.agreed_build import agree
+
     out = np.array(values, dtype=float)
+    agree()                    # inside an agreed_build, an agreement point (#874)
     comm.Allreduce(MPI.IN_PLACE, out, op=op)
     return out
 
@@ -815,6 +818,27 @@ def partition_addon(mesh, region_marks, layers=1, tolerance=0.1,
     comm = mesh.dm.getComm().tompi4py()
     if comm.size == 1:
         return mesh
+    # One agreement context over the partition (#874): a rank-local exception
+    # anywhere in it is raised on every rank as the same CollectiveBuildError
+    # (a RuntimeError, not a builder failure: this is not a transfer build), at
+    # the next agreement point or at the partition's end. The body has an
+    # agreement point before each collective it makes; the helpers it calls
+    # keep their own guards until they are converted.
+    from underworld3.utilities.agreed_build import agreed_build
+    with agreed_build("addon_partition.partition_addon", builder_failure=False):
+        return _partition_addon_body(mesh, region_marks, layers, tolerance,
+                                     verbose, comm)
+
+
+def _partition_addon_body(mesh, region_marks, layers, tolerance, verbose, comm):
+    """The body of :func:`partition_addon`, inside its agreement context."""
+    from underworld3.utilities.agreed_build import (
+        agree, allgather as agreed_allgather, allreduce as agreed_allreduce)
+    from underworld3.utilities.fault_mg import (_cell_vertex_table,
+                                                reference_vertices)
+    from underworld3.utilities.fault_split import redistribute_by_assignment
+    from underworld3.utilities.place_surface import _merge_regions, _region_cells
+
     base, static, addon = _levels_of(mesh)
     levels = addon + [mesh]
     # the add-on levels are co-partitioned with each other (adapt made them
@@ -823,7 +847,9 @@ def partition_addon(mesh, region_marks, layers=1, tolerance=0.1,
     # partition moved it, in which case the recorded address is used
     parents = [None]
     for l in range(1, len(levels)):
+        agree()
         parents.append(_parent_cells_local(levels[l - 1], levels[l]))
+    agree()
     base_parent = (None if base is None
                    else _base_parent_addresses(base, levels[0], comm))
     cS0, cE0 = levels[0].dm.getHeightStratum(0)
@@ -837,16 +863,18 @@ def partition_addon(mesh, region_marks, layers=1, tolerance=0.1,
     # and every interior surface the levels already carry (placed or split
     # by an earlier call), so a second partition keeps those whole
     marks = [np.asarray(region_marks(lev.dm), dtype=np.int32) for lev in levels]
-    n_asked = int(comm.allreduce(max((int(m.max()) for m in marks if m.size),
-                                     default=0), op=MPI.MAX))
-    glued = sorted(set().union(*comm.allgather(
-        set().union(*[embedded_surface_names(lev) for lev in levels]))))
+    n_asked = int(agreed_allreduce(
+        comm, max((int(m.max()) for m in marks if m.size), default=0), op=MPI.MAX))
+    glued = sorted(set().union(*agreed_allgather(
+        comm, set().union(*[embedded_surface_names(lev) for lev in levels]))))
     for l, lev in enumerate(levels):
+        agree()
         marks[l] = np.maximum(marks[l],
                               _embedded_surface_marks(lev, glued, n_asked + 1))
     unit_region = np.zeros(n_units, dtype=np.int32)
     pairs = set()
     for l, lev in enumerate(levels):
+        agree()
         cell_region, _canon, _regions = _region_cells(
             lev.dm, marks[l], layers=layers)
         sel = np.flatnonzero(cell_region)
@@ -863,8 +891,9 @@ def partition_addon(mesh, region_marks, layers=1, tolerance=0.1,
                                   axis=0).tolist():
                 pairs.add((int(a), int(b)))
         unit_region = best
-    n_ids = int(comm.allreduce(int(unit_region.max()) if n_units else 0,
-                               op=MPI.MAX))
+    n_ids = int(agreed_allreduce(comm, int(unit_region.max()) if n_units else 0,
+                                 op=MPI.MAX))
+    agree()
     canon = _merge_regions(pairs, n_ids, comm)
     lookup = np.zeros(n_ids + 1, dtype=np.int32)
     for key, value in canon.items():
@@ -872,7 +901,7 @@ def partition_addon(mesh, region_marks, layers=1, tolerance=0.1,
     unit_region = lookup[unit_region]
     regions = sorted(set(canon.values()))
     local = np.array([float(weight[unit_region == k].sum()) for k in regions])
-    counts = np.asarray(comm.allgather(local)).reshape(comm.size, len(regions))
+    counts = np.asarray(agreed_allgather(comm, local)).reshape(comm.size, len(regions))
     # an id no level marked anywhere (a fault outside the mesh, a glued
     # surface absent from these levels) is not a region
     present = counts.sum(axis=0) > 0
@@ -897,12 +926,13 @@ def partition_addon(mesh, region_marks, layers=1, tolerance=0.1,
     centres = np.asarray(centres).reshape(len(regions), -1)
     load_before = _allreduce(comm, np.bincount(assign, weights=weight,
                                                minlength=comm.size))
+    agree()
     assign, n_sweeps = _peel_balance(levels[0].dm, unit_of[0], assign, weight,
                                      unit_region, unit_centroid, centres,
                                      tolerance, comm)
     load_after = _allreduce(comm, np.bincount(assign, weights=weight,
                                               minlength=comm.size))
-    n_moved_units = int(comm.allreduce(int((assign != comm.rank).sum())))
+    n_moved_units = int(agreed_allreduce(comm, int((assign != comm.rank).sum())))
     record = {
         "regions": len(regions), "owners": owner,
         "region_weight": {k: float(counts[:, j].sum())
@@ -937,8 +967,8 @@ def partition_addon(mesh, region_marks, layers=1, tolerance=0.1,
     # points and carries the pairing only: refuse, collectively, rather than
     # hand on normals that name other points. A second add_fault reaches here
     # with the earlier faults' record (#1099).
-    through_seams = sorted(set().union(*comm.allgather(
-        {name for lev in levels
+    through_seams = sorted(set().union(*agreed_allgather(
+        comm, {name for lev in levels
          for name, by_point in (getattr(lev, "_fault_seam_normals", None)
                                 or {}).items() if by_point})))
     if through_seams:
@@ -970,8 +1000,8 @@ def partition_addon(mesh, region_marks, layers=1, tolerance=0.1,
         below = base if l == 0 else levels[l - 1]
         reference = None if below is None else reference_vertices(lev, below)
         vS, vE = lev.dm.getDepthStratum(0)
-        held = comm.allgather(None if reference is None else
-                              reference.shape == (vE - vS, lev.dm.getCoordinateDim()))
+        held = agreed_allgather(comm, None if reference is None else
+                                reference.shape == (vE - vS, lev.dm.getCoordinateDim()))
         if len(set(held)) > 1 or False in held:
             # The reference rides a collective call below, and is laid out
             # there rank by rank: a rank without one, or with other rows than
@@ -983,6 +1013,7 @@ def partition_addon(mesh, region_marks, layers=1, tolerance=0.1,
         riding = (None if reference is None
                   else [_cell_vertex_table(lev)[0], reference])
         old_pairs = getattr(lev, "_fault_point_pairs", None)
+        agree()
         dm, new_pairs, dropped, new_fields, carried = redistribute_by_assignment(
             lev.dm, a_level, pairs=old_pairs, fields=fields,
             vertex_fields=riding)
@@ -992,10 +1023,15 @@ def partition_addon(mesh, region_marks, layers=1, tolerance=0.1,
                 f"by the move on level {l}")
         # every unit has a cell on every level, so a moved unit moves every
         # level and the shell partition never hands the input back here
+        agree()
         moved.append(_moved_wrap(lev, dm, new_fields, new_pairs))
+        agree()
         references.append(None if carried is None
                           else _carried_reference(moved[-1], carried, comm))
     for l, lev in enumerate(moved):
+        # one agreement per level, outside the branches below, before the
+        # parent resolution's collectives
+        agree()
         below = base if l == 0 else moved[l - 1]
         lev._addon_below = below
         lev._addon_reference = (None if references[l] is None
