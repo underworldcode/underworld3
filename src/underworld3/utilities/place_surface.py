@@ -5987,6 +5987,42 @@ def _occ_ladder_assembly_2d(polylines, width, size, assembly="fuse",
         gmsh.finalize()
 
 
+def _refuse_network_outcrop_2d(polylines, domain, size):
+    """The network path does not build an outcrop (#1177): refuse a strand
+    with a point outside the domain, or on its boundary, before any CAD.
+
+    The network mesher embeds each strand's interior points in the ribbon
+    face, which the domain clips. Measured on development: a strand drawn past
+    a wall left spine points outside the clipped face, and gmsh then meshed
+    nothing or did not return (an hour, on #1177's reproduction); a strand
+    ended exactly on a wall meshed to no triangles. A ribbon whose outline only
+    grazes a wall, its strand inside, builds and is not refused. "On the
+    boundary" is within 1e-9 of the cell size, the scale of the assembly's
+    area gate: a point the user placed on a wall, to round-off.
+    """
+    for P in polylines:
+        P = np.asarray(P, dtype=float)[:, :2]
+        outside = ~_inside_domain_2d(P, domain)
+        on_wall = np.zeros(len(P), dtype=bool)
+        for L in domain:
+            L = np.asarray(L, dtype=float)
+            A, B = L, np.roll(L, -1, axis=0)
+            AB = B - A
+            t = np.clip(((P[:, None, :] - A[None]) * AB[None]).sum(-1)
+                        / np.maximum((AB * AB).sum(-1), 1e-300)[None], 0.0, 1.0)
+            d = np.linalg.norm(P[:, None, :] - (A[None] + t[..., None] * AB[None]), axis=-1)
+            on_wall |= d.min(axis=1) <= 1e-9 * size
+        if (outside | on_wall).any():
+            k = int(np.flatnonzero(outside | on_wall)[0])
+            raise RuntimeError(
+                f"network assembly: a strand reaches the domain boundary (its point "
+                f"{np.round(P[k], 6).tolist()} lies "
+                f"{'outside the domain' if outside[k] else 'on the boundary'}), and "
+                f"mesher='network' does not build an outcrop. Place an outcropping "
+                f"strand with the default mesher (mesher=None) or mesher='ladder', "
+                f"or end it inside the domain (#1177).")
+
+
 def _occ_assembly_2d(polylines, width, size, assembly="fuse", domain=None,
                      embed=None):
     """Thicken each polyline into a ribbon, resolve overlaps, mesh.
@@ -6020,6 +6056,8 @@ def _occ_assembly_2d(polylines, width, size, assembly="fuse", domain=None,
     """
     import gmsh
 
+    if embed and domain is not None:
+        _refuse_network_outcrop_2d(polylines, domain, size)
     gmsh.initialize()
     gmsh.option.setNumber("General.Terminal", 0)
     try:
