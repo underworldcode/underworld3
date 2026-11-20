@@ -293,9 +293,9 @@ if analytical:
 
 # %%
 norm_v = uw.discretisation.MeshVariable("N", mesh, mesh.dim, degree=pdegree, varsymbol=r"{\hat{n}}")
-norm_v.data[:, 0] = uw.function.evaluate(mesh.CoordinateSystem.unit_e_0[0], norm_v.coords)
-norm_v.data[:, 1] = uw.function.evaluate(mesh.CoordinateSystem.unit_e_0[1], norm_v.coords)
-norm_v.data[:, 2] = uw.function.evaluate(mesh.CoordinateSystem.unit_e_0[2], norm_v.coords)
+norm_v.array[:, 0, 0] = uw.function.evaluate(mesh.CoordinateSystem.unit_e_0[0], norm_v.coords)[:, 0, 0]
+norm_v.array[:, 0, 1] = uw.function.evaluate(mesh.CoordinateSystem.unit_e_0[1], norm_v.coords)[:, 0, 0]
+norm_v.array[:, 0, 2] = uw.function.evaluate(mesh.CoordinateSystem.unit_e_0[2], norm_v.coords)[:, 0, 0]
 
 # %% [markdown]
 """

@@ -77,7 +77,7 @@ r, lon,lat = bubblemesh.CoordinateSystem.R
 t_init = sympy.sympify(sympy.sin(6 * lon) * sympy.cos(5 * lat) * sympy.cos(lat))
 
 with bubblemesh.access(T, Tnode):
-    T.data[:,0] = uw.function.evaluate(t_init, T.coords, bubblemesh.N)    
+    T.array[:, 0, 0] = uw.function.evaluate(t_init, T.coords, bubblemesh.N)[:, 0, 0]    
 # -
 
 T.gradient()

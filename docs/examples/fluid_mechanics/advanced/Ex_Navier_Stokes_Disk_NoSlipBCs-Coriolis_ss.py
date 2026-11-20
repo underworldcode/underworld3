@@ -185,7 +185,7 @@ t_init = sympy.cos(3 * th)
 # Write density into a variable for saving
 
 with meshball.access(t_soln):
-    t_soln.data[:, 0] = uw.function.evaluate(t_init, t_soln.coords)
+    t_soln.array[:, 0, 0] = uw.function.evaluate(t_init, t_soln.coords)[:, 0, 0]
     print(t_soln.data.min(), t_soln.data.max())
 # -
 navier_stokes.bodyforce = Rayleigh * unit_rvec * t_init  # minus * minus

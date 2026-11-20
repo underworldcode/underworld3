@@ -395,7 +395,7 @@ for step in range(0, 250):
 
     # update swarm / swarm variables
 
-    T1.data[:, 0] = uw.function.evaluate(t_soln.fn, swarm._particle_coordinates.data)
+    T1.array[:, 0, 0] = uw.function.evaluate(t_soln.fn, swarm._particle_coordinates.data)[:, 0, 0]
 
     # advect swarm
     swarm.advection(v_soln.fn, delta_t)

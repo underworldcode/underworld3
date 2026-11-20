@@ -155,8 +155,8 @@ stokes.petsc_options.setValue("snes_monitor", None)
 
 # Similar (equivalent horizontal pattern) but in a body force
 with meshball.access(t_init):
-    t_init.data[:,0] = uw.function.evaluate(
-            sympy.cos(3*ph) * sympy.sin(5*th) * sympy.exp(-50.0 * ((r - r_int) ** 2)), t_init.coords) 
+    t_init.array[:, 0, 0] = uw.function.evaluate(
+            sympy.cos(3*ph) * sympy.sin(5*th) * sympy.exp(-50.0 * ((r - r_int) ** 2)), t_init.coords)[:, 0, 0] 
 
 
 

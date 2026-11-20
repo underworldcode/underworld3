@@ -221,7 +221,7 @@ print(I.evaluate())  # should be zero
 I.fn = x + y + z
 print(I.evaluate())  # should be zero
 
-meshvar.data[:, 0] = uw.function.evaluate(x + y + z, meshvar.coords)
+meshvar.array[:, 0, 0] = uw.function.evaluate(x + y + z, meshvar.coords)[:, 0, 0]
 
 I.fn = meshvar.fn
 print(I.evaluate())  # should be zero

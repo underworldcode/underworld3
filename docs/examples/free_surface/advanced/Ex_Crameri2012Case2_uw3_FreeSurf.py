@@ -172,8 +172,8 @@ if MATERIAL == "swarm":
 
     def write_materials(index):
         """Particle fields, for the viscosity snapshots of Fig. 5."""
-        rho_swarm.data[:, 0] = uw.function.evaluate(materials.rho, materials.coords)[:, 0, 0]
-        eta_swarm.data[:, 0] = uw.function.evaluate(materials.eta, materials.coords)[:, 0, 0]
+        rho_swarm.array[:, 0, 0] = uw.function.evaluate(materials.rho, materials.coords)[:, 0, 0][:, 0, 0]
+        eta_swarm.array[:, 0, 0] = uw.function.evaluate(materials.eta, materials.coords)[:, 0, 0][:, 0, 0]
         materials.write_timestep(
             filename="swarm", swarmname="materials", outputPath=outputPath, index=index,
             swarmVars=[materials.index, rho_swarm, eta_swarm],
@@ -212,8 +212,8 @@ elif MATERIAL == "cls":
 
     def write_materials(index):
         """Blended fields on the mesh, for the viscosity snapshots of Fig. 5."""
-        eta_mesh.data[:, 0] = uw.function.evaluate(materials.eta, eta_mesh.coords)[:, 0, 0]
-        rho_mesh.data[:, 0] = uw.function.evaluate(materials.rho, rho_mesh.coords)[:, 0, 0]
+        eta_mesh.array[:, 0, 0] = uw.function.evaluate(materials.eta, eta_mesh.coords)[:, 0, 0][:, 0, 0]
+        rho_mesh.array[:, 0, 0] = uw.function.evaluate(materials.rho, rho_mesh.coords)[:, 0, 0][:, 0, 0]
         mesh.write_timestep(
             "materials", meshUpdates=True, meshVars=[eta_mesh, rho_mesh],
             outputPath=outputPath, index=index,

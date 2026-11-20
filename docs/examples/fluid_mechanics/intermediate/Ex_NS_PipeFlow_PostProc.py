@@ -325,7 +325,7 @@ vx_theo_expr = 1.5 * vel * (1 - (y / ( maxY))**2)
 
 # calculate vx over the entire mesh variable
 with meshbox.access(v_ana):
-    v_ana.data[:, 0] = uw.function.evaluate(vx_theo_expr, v_ana.coords)
+    v_ana.array[:, 0, 0] = uw.function.evaluate(vx_theo_expr, v_ana.coords)[:, 0, 0]
 
 # create the mask function
 vel_mask_fn = sympy.Piecewise((1.0, (x >= x_sample) & (x <= (x_sample + 0.2))), 
