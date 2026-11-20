@@ -1036,8 +1036,12 @@ def _reduces_to_a_dimension(e, coordinates_are_lengths=False):
 
     if not coordinates_are_lengths and hasattr(e, "atoms"):
         e = e.subs({c: 1 for c in e.atoms(BaseScalar)})
+    from underworld3.function.unit_conversion import MismatchedSumError
+
     try:
         return _has_dimension(get_units(e))
+    except MismatchedSumError:
+        raise                   # a sum of mismatched dimensions is refused, not unread
     except Exception:
         # Sanctioned fallback: units inference that cannot reduce an expression
         # does not make a refusal; it must not fire on what it cannot read.
@@ -1109,7 +1113,31 @@ def _argument_has_a_dimension(arg):
     return verdict
 
 
+_expression_verdict_cache = collections.OrderedDict()
+
+
 def _dimensional_function_argument(expr):
+    """``_find_dimensional_function_argument``, cached on the expression and
+    the current value and units of every named expression in it: a repeat with
+    nothing reassigned (every solve of a time loop) is one walk and a lookup."""
+    symbolic = _as_symbolic(expr)
+    try:
+        key = (symbolic, _named_expression_state(symbolic))
+        hash(key)
+    except TypeError:
+        return _find_dimensional_function_argument(symbolic)
+    cache = _expression_verdict_cache
+    if key in cache:
+        cache.move_to_end(key)
+        return cache[key]
+    verdict = _find_dimensional_function_argument(symbolic)
+    cache[key] = verdict
+    if len(cache) > _ARGUMENT_DIMENSION_CACHE_SIZE:
+        cache.popitem(last=False)
+    return verdict
+
+
+def _find_dimensional_function_argument(expr):
     """The first applied function whose argument, or power whose exponent,
     carries a dimension once its leaves are reduced together (coordinates as
     lengths); ``(name, argument)`` or None. For a power the second item is the
@@ -1123,8 +1151,9 @@ def _dimensional_function_argument(expr):
     ``exp(eta1)`` and ``sin(x)`` have no meaning; ``exp(eta1/eta0)``,
     ``exp(-E/(R*T0))``, ``sin(pi*x/W)`` and ``atan2(y, x)`` do. Named
     expressions are walked into, each once, on every call: their values can be
-    reassigned. Only the units reduction of each argument is cached, keyed on
-    the current values (``_argument_has_a_dimension``).
+    reassigned. The units reduction of each argument is cached on the current
+    values (``_argument_has_a_dimension``), and so is the whole verdict
+    (``_dimensional_function_argument``).
     """
     import sympy
     from .expressions import UWexpression

@@ -603,6 +603,7 @@ def test_the_verdict_cache_is_bounded(units_model):
     for k in range(2000):
         fus._refuse_dimensional_function_argument(sympy.exp(e0 / e0 * (k + 1)))
     assert len(fus._argument_dimension_cache) <= fus._ARGUMENT_DIMENSION_CACHE_SIZE
+    assert len(fus._expression_verdict_cache) <= fus._ARGUMENT_DIMENSION_CACHE_SIZE
 
 
 @pytest.mark.level_1
@@ -687,3 +688,60 @@ def test_the_hint_for_a_power_shows_the_power(units_model):
     x, _y = mesh.X
     with pytest.raises(ValueError, match=r"2\*\*\(\.\.\. N\.x/W \.\.\.\)"):
         uw.function.evaluate(2 ** x, _PTS)
+
+
+# --- H1's review of #1197 at 883f1c52 -------------------------------------
+# get_units read a sum of dimensionless terms as "unknown", and then took the
+# units of the first field in it: T/T0 - 1 came back in kelvin, so the
+# normalised Arrhenius factor was refused while the same factor written as a
+# product was accepted.
+
+
+def _temperature_field(mesh):
+    """1400 K. The model has no temperature reference, so kelvin runs at scale
+    1 and the model value is written directly. (With a temperature reference
+    E/R is not divided by it, a separate defect: UNFILED item 17.)"""
+    T = uw.discretisation.MeshVariable("T_a", mesh, 1, degree=1, units="K")
+    T.data[:] = 1400.0
+    return T
+
+
+@pytest.mark.level_1
+@pytest.mark.tier_b
+@pytest.mark.parametrize("form", ["T/T0 - 1", "E/(R T) - E/(R T0)", "T/T0 + x/W", "E (1/T - 1/T0)/R"])
+def test_a_sum_of_dimensionless_terms_is_a_dimensionless_argument(units_model, form):
+    mesh = _box()
+    x, _y = mesh.X
+    T = _temperature_field(mesh).sym[0]
+    _e1, _e0, E, R, T0 = _arrhenius_constants()
+    W = uw.expression("W_a", uw.quantity(30, "km"), "width")
+    argument = {"T/T0 - 1": T / T0 - 1,
+                "E/(R T) - E/(R T0)": E / (R * T) - E / (R * T0),
+                "T/T0 + x/W": T / T0 + x / W,
+                "E (1/T - 1/T0)/R": E * (1 / T - 1 / T0) / R}[form]
+    assert uw.get_units(argument) == uw.units.dimensionless
+    uw.function.evaluate(sympy.exp(argument), _PTS)
+
+
+@pytest.mark.level_1
+@pytest.mark.tier_b
+def test_the_two_normalised_arrhenius_forms_evaluate_equal(units_model):
+    mesh = _box()
+    T = _temperature_field(mesh).sym[0]
+    _e1, _e0, E, R, T0 = _arrhenius_constants()
+    as_a_sum = uw.function.evaluate(sympy.exp(E / (R * T) - E / (R * T0)), _PTS)
+    as_a_product = uw.function.evaluate(sympy.exp(E * (1 / T - 1 / T0) / R), _PTS)
+    expected = np.exp(3.0e5 / 8.314 * (1 / 1400.0 - 1 / 1600.0))
+    assert float(np.asarray(as_a_sum).ravel()[0]) == pytest.approx(expected, rel=1e-6)
+    assert float(np.asarray(as_a_product).ravel()[0]) == pytest.approx(expected, rel=1e-6)
+
+
+@pytest.mark.level_1
+@pytest.mark.tier_b
+def test_a_sum_of_terms_with_different_dimensions_is_refused_naming_them(units_model):
+    mesh = _box()
+    T = _temperature_field(mesh).sym[0]
+    W = uw.expression("W_m", uw.quantity(30, "km"), "width")
+    with pytest.raises(ValueError, match="different dimensions") as refused:
+        uw.function.evaluate(T + W, _PTS)
+    assert "W_m" in str(refused.value) and "T_a" in str(refused.value)

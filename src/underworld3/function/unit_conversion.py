@@ -137,6 +137,10 @@ def get_units(obj):
     return _get_units(obj)
 
 
+class MismatchedSumError(ValueError):
+    """A sum whose terms carry different dimensions (``T + W``, kelvin plus km)."""
+
+
 def compute_expression_units(expr):
     """
     Compute units for compound SymPy expressions using dimensional analysis.
@@ -299,10 +303,17 @@ def compute_expression_units(expr):
             # Multiplication: multiply units
             result_unit = None
             found_any_units = False  # Track if we found any unit-aware terms
+            # A factor of unknown units (a field without units) leaves a product
+            # that would otherwise be dimensionless unknown, not dimensionless:
+            # 2*u is not a known pure number. A plain number gives no units.
+            unknown = False
 
             for arg in expr.args:
                 arg_units = compute_expression_units(arg)
                 if arg_units is None:
+                    unknown = True
+                    continue
+                if arg.is_Number:
                     continue
 
                 found_any_units = True
@@ -327,13 +338,13 @@ def compute_expression_units(expr):
             if found_any_units:
                 if result_unit is None:
                     # All units canceled out - return dimensionless Unit (not Quantity)
-                    return uw.units.dimensionless
+                    return None if unknown else uw.units.dimensionless
                 elif hasattr(result_unit, 'dimensionality'):
                     # Check if Pint says it's dimensionless
                     dim = result_unit.dimensionality
                     # UnitsContainer is empty (len == 0) for dimensionless units
                     if len(dim) == 0:
-                        return uw.units.dimensionless
+                        return None if unknown else uw.units.dimensionless
 
             return result_unit
 
@@ -357,13 +368,40 @@ def compute_expression_units(expr):
                 return None
 
         elif isinstance(expr, sympy.Add):
-            # Addition: all terms must have same units
-            # Return units of first non-dimensionless term
+            from underworld3.function.expressions import UWexpression
+
+            # Addition: the terms share a dimension, and the sum has it. A sum of
+            # dimensionless terms is dimensionless (T/T0 - 1). It used to return
+            # None, which means "unknown", and get_units then took the units of
+            # the first field it found: kelvin for T/T0 - 1. A plain number may
+            # sit beside a dimensional term (T + 0); terms of different
+            # dimensions are refused, naming them.
+            known, unknown = [], False
             for arg in expr.args:
                 arg_units = compute_expression_units(arg)
-                if arg_units and not is_dimensionless_unit(arg_units):
-                    return arg_units
-            return None
+                if arg_units is None:
+                    unknown = True
+                else:
+                    known.append((arg, arg_units))
+            dimensional = [(a, u) for a, u in known if not is_dimensionless_unit(u)]
+            if not dimensional:
+                return None if unknown or not known else uw.units.dimensionless
+            first_arg, first_units = dimensional[0]
+            first_dim = (1 * first_units).dimensionality
+            for arg, arg_units in known:
+                if arg.is_Number:
+                    continue
+                if (1 * arg_units).dimensionality != first_dim:
+                    def named(term):
+                        # a named expression prints its value; name it instead
+                        return str(getattr(term, "name", term)) if isinstance(
+                            term, UWexpression) else str(term)
+                    raise MismatchedSumError(
+                        f"a sum of terms with different dimensions: {named(first_arg)} is in "
+                        f"{first_units} and {named(arg)} is in "
+                        f"{arg_units if not is_dimensionless_unit(arg_units) else 'no units (a pure number)'}. "
+                        "Every term of a sum needs the same dimension.")
+            return first_units
 
         elif hasattr(expr, "func"):
             # Function application (sin, cos, etc.) - usually dimensionless result
@@ -378,6 +416,8 @@ def compute_expression_units(expr):
 
         return None
 
+    except MismatchedSumError:
+        raise
     except Exception:
         # If anything fails, fall back to None
         return None
