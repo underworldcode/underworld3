@@ -108,7 +108,7 @@ diffuser.solve()
 ## Now deform the mesh using this smooth field
 
 displacement = uw.function.evaluate(M.sym * mesh.CoordinateSystem.unit_e_0, mesh.X.coords).squeeze()
-# mesh._deform_mesh(mesh.X.coords + displacement)
+# mesh.deform(mesh.X.coords + displacement)
 mesh.deform(mesh.X.coords + displacement)
 
 
@@ -228,7 +228,7 @@ for step in range(0, 100):
 
     diffuser.reset.all()
     diffuser.add_essential_bc(
-        (v.sym.dot(mesh.CoordinateSystem.unit_e_0)), mesh.boundaries.Upper.name
+        (v.sym.dot(mesh.CoordinateSystem.unit_e_0),), mesh.boundaries.Upper.name
     )
     diffuser.add_essential_bc((0,), mesh.boundaries.Lower.name)
     diffuser.solve(zero_init_guess=False)
@@ -239,7 +239,7 @@ for step in range(0, 100):
 
     print(f"Displacement - Amplitude: {np.abs(displacement).max()}")
 
-    mesh._deform_mesh(mesh.X.coords + displacement)
+    mesh.deform(mesh.X.coords + displacement)
 
     stokes.solve(zero_init_guess=False)
 

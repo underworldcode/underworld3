@@ -124,8 +124,8 @@ stokes = Stokes(
 stokes.petsc_options.delValue("ksp_monitor")
 
 # Constant visc
-stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel(meshbox.dim)
-stokes.constitutive_model.Parameters.viscosity = 1
+stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
+stokes.constitutive_model.Parameters.shear_viscosity_0 = 1
 
 # Velocity boundary conditions
 stokes.add_dirichlet_bc((0.0), "Left", (0))
@@ -135,8 +135,8 @@ stokes.add_dirichlet_bc((None, 0.0), "Bottom")
 
 
 # +
-buoyancy_force = 1.0e6 * t_soln.fn
-stokes.bodyforce = meshbox.N.j * buoyancy_force
+buoyancy_force = 1.0e6 * t_soln.sym[0]
+stokes.bodyforce = sympy.Matrix([[0, buoyancy_force]])
 
 # check the stokes solve is set up and that it converges
 stokes.solve()

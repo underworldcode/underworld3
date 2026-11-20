@@ -325,14 +325,14 @@ mesh_solver = uw.systems.Poisson(init_mesh, u_Field=Rmesh)
 mesh_solver.constitutive_model = uw.constitutive_models.DiffusionModel
 mesh_solver.constitutive_model.Parameters.diffusivity = 1. 
 mesh_solver.f = 0.0
-mesh_solver.add_dirichlet_bc(Bmesh.sym[0], "Upper",0)
-mesh_solver.add_dirichlet_bc(Bmesh.sym[0], "Lower",0)
+mesh_solver.add_dirichlet_bc((Bmesh.sym[0],), "Upper")
+mesh_solver.add_dirichlet_bc((Bmesh.sym[0],), "Lower")
 
 _ra, _l1 = init_mesh.CoordinateSystem.xR
 _ra_new, _l1_new = perturbation_init(init_mesh)
 #Bmesh.data[:,0] = uw.function.evaluate(_ra,init_mesh.X.coords)
-Bmesh.data[botwall,0] = uw.function.evaluate(_ra,init_mesh.X.coords[botwall])
-Bmesh.data[topwall,0] = uw.function.evaluate(_ra_new,init_mesh.X.coords[topwall])
+Bmesh.data[botwall,0] = uw.function.evaluate(_ra,init_mesh.X.coords[botwall])[:, 0, 0]
+Bmesh.data[topwall,0] = uw.function.evaluate(_ra_new,init_mesh.X.coords[topwall])[:, 0, 0]
 mesh_solver.solve()
 
 def update_mesh():
@@ -598,8 +598,8 @@ class FreeSurfaceProcessor_Annulus(object):
         self.mesh_solver.constitutive_model = uw.constitutive_models.DiffusionModel
         self.mesh_solver.constitutive_model.Parameters.diffusivity = 1. 
         self.mesh_solver.f = 0.0
-        self.mesh_solver.add_dirichlet_bc(Bmesh.sym[0], "Upper",0)
-        self.mesh_solver.add_dirichlet_bc(Bmesh.sym[0], "Lower",0)
+        self.mesh_solver.add_dirichlet_bc((Bmesh.sym[0],), "Upper")
+        self.mesh_solver.add_dirichlet_bc((Bmesh.sym[0],), "Lower")
         
         self.v = v
         self._dt   = dt

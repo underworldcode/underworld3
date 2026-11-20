@@ -163,11 +163,11 @@ dmplex.setCoordinates(rl1l2_vec)
 meshball_xyz_tmp.vtk("tmp_sphere.vtk")
 del meshball_xyz_tmp
 
-meshball = uw.meshing.Mesh(
+meshball = uw.discretisation.Mesh(
     dmplex, coordinate_system_type=uw.coordinates.CoordinateSystemType.SPHERICAL
 )
 uw.cython.petsc_discretisation.petsc_dm_set_periodicity(
-    meshball.dm, [0.0, 6.28, 0.0], [0.0, 0.0, 0.0], [0.0, 2 * np.pi, 0.0]
+    meshball.dm, [0.0, 6.28, 0.0], [0.0, 0.0, 0.0], [-1.0, 2 * np.pi, -1.0]
 )
 
 
