@@ -1,11 +1,12 @@
-"""The full-disc annulus generators mark the centre point when asked.
+"""The full-disc and full-ball generators mark the centre point when asked.
 
 ``centre=True`` with ``radiusInner=0`` puts the centre vertex in a ``Centre``
 label, so a Dirichlet condition on ``"Centre"`` pins the field at r = 0.
 AnnulusWithSpokes accepted ``centre`` and ignored it: the gmsh model had no
 physical group for the centre point, and a condition on Centre was refused
 (the example sweep for #944, W1 2026-11-21). QuarterAnnulus
-marks the centre always.
+marks the centre always. SegmentedSphericalBall's docstring promised a
+Centre point that it never labelled (its tag was taken by the north pole).
 """
 import numpy as np
 import pytest
@@ -21,6 +22,8 @@ GENERATORS = {
         radiusOuter=1.0, radiusInner=0.0, centre=True),
     "AnnulusInternalBoundary": lambda: uw.meshing.AnnulusInternalBoundary(
         radiusOuter=1.5, radiusInternal=1.0, radiusInner=0.0, cellSize=0.2, centre=True),
+    "SegmentedSphericalBall": lambda: uw.meshing.SegmentedSphericalBall(
+        radius=1.0, cellSize=0.4),
     # marks the centre always (QuarterAnnulus does not use ``centre``)
     "QuarterAnnulus": lambda: uw.meshing.QuarterAnnulus(
         radiusOuter=1.0, radiusInner=0.0, cellSize=0.2),
