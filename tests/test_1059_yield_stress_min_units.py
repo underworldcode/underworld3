@@ -90,7 +90,11 @@ def _pure_shear_viscosity(tau_pa, floor_spelling):
 
     viscosity = constitutive_model.viscosity
     centre = np.array([[0.5, 0.5]])
-    evaluated = float(np.asarray(uw.function.evaluate(viscosity, centre)).ravel()[0])
+    # evaluate is the dimensional gateway: the viscosity comes back in Pa s
+    # (its max(tau_y, tau_y_min) keeps the stress's units), read here in units
+    # of eta_0 for the closed forms below
+    evaluated = float(np.asarray(
+        uw.function.evaluate(viscosity, centre).to("Pa*s").magnitude).ravel()[0]) / ETA
 
     eta_field = uw.discretisation.MeshVariable("eta", mesh, 1, degree=1)
     projection = uw.systems.Projection(mesh, eta_field)
