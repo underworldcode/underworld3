@@ -5712,6 +5712,22 @@ def _ladder_domain_gate_2d(pts, domain):
             "band (which clips).")
 
 
+def _distance_to_loops_2d(pts, domain):
+    """Each point's distance to the nearest segment of the domain's boundary
+    loops."""
+    pts = np.asarray(pts, dtype=float)
+    best = np.full(len(pts), np.inf)
+    for L in domain:
+        L = np.asarray(L, dtype=float)
+        A, B = L, np.roll(L, -1, axis=0)
+        AB = B - A
+        t = np.clip(((pts[:, None, :] - A[None]) * AB[None]).sum(-1)
+                    / np.maximum((AB * AB).sum(-1), 1e-300)[None], 0.0, 1.0)
+        d = np.linalg.norm(pts[:, None, :] - (A[None] + t[..., None] * AB[None]), axis=-1)
+        best = np.minimum(best, d.min(axis=1))
+    return best
+
+
 def _ladder_outcrop_assembly_2d(S, R, width, size, domain):
     """The ladder that OUTCROPS: the structured band on the samples inside
     the domain, stopping one rung short of the wall, closed by a small
@@ -5733,7 +5749,17 @@ def _ladder_outcrop_assembly_2d(S, R, width, size, domain):
     S = np.asarray(S, dtype=float)
     R = np.asarray(R, dtype=float)
     rows = np.stack([S + 0.5 * width * R, S, S - 0.5 * width * R], axis=1)
-    inside = _inside_domain_2d(rows.reshape(-1, 2), domain).reshape(-1, 3).all(axis=1)
+    flat = rows.reshape(-1, 2)
+    # A row counts as inside when its three points are inside the domain and
+    # at least a quarter of a cell from its boundary. A rung closer to the wall
+    # goes to the cap, which then starts at the rung before it and is never
+    # thinner than that between its rung and the wall. Without the margin, a
+    # rail point 3e-8 to 3e-7 inside the wall's chord polygon (measured on an
+    # annulus, #1090) left a cap whose sliver the geometry kernel merged
+    # away: the cap meshed short of its CAD area, or lost a rung vertex.
+    inside = (_inside_domain_2d(flat, domain)
+              & (_distance_to_loops_2d(flat, domain) >= 0.25 * size)
+              ).reshape(-1, 3).all(axis=1)
     if inside.all():
         return _ladder_curved_assembly_2d(S, width, size, reach=R)
     idx = np.flatnonzero(inside)
