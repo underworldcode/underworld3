@@ -39,3 +39,19 @@ def test_every_rank_refuses_a_tracing_history():
     except ValueError as err:
         refused = int("#871" in str(err))
     assert uw.mpi.comm.allreduce(refused, op=uw.MPI.MIN) == 1
+
+
+@pytest.mark.mpi(min_size=2)
+def test_every_rank_refuses_when_only_one_rank_holds_the_fault_record():
+    """The decision is a MAX over ranks: a rank whose fault record is empty
+    still refuses with the rest."""
+    uw.reset_default_model()
+    mesh = faulted_box()
+    if uw.mpi.rank != 0:
+        mesh._fault_point_pairs = {}
+    refused = 0
+    try:
+        ve_stokes(mesh, "semi_lagrangian", fault_bc=False)
+    except ValueError as err:
+        refused = int("#871" in str(err))
+    assert uw.mpi.comm.allreduce(refused, op=uw.MPI.MIN) == 1

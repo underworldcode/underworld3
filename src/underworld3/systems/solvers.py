@@ -614,7 +614,12 @@ class _StressHistoryMixin:
         it before the constitutive model is assigned: assigning the model
         creates the history, and the choice cannot change after that.
         """
-        return getattr(self, "_stress_transport", "semi_lagrangian")
+        if hasattr(self, "_stress_transport"):
+            return self._stress_transport
+        # the effective default: on a mesh with a split-node fault the history
+        # is made on the grid (see _resolve_stress_transport_for_faults; this
+        # read is rank-local, the decision when the history is made is not)
+        return "eulerian" if getattr(self.mesh, "_fault_point_pairs", None) else "semi_lagrangian"
 
     @stress_transport.setter
     def stress_transport(self, value):
