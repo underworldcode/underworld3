@@ -27,12 +27,12 @@ import underworld3 as uw
 pytestmark = [pytest.mark.level_1, pytest.mark.tier_b]
 
 
-def _stokes(mesh, tag):
+def _stokes(mesh, tag, viscosity=1.0):
     v = uw.discretisation.MeshVariable(f"V1295{tag}", mesh, 2, degree=2)
     p = uw.discretisation.MeshVariable(f"P1295{tag}", mesh, 1, degree=1)
     s = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
     s.constitutive_model = uw.constitutive_models.ViscousFlowModel
-    s.constitutive_model.Parameters.shear_viscosity_0 = 1.0
+    s.constitutive_model.Parameters.shear_viscosity_0 = viscosity
     s.bodyforce = sympy.Matrix([[0, 0]])
     s.tolerance = 1.0e-6
     return s
@@ -43,20 +43,23 @@ def _box():
                                              cellSize=0.1, qdegree=3)
 
 
-def _annulus_solver(tag, off=0.0, slide=0.0):
-    """u.n = 0.1 cos 2θ on Upper, declared enclosed; the mesh moved by ``off``
+def _annulus_solver(tag, off=0.0, slide=0.0, amplitude=0.1, viscosity=1.0):
+    """u.n = amplitude cos 2θ on Upper, declared enclosed; the mesh moved by ``off``
     (a radial wobble cos 3θ, largest on Upper) and ``slide`` (θ + slide sin 2θ)."""
     mesh = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.5, cellSize=0.2, qdegree=3)
     if off or slide:
-        X = np.array(mesh.X.coords)
+        # model coordinates, and marked as such: a units model refuses a plain
+        # array in deform (#1081)
+        X = np.asarray(mesh.dm.getCoordinatesLocal().array).reshape(-1, 2)
         r, th = np.hypot(X[:, 0], X[:, 1]), np.arctan2(X[:, 1], X[:, 0])
         r = r * (1.0 + off * np.cos(3 * th) * (r - 0.5) / 0.5)
         th = th + slide * np.sin(2 * th)
-        mesh.deform(np.column_stack([r * np.cos(th), r * np.sin(th)]))
+        mesh.deform(uw.utilities.unit_aware_array.UnitAwareArray(
+            np.column_stack([r * np.cos(th), r * np.sin(th)]), units="dimensionless"))
     x, y = mesh.X
-    s = _stokes(mesh, tag)
+    s = _stokes(mesh, tag, viscosity)
     s.petsc_use_pressure_nullspace = True
-    s.add_rotated_freeslip_bc(0.1 * sympy.cos(2 * sympy.atan2(y, x)), "Upper")
+    s.add_rotated_freeslip_bc(amplitude * sympy.cos(2 * sympy.atan2(y, x)), "Upper")
     s.add_rotated_freeslip_bc(0, "Lower")
     return s
 
@@ -118,3 +121,29 @@ def test_the_same_box_with_an_open_wall_is_accepted():
     # Right is natural (traction free): open, so the flux leaves there
     s.solve()
     assert s._rotated_freeslip_info["converged"]
+
+
+@pytest.mark.parametrize("off, refused", [(0.2, True), (0.1, False)])
+def test_a_dimensional_datum_is_judged_on_the_same_footing(off, refused, capsys):
+    """In a units model, u.n = 1 cm/yr cos 2θ: F and S are taken from the datum
+    unwrapped once to its non-dimensional form. Integrated as given and under
+    Abs they came back at two scales (F/S 6.9e-5 for the far case at 4.8e-2,
+    H7's review), so the far case was not refused and the near one not warned."""
+    uw.reset_default_model()
+    uw.get_default_model().set_reference_quantities(
+        length=uw.quantity(1000, "km"), viscosity=uw.quantity(1e21, "Pa*s"),
+        time=uw.quantity(1, "Myr"))
+    try:
+        s = _annulus_solver(f"units{int(refused)}", off=off, slide=off,
+                            amplitude=uw.quantity(1.0, "cm/yr"),
+                            viscosity=uw.quantity(1e21, "Pa*s"))
+        capsys.readouterr()
+        if refused:
+            with pytest.raises(RuntimeError, match="net flux"):
+                s.solve()
+        else:
+            s.solve()
+            out = capsys.readouterr().out
+            assert "violates mass conservation by that amount" in out, out
+    finally:
+        uw.reset_default_model()

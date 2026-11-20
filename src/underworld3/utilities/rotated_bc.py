@@ -142,8 +142,13 @@ def _datum_net_flux(solver, datum_specs):
     import underworld3 as uw
 
     F = S = 0.0
+    from underworld3.function.expressions import unwrap_expression
+
     for boundary, g in (datum_specs or {}).items():
-        g = sympy.sympify(g)
+        # F and S on one footing: the datum unwrapped once to its non-dimensional
+        # form, then integrated as it is and as its modulus. A dimensional datum
+        # integrated as given and under Abs came back at two scales (H7's review).
+        g = sympy.sympify(unwrap_expression(g, mode="nondimensional"))
         F += float(uw.maths.BdIntegral(solver.mesh, g, boundary).evaluate())
         S += float(uw.maths.BdIntegral(solver.mesh, sympy.Abs(g), boundary).evaluate())
     return F, S
