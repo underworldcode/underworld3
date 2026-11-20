@@ -235,6 +235,12 @@ shard_owns() {
     [ "$SHARD_COUNT" -eq 0 ] || [ "$1" -eq "$SHARD" ]
 }
 
+# parallel_batch_owned <k> — the k-th batch of tests/parallel/test_*.py: shard 4
+# runs the even-numbered batches and shard 6 the odd; unsharded, every batch.
+parallel_batch_owned() {
+    if [ $(( $1 % 2 )) -eq 0 ]; then shard_owns 4; else shard_owns 6; fi
+}
+
 export UW_NO_USAGE_METRICS=0
 # A hard crash must print a Python stack, not just "Segmentation fault".
 export PYTHONFAULTHANDLER=1
@@ -491,8 +497,8 @@ fi
 
 # Parallel tests (run if --p N specified)
 #
-# The test_* mpirun phase belongs to ONE shard (4), not to each of them, and the
-# ptest_* loop below to shard 2. The phase costs ~4:38 and is the shard's
+# The test_* mpirun phase belongs to TWO shards (4 and 6, alternate batches), not
+# to each of them, and the ptest_* loop below to shard 2. The phase costs ~4:38 and is the shard's
 # smallest component, but running it on every shard
 # would multiply the only part of the suite that holds several MPI ranks at
 # once, which is also the part most likely to contend on a shared runner.
@@ -547,7 +553,7 @@ if [ $PARALLEL_RANKS -gt 0 ] && shard_owns 2 && command -v mpirun &> /dev/null; 
   fi
 fi
 
-if [ $PARALLEL_RANKS -gt 0 ] && shard_owns 4; then
+if [ $PARALLEL_RANKS -gt 0 ] && { shard_owns 4 || shard_owns 6; }; then
   if command -v mpirun &> /dev/null; then
     echo ""
     echo "=========================================="
@@ -593,14 +599,20 @@ if [ $PARALLEL_RANKS -gt 0 ] && shard_owns 4; then
     PARALLEL_FILES=(tests/parallel/test_*.py)
     echo "Testing parallel operations, swarms and solvers"
     echo "  ${#PARALLEL_FILES[@]} files in batches of $PARALLEL_BATCH"
+    #
+    # Sharded, the batches alternate between shards 4 and 6: even-numbered
+    # batches on shard 4, odd on shard 6. The batch boundaries are the same as
+    # unsharded (a hang has followed a batch boundary before), and a new file
+    # adds to whichever shard its batch falls on, so neither grows alone. On
+    # #1225's run this phase took 26.5 of shard 4's 68.6 minutes, which put it
+    # at its time limit; shard 6 had about 4 minutes of work.
     for ((i = 0; i < ${#PARALLEL_FILES[@]}; i += PARALLEL_BATCH)); do
+      parallel_batch_owned $((i / PARALLEL_BATCH)) || continue
       $SUPERVISE mpirun -n $PARALLEL_RANKS python -m pytest --with-mpi \
         "${PARALLEL_FILES[@]:i:PARALLEL_BATCH}" || status=1
     done
 
-    # The always-on runs at three and four ranks are shard 6's (below): on a
-    # two-core runner they are oversubscribed and took 20 of shard 4's 68
-    # minutes, which put it at its time limit.
+    # The always-on runs at three and four ranks are shard 6's (below).
 
     # Further passes at three and four ranks, because two is a special case:
     # the failure this suite exists to catch is a collective entered by some
@@ -616,6 +628,7 @@ if [ $PARALLEL_RANKS -gt 0 ] && shard_owns 4; then
         [ "$ranks" -eq "$PARALLEL_RANKS" ] && continue
         echo "Testing the same set at $ranks ranks..."
         for ((i = 0; i < ${#PARALLEL_FILES[@]}; i += PARALLEL_BATCH)); do
+          parallel_batch_owned $((i / PARALLEL_BATCH)) || continue
           $SUPERVISE mpirun -n $ranks python -m pytest --with-mpi \
             "${PARALLEL_FILES[@]:i:PARALLEL_BATCH}" || status=1
         done
@@ -633,7 +646,7 @@ elif [ $PARALLEL_RANKS -gt 0 ]; then
   # one does, so a reader of one shard's log does not conclude the parallel
   # tests were skipped for the whole run.
   echo ""
-  echo "Parallel tests belong to shard 4 (and the always-on np 3 and np 4 runs to shard 6); this is shard $SHARD."
+  echo "Parallel tests belong to shards 4 and 6 (alternate batches; the always-on np 3 and np 4 runs to shard 6); this is shard $SHARD."
 else
   echo ""
   echo "⚠️  Skipping parallel tests (use --p N to enable)"
@@ -641,9 +654,9 @@ fi
 
 # The always-on runs at three and four ranks: the files whose case needs a rank
 # with no cells, an odd split or a rank holding none of a boundary's faces, so
-# they run at that rank count on every run. They belong to shard 6, which had
-# 4 minutes of work, so that shard 4 (the np 2 parallel batches and most serial
-# batches) stays clear of its time limit.
+# they run at that rank count on every run. They belong to shard 6 (about 3.4
+# minutes there), which also takes the odd-numbered np 2 batches above, so that
+# shard 4 (most serial batches) stays clear of its time limit.
 if [ $PARALLEL_RANKS -gt 0 ] && shard_owns 6 && command -v mpirun &> /dev/null; then
     echo ""
     echo "=========================================="
