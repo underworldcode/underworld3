@@ -84,10 +84,12 @@ ANCHORS = {
 # (velocity L2, mean-stripped topography). The raw mean pressure is NOT anchored: it is
 # pinned to ~0, and a relative gate on a number near machine zero measures nothing --
 # it has its own absolute assertion in the test. The macOS gauge anchor held the bare
-# multiplier (37.818; Linux's bare h is 37.817, its traction 37.997) and has been
-# removed until it is re-recorded from the traction on macOS: that mesh skips the
-# gauge anchor, and the skip message carries the values to record.
-ANCHOR_GAUGE = [{"fingerprint": _ANCHOR_MESH_LINUX,
+# multiplier (37.818; Linux's bare h is 37.817, its traction 37.997). It is re-recorded
+# from the traction, serially on macOS (12-core Apple M4, gmsh 4.15.2, PETSc 3.25.3),
+# development 9564201e: 37.999, 0.007 % from Linux's on its 430-cell mesh.
+ANCHOR_GAUGE = [{"fingerprint": _ANCHOR_MESH,
+                 "values": (6.194547492337418e-01, 3.79994402830938e+01)},
+                {"fingerprint": _ANCHOR_MESH_LINUX,
                  "values": (6.194402844543104e-01, 3.7996633118089264e+01)}]
 
 # The anchors are checked at np 2 to 4 against values recorded at np 1 or 2, so the gate

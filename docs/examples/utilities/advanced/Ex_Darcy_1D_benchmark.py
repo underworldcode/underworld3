@@ -171,8 +171,8 @@ ycoords = np.linspace(minY + 0.001 * (maxY - minY), maxY - 0.001 * (maxY - minY)
 xcoords = np.full_like(ycoords, -0.5)
 xy_coords = np.column_stack([xcoords, ycoords])
 
-pressure_interp = uw.function.evaluate(p_soln.sym[0], xy_coords)
-pressure_interp_0 = uw.function.evaluate(p_soln_0.sym[0], xy_coords)
+pressure_interp = uw.function.evaluate(p_soln.sym[0], xy_coords)[:, 0, 0]
+pressure_interp_0 = uw.function.evaluate(p_soln_0.sym[0], xy_coords)[:, 0, 0]
 
 
 # + editable=true slideshow={"slide_type": ""}

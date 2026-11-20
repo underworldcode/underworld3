@@ -187,9 +187,9 @@ with meshdisc.access(t_soln):
     )
 
 with meshdisc.access(meshr):
-    meshr.data[:, 0] = uw.function.evaluate(
+    meshr.array[:, 0, 0] = uw.function.evaluate(
         sympy.sqrt(x**2 + y**2), meshdisc.data, meshdisc.N
-    )  # cf radius_fn which is 0->1
+    )[:, 0, 0]  # cf radius_fn which is 0->1
 # -
 
 # check the stokes solve is set up and that it converges

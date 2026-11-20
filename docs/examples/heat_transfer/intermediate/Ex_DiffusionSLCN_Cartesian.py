@@ -232,7 +232,7 @@ sample_points[:, 0] = sample_x
 sample_points[:, 1] = sample_y
 
 # Initial profile
-t0 = uw.function.evaluate(adv_diff.u.fn, sample_points)
+t0 = uw.function.evaluate(adv_diff.u.fn, sample_points)[:, 0, 0]
 
 # %% [markdown]
 """
@@ -274,7 +274,7 @@ def diffusion_1D(sample_points, temp_profile, k, model_dt):
 
 
 # Get initial temperature profile
-temp_data = uw.function.evaluate(adv_diff.u.fn, sample_points)
+temp_data = uw.function.evaluate(adv_diff.u.fn, sample_points)[:, 0, 0]
 
 # %% [markdown]
 """
@@ -295,7 +295,7 @@ while step < nsteps:
         print(f"Step: {str(step).rjust(3)}, time: {time:6.5f}")
 
     # UW3 profile
-    t1 = uw.function.evalf(adv_diff.u.sym[0], sample_points)
+    t1 = uw.function.evaluate(adv_diff.u.sym[0], sample_points).squeeze()
 
     if uw.mpi.size == 1 and step % 10 == 0:
         plt.figure()

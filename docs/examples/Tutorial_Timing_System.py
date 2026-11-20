@@ -184,7 +184,8 @@ T2 = uw.discretisation.MeshVariable("T2", mesh2, 1, degree=2)
 
 # Initial condition
 x, y = mesh2.X
-T2.array[...] = np.exp(-((mesh2.data[:, 0] - 0.5)**2 + (mesh2.data[:, 1] - 0.5)**2) / 0.01)
+X2 = np.asarray(T2.coords)
+T2.array[:, 0, 0] = np.exp(-((X2[:, 0] - 0.5)**2 + (X2[:, 1] - 0.5)**2) / 0.01)
 
 print("Initial condition set")
 

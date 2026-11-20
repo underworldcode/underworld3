@@ -103,8 +103,8 @@ sol_visc = sol.fn_viscosity
 # -
 
 # %%
-# P2/P1: on a simplex mesh a P1 velocity does not make a stable pair (P1/P0
-# locks), and Stokes refuses it.
+# P2/P1 (Taylor-Hood): stable, unlike P1/P0, whose nonlinear solve diverges here;
+# Stokes refuses a P1 velocity on simplices.
 v = uw.discretisation.MeshVariable("U", mesh, mesh.dim, degree=2)
 p = uw.discretisation.MeshVariable("P", mesh, 1, degree=1)
 
@@ -158,7 +158,7 @@ stokes.solve(zero_init_guess=False)
 sol_vel.T
 
 # %%
-vdiff = stokes.u.sym - sol_vel.T
+vdiff = stokes.u.sym - sol_vel
 vdiff_dot_vdiff = uw.maths.Integral(mesh, vdiff.dot(vdiff)).evaluate()
 v_dot_v = uw.maths.Integral(mesh, stokes.u.fn.dot(stokes.u.fn)).evaluate()
 
@@ -168,7 +168,8 @@ rel_rms_diff = math.sqrt(vdiff_dot_vdiff / v_dot_v)
 if rank == 0:
     print(f"RMS diff = {rel_rms_diff}")
 
-if not np.allclose(rel_rms_diff, 0.00109, rtol=1.0e-2):
+# measured 1.37e-5 at n_els = 32 (macOS); a bound, not a platform value
+if not rel_rms_diff < 5.0e-5:
     raise RuntimeError("Solve did not produce expected result.")
 
 

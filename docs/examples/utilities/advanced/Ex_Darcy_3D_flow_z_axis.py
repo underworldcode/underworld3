@@ -155,6 +155,8 @@ darcy.solve()
 
 # + editable=true slideshow={"slide_type": ""}
 # saving output
+import os
+os.makedirs('output', exist_ok=True)
 mesh.petsc_save_checkpoint(index=0, meshVars=[p_soln, v_soln], outputPath='./output/darcy_3d_no_g')
 
 # + editable=true slideshow={"slide_type": ""}
@@ -187,8 +189,8 @@ xcoords = np.full_like(zcoords, -0.5)
 ycoords = np.full_like(zcoords, -0.5)
 xyz_coords = np.column_stack([xcoords, ycoords, zcoords])
 
-pressure_interp = uw.function.evaluate(p_soln.sym[0], xyz_coords)
-pressure_interp_0 = uw.function.evaluate(p_soln_0.sym[0], xyz_coords)
+pressure_interp = uw.function.evaluate(p_soln.sym[0], xyz_coords)[:, 0, 0]
+pressure_interp_0 = uw.function.evaluate(p_soln_0.sym[0], xyz_coords)[:, 0, 0]
 
 
 # +

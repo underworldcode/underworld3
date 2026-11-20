@@ -126,7 +126,7 @@ if uw.mpi.size == 1:
 # -
 
 with mesh0.access(grad):
-    grad.data[:, 0] = uw.function.evaluate(grad_fn, mesh0.data, mesh0.N)
+    grad.array[:, 0, 0] = uw.function.evaluate(grad_fn, mesh0.data, mesh0.N)[:, 0, 0]
 
 
 with mesh0.access(H):
