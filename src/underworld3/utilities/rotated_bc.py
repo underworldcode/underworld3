@@ -1689,6 +1689,9 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
     Atot = None
     ctx = cache["ctx"] if cache is not None else None
     Mp = ctx["Mp"] if ctx is not None else None
+    if ctx is not None and "sub_capped" in ctx:
+        # the counts are this solve's, not the cached context's lifetime
+        ctx["sub_capped"].update(velocity=0, pressure=0)
     if ctx is not None:
         # the cached null space is this solve's, even when it exits at its first
         # residual check, and so is the verdict on the declared modes it was built with
@@ -1934,6 +1937,26 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
                 Mp = _pressure_mass_schur_pmat(solver) if has_pressure else None
                 nsp = _rotated_nullspace(solver, Q, normal_rows)   # J assembled above
                 _collect_rotation_modes(nsp)
+                if rot_modes and iters == 0:
+                    # The modes exist only from here on an uncached solve (#884):
+                    # iteration 0's residual, r0 and the rest-state residual were
+                    # measured with the component the solve cannot reduce, which
+                    # every later residual, and a cached re-solve's, leave out. They
+                    # are measured in the same quotient space now, before the line
+                    # search starts from rnorm. Every rank holds the same modes.
+                    for m in rot_modes:
+                        Fhat.axpy(-Fhat.dot(m), m)
+                    rnorm = Fhat.norm()
+                    rnorm_history[-1] = float(rnorm)
+                    r0 = rnorm
+                    if fnorm_rest is not None:
+                        z = dm.getGlobalVec()
+                        z.set(0.0)
+                        Fz = rotated_residual(z)
+                        fnorm_rest = Fz.norm()
+                        Fz.destroy()
+                        dm.restoreGlobalVec(z)
+                    ref = max(r0, fnorm_rest) if fnorm_rest is not None else r0
             else:
                 # a cached workspace keeps its null space, and the verdict on the
                 # declared modes it was built with
@@ -2220,6 +2243,10 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
             "fnorm_rest": fnorm_rest, "ref": ref,
             "rnorm_history": rnorm_history, "line_search_alpha": line_search_alpha,
             "vel_its_last": vel_its_last, "pres_its_last": pres_its_last,
+            # applications of each sub-solve that stopped at its cap, over the
+            # whole solve (#625); None without sub-KSPs (direct LU, the sheet)
+            "sub_capped": (None if use_lu or "sub_capped" not in (ctx or {})
+                           else dict(ctx["sub_capped"])),
             # keyed on use_lu, NOT on `ctx is None`: the iterative path also exits
             # with ctx unset when a warm start is already converged at increment 0.
             "velocity_pc": "direct-LU" if use_lu else (ctx or {}).get("velocity_pc"),
@@ -3139,7 +3166,24 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
             # database stays clean (and bounded under time-stepping), on the
             # error path too.
             _drop_options_under(pfx)
+        # Every application of a sub-solve that stopped at its cap, counted over
+        # the solve (#625). The velocity KSP is applied once per Schur MatMult and
+        # the pressure KSP once per outer application, so the last-application
+        # counts below miss a cap hit on any earlier one. PETSc does not treat
+        # DIVERGED_MAX_IT on a sub-KSP as a failure. The reason is global to the
+        # KSP, so every rank counts alike.
+        sub_capped = {"velocity": 0, "pressure": 0}
+
+        def _counting(block):
+            def post_solve(sub_ksp, _rhs, _x):
+                if sub_ksp.getConvergedReason() == PETSc.KSP.ConvergedReason.DIVERGED_MAX_IT:
+                    sub_capped[block] += 1
+            return post_solve
+
+        for _sub, _block in zip(pc.getFieldSplitSubKSP(), ("velocity", "pressure")):
+            _sub.setPostSolve(_counting(_block))
         ctx = {"ksp": ksp, "pc": pc, "Mp": Mp, "nsp": nsp, "cns": cns,
+               "sub_capped": sub_capped,
                "schur_roundoff": schur_roundoff,
                "declared_exempt": getattr(solver, "_rotated_declared_modes_exempt", None),
                "custom_Pl": custom_Pl, "pfx": pfx,

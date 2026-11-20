@@ -2418,12 +2418,17 @@ class CustomMGHierarchy:
                     # rebuilt across partitions whatever its column count.
                     #
                     # Only a node inside the GLOBAL coarse hull can be placed by
-                    # the rebuild. One beyond it (a curved boundary's snapping
-                    # puts refined boundary nodes outside the coarse chords) is
-                    # outside every hull, and counting it rebuilt every level of
-                    # an annulus for nothing (#885).
-                    n_out = _misplaced_outside_global_hull(
+                    # the rebuild. A curved boundary's snapping puts refined
+                    # boundary nodes outside the coarse chords, and so outside the
+                    # global hull as well: counting them rebuilt every level of an
+                    # annulus for nothing (#885). Where the global hull still
+                    # holds some of a rank's outside nodes (a 3-D shell at np 4
+                    # rebuilds one level), the rebuild runs and does no harm.
+                    # The check is collective and only "auto" reads it; the
+                    # setting is the same on every rank.
+                    n_out = (_misplaced_outside_global_hull(
                         coarse_nodes[l], built_nodes[l], built, comm)
+                        if self.cross_partition == "auto" else 0)
                     if self.cross_partition == "auto" and (n_zero > 0 or n_out > 0):
                         agree()
                         P_x = _build_crosspart_transfer(*args)
