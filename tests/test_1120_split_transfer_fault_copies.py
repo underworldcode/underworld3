@@ -160,3 +160,27 @@ def test_copies_left_weak_are_reported_not_passed_in_silence(monkeypatch):
         fault_mg.cell_located_prolongation(coarse, mesh, DEGREE, True)
     record = fault_mg.last_parent_rows
     assert record["weak_copies"] > 0 and record["remaining"] > 0, record
+    # no cell of the pair touches both copies of the fault (H5's guard, defensive)
+    assert record["side_conflicts"] == 0, record
+
+
+def test_a_cell_touching_both_copies_of_a_fault_has_no_side():
+    """A defensive guard: a cell whose star holds both the Minus and the Plus copy
+    of one fault's points has no side (0), so the side filter excludes nothing
+    for it, and it is counted. It used to take whichever copy was visited last.
+    No real mesh has shown one; the pairing here makes one by pairing a vertex
+    with itself, so every cell around it touches both copies."""
+    import types
+
+    box = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0),
+                                            cellSize=0.25, qdegree=2)
+    dm = box.dm
+    v0, _v1 = dm.getDepthStratum(0)
+    cS, cE = dm.getHeightStratum(0)
+    star = np.asarray(dm.getTransitiveClosure(v0, useCone=False)[0])
+    around = np.sort(star[(star >= cS) & (star < cE)] - cS)
+    paired = types.SimpleNamespace(dm=dm, _fault_point_pairs={"F": {v0: v0}})
+    side, names, conflicts = fault_mg._cell_fault_sides(paired)
+    assert names == ["F"]
+    assert conflicts == around.size > 0
+    assert not side[around, 0].any()
