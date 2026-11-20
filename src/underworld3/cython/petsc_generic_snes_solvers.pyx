@@ -5420,29 +5420,53 @@ class SolverBaseClass(uw_object):
         import underworld3 as uw
 
         # process conds and error check
+        #
+        # A quantity (uw.quantity, or a pint Quantity) is a number with units.
+        # In a model with reference quantities the condition is applied in
+        # model units, so the quantity is non-dimensionalised, as the body force
+        # is: 5 mm/yr against a 10 mm/yr reference is 0.5. Its SI magnitude
+        # (1.6e-10 m/s) read as a model value was 3e9 off (#1238). Without
+        # reference quantities, or in a dimension the model has no reference
+        # for, the model works in SI, and the SI magnitude is the value. Entries converted here are in their final form and are not
+        # rescaled below.
+        units_model = uw.get_default_model().has_units()
+        in_model_units = set()
+
+        def quantity_value(q, index):
+            import pint
+            if isinstance(q, pint.Quantity):
+                q = uw.quantity(q.magnitude, str(q.units))
+            si = q._pint_qty.to_base_units()
+            if not units_model:
+                return si.magnitude
+            try:
+                uw.get_default_model().get_scale_for_dimensionality(si.dimensionality)
+            except ValueError:
+                # The model has no reference for this dimension (a temperature
+                # with only length, mass and time given): a field in it runs at
+                # scaling coefficient 1, in SI (it warns when made), so the SI
+                # magnitude is the model value, as before.
+                return si.magnitude
+            nd = uw.non_dimensionalise(q)
+            in_model_units.add(index)
+            return float(nd.magnitude if hasattr(nd, "magnitude") else nd)
+
+        def is_quantity(x):
+            import pint
+            return (isinstance(x, pint.Quantity)
+                    or (isinstance(x, uw.function.quantities.UWQuantity)
+                        and hasattr(x, "_pint_qty")))
+
         if isinstance(conds, (tuple, list)):
-            # remove all None for sympy.oo, and handle UWQuantity/Pint Quantity objects
+            # None is a free component (sympy.oo); a quantity becomes its value
             processed_conds = []
-            for x in conds:
+            for index, x in enumerate(conds):
                 if x is None:
                     processed_conds.append(sympy.oo)
+                elif is_quantity(x):
+                    processed_conds.append(quantity_value(x, index))
                 elif isinstance(x, uw.function.quantities.UWQuantity):
-                    # Convert UWQuantity to SI base units (dimensionless number)
-                    if hasattr(x, '_pint_qty'):
-                        # Use Pint to convert to base units (m, s, kg, etc.)
-                        base_qty = x._pint_qty.to_base_units()
-                        processed_conds.append(base_qty.magnitude)
-                    else:
-                        # Fallback: use the value as-is
-                        processed_conds.append(x.value)
-                elif hasattr(x, 'magnitude') and hasattr(x, 'units'):
-                    # Direct Pint Quantity (from 300 * uw.units("K"))
-                    import pint
-                    if isinstance(x, pint.Quantity):
-                        base_qty = x.to_base_units()
-                        processed_conds.append(base_qty.magnitude)
-                    else:
-                        processed_conds.append(x)
+                    processed_conds.append(x.value)
                 else:
                     processed_conds.append(x)
             conds = processed_conds
@@ -5450,23 +5474,12 @@ class SolverBaseClass(uw_object):
             conds = (conds,)
         elif isinstance(conds, int):
             conds = (conds,)
+        elif is_quantity(conds):
+            conds = (quantity_value(conds, 0),)
         elif isinstance(conds, uw.function.quantities.UWQuantity):
-            # Single UWQuantity value
-            if hasattr(conds, '_pint_qty'):
-                # Use Pint to convert to base units
-                base_qty = conds._pint_qty.to_base_units()
-                conds = (base_qty.magnitude,)
-            else:
-                # Fallback: use the value as-is
-                conds = (conds.value,)
+            conds = (conds.value,)
         elif hasattr(conds, 'magnitude') and hasattr(conds, 'units'):
-            # Single Pint Quantity (from 300 * uw.units("K"))
-            import pint
-            if isinstance(conds, pint.Quantity):
-                base_qty = conds.to_base_units()
-                conds = (base_qty.magnitude,)
-            else:
-                raise ValueError(f"Unknown quantity type: {type(conds)}")
+            raise ValueError(f"Unknown quantity type: {type(conds)}")
         elif isinstance(conds, sympy.Matrix):
             conds = conds.T
         else:
@@ -5571,8 +5584,11 @@ class SolverBaseClass(uw_object):
                         return False
 
                     scaled_conds = []
-                    for val in conds:
-                        if val == sympy.oo or val == -sympy.oo:
+                    for index, val in enumerate(conds):
+                        if index in in_model_units:
+                            # a quantity, already non-dimensionalised above
+                            scaled_conds.append(val)
+                        elif val == sympy.oo or val == -sympy.oo:
                             # Don't scale infinity (unconstrained components)
                             scaled_conds.append(val)
                         elif is_numeric_only(val):
