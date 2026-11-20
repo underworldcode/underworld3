@@ -1097,11 +1097,11 @@ class _DDtBase(uw_object):
             indep = self._psi_star_indep_indices
             row = sympy.Matrix([[source_fn[i, j] for (i, j) in indep]])
             if self._psi_snapshot_enabled and self._psi_snapshot is not None:
-                # TODO(BUG): .subs does not reach psi_star[0] held inside a
-                # UWexpression (at yield the viscosity reads E_eff_inv_II,
-                # whose .sym contains it), so that occurrence still reads the
-                # history live. No effect on the result while the snapshot
-                # equals psi_star[0] at the commit; substitute after unwrapping.
+                # .subs does not reach psi_star[0] held inside a UWexpression
+                # (at yield the viscosity reads E_eff_inv_II, whose .sym
+                # contains it), so that occurrence reads the history live. That
+                # is harmless only while the snapshot equals psi_star[0] at the
+                # commit, which commit_flux_to_history checks.
                 ps0 = self.psi_star[0]
                 psi_snapshot = self._psi_snapshot
                 substitutions = {
@@ -1184,6 +1184,26 @@ class _DDtBase(uw_object):
         if self._psi_snapshot_enabled and self._psi_snapshot is not None:
             self._psi_snapshot.data[...] = self.psi_star[0].data[...]
 
+    def _check_snapshot_is_level_0(self):
+        """The commit's frozen source must be ``psi_star[0]`` as it is now.
+
+        The substitution of the snapshot for ``psi_star[0]`` does not reach an
+        occurrence wrapped in a ``UWexpression``, which reads the history live;
+        the two readings agree only while nothing has written ``psi_star[0]``
+        since the refresh. Collective: every rank raises or none does.
+        """
+        if not (self._psi_snapshot_enabled and self._psi_snapshot is not None):
+            return
+        local = np.asarray(self.psi_star[0].data)
+        moved = float(np.abs(np.asarray(self._psi_snapshot.data) - local).max()) if local.size else 0.0
+        moved = uw.mpi.comm.allreduce(moved, op=uw.MPI.MAX)
+        if moved != 0.0:
+            raise RuntimeError(
+                f"{type(self).__name__}: psi_star[0] was written after the source snapshot "
+                f"was taken (largest difference {moved:.3g}), so the commit projection would "
+                "read two different histories. Write the history before the step's "
+                "update_pre_solve, which refreshes the snapshot.")
+
     #: A history that places the new flux on its own storage during
     #: ``update_post_solve`` (the particle flavours evaluate it at their
     #: particles) rather than through :meth:`commit_flux_to_history`.
@@ -1222,6 +1242,7 @@ class _DDtBase(uw_object):
             # The snapshot machinery has frozen the projection's input, so this
             # is a one-shot Galerkin projection and not a fixed-point iteration
             # (which at a yield kink admits the wrong branch).
+            self._check_snapshot_is_level_0()
             self._psi_star_projection_solver.smoothing = 0.0
             self._psi_star_projection_solver.solve(verbose=verbose)
             for k, (i, j) in enumerate(self._psi_star_indep_indices):
@@ -2064,23 +2085,25 @@ class Eulerian(_DDtBase):
         # psi_fn the shape is (1,1); for vector it is (1,dim).
         psi = self.psi_fn
         V = self.V_fn
-        # TODO(BUG): right for a scalar or a vector only. A 2x2 symmetric
-        # tensor has 3 stored components, but this corrects 2 data columns
-        # with the flat entries psi[0], psi[1] (xx, xy); it should walk
-        # psi_star[0]._data_layout(i, j) as EulerianSUPG._transport_history does.
-        ncomp = max(psi.shape)  # number of tracked components
+        # Every stored component: a symmetric tensor stores its upper triangle,
+        # each through the variable's own layout; a scalar or vector stores its
+        # flat entries in order.
+        level_0 = self.psi_star[0]
+        rows, cols = psi.shape
+        if self.vtype == uw.VarType.SYM_TENSOR:
+            pairs = [(i, j) for i in range(rows) for j in range(i, cols)]
+        else:
+            pairs = [(i, j) for i in range(rows) for j in range(cols)]
+        tensor = self.vtype in (uw.VarType.SYM_TENSOR, uw.VarType.TENSOR)
 
-        for c in range(ncomp):
-            # ∂φ_c/∂x_i for each spatial dimension
-            grad_c = sympy.Matrix([psi[c].diff(X[i]) for i in range(dim)])
-            # u·∇φ_c = V_i * ∂φ_c/∂x_i
-            advection_expr = sum(V[i] * grad_c[i] for i in range(dim))
-
+        for flat, (i, j) in enumerate(pairs):
+            # u . grad(phi) for this component
+            advection_expr = sum(V[k] * psi[i, j].diff(X[k]) for k in range(dim))
             advection_vals = _history_evaluate(
                 advection_expr, coords, evalf=evalf,
             ).reshape(-1)
-
-            self.psi_star[0].data[:, c] -= dt * advection_vals
+            column = level_0._data_layout(i, j) if tensor else flat
+            level_0.data[:, column] -= dt * advection_vals
 
     def update_post_solve(
         self,
@@ -3823,12 +3846,11 @@ class SemiLagrangian(_DDtBase):
         except Exception:
             # Fallback to projection solver for expressions that can't be directly evaluated
             # (e.g., containing derivatives — true for the NS viscous flux every step).
-            # TODO(BUG): with the source snapshot enabled this projection reads
-            # the snapshot, which update_pre_solve refreshes only after the
-            # trace-back, so it holds the previous step's carried history, not
-            # the last commit. Latent: Stokes, the one caller that enables the
-            # snapshot, passes store_result=False. Refresh before this record
-            # if a store_result=True caller ever needs it.
+            # With the source snapshot enabled this projection reads the
+            # snapshot, which update_pre_solve otherwise refreshes only after
+            # the trace-back: refresh it here, so the record reads the history
+            # as it is now.
+            self._refresh_source_snapshot()
             # Route via _build_projection_source so the (1, Nc) row-matrix flattening
             # required by SNES_MultiComponent_Projection is applied for tensor vtypes.
             # Without this, a (dim, dim) tensor function meets a (1, Nc) solver field
