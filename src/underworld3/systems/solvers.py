@@ -2930,6 +2930,15 @@ class SNES_Stokes(_StressHistoryMixin, _ConstitutiveModelStateMixin, SNES_Stokes
             return
 
         import warnings
+        # A mesh can have a hierarchy and still end on GAMG: the custom-P build
+        # failed, which pc_fallbacks records; "no hierarchy" is then wrong (#821).
+        has_hierarchy = (len(getattr(self.mesh, "dm_hierarchy", []) or []) > 1
+                         or getattr(self.mesh, "_custom_mg_coarse_meshes", None) is not None)
+        why = ("the custom-P multigrid could not be built on the mesh hierarchy "
+               "(solver.pc_fallbacks says why)" if has_hierarchy else
+               "no mesh hierarchy was available")
+        remedy = ("" if has_hierarchy else
+                  " Build the base mesh with refinement>=1 to get a hierarchy.")
         penalty = _penalty_value(self._penalty)
         cost = (f" The default penalty {penalty:g} is also active, and grad-div "
                 f"augmentation is exactly what drives '{installed}' into its "
@@ -2940,23 +2949,20 @@ class SNES_Stokes(_StressHistoryMixin, _ConstitutiveModelStateMixin, SNES_Stokes
             requested="custom-P geometric MG (no explicit choice was made)",
             installed=installed,
             reason="unavailable",
-            detail=f"the velocity block is running '{installed}' because no "
-                   f"mesh hierarchy was available. Build the base mesh with "
-                   f"refinement>=1, or adapt onto a child, to get FMG."
-                   + cost)
+            detail=f"the velocity block is running '{installed}' because {why}."
+                   + (" Build the base mesh with refinement>=1, or adapt onto a "
+                      "child, to get FMG." if not has_hierarchy else "") + cost)
         # attributed to the user's line: a fixed stacklevel landed on memprobe's
         # wrapper, and the filter then showed it once per process; rank 0 only,
         # as the solve's other warnings
         with uw.selective_ranks(0) as selected:
             if selected:
                 _warn_from_caller(
-                    f"Stokes: the velocity block fell back to '{installed}' — no mesh "
-                    f"hierarchy was available, so the custom-P multigrid could not be "
-                    f"built. FMG is 4x faster on this class of problem and does ~45x "
+                    f"Stokes: the velocity block fell back to '{installed}': {why}. "
+                    f"FMG is 4x faster on this class of problem and does ~45x "
                     f"less velocity work (#625); '{installed}' degrades under "
                     f"refinement until it hits its iteration cap, which corrupts the "
-                    f"Schur operator and stalls the pressure solve. Build the base mesh "
-                    f"with refinement>=1 to get a hierarchy." + cost,
+                    f"Schur operator and stalls the pressure solve." + remedy + cost,
                     RuntimeWarning)
 
     # @property

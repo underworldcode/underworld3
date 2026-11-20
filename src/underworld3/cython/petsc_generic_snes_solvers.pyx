@@ -1603,9 +1603,10 @@ class SolverBaseClass(uw_object):
         # time with err62 "Could not locate matching functional for injection"
         # on the common curved-shell cases (issue #276) as well as some flat
         # high-degree ones. The Stokes velocity sub-block (prefix
-        # "fieldsplit_velocity_") is the validated, robust native-FMG path and is
-        # unaffected. So a single-field solver never routes to NATIVE FMG. Two
-        # routes instead (#478):
+        # "fieldsplit_velocity_") is the validated, robust native-FMG path for a
+        # P2 velocity; a velocity of degree 3 or more cannot take it either, and
+        # is gated below (#821). So a single-field solver never routes to NATIVE
+        # FMG. Two routes instead (#478):
         #  * explicit `preconditioner="fmg"` is honoured via custom-P transfers
         #    over the mesh's own dm_hierarchy (no DMCreateInjection anywhere, so
         #    the err62 failure mode cannot arise). The options DB deliberately
@@ -1642,6 +1643,33 @@ class SolverBaseClass(uw_object):
                     reason="declined",
                     detail="single-field native FMG is fragile (#276); "
                            "auto never routes there")
+            want_fmg = False
+
+        # PETSc cannot inject a Lagrange space of degree 3 or more between the
+        # levels of a refined DMPlex: DMCreateInjection fails with error 62 ("Could
+        # not locate matching functional for injection") on simplices and quads,
+        # whatever the node placement, so a P3 velocity on the native route failed
+        # at its first solve (#821). The custom-P transfers need no injection and
+        # converge on the same hierarchy, so a P3+ velocity takes them, as an
+        # explicit single-field "fmg" does: GAMG stays the base configuration, the
+        # custom-P PCMG is installed at the first solve, and a failed transfer
+        # build degrades to GAMG, recorded. This is not a new default for any
+        # discretisation that worked: the native route raised for these.
+        velocity_degree = getattr(getattr(self, "u", None), "degree", 0) or 0
+        if want_fmg and prefix == "fieldsplit_velocity_" and velocity_degree >= 3:
+            self._pc_single_field_geo_requested = True
+            # an explicit set_custom_fmg already owns the block: nothing was declined
+            if getattr(self, "_custom_mg", None) is None:
+                self._record_pc_fallback(
+                  "high_degree_velocity_gate",
+                  requested=f"native geometric FMG (preconditioner={self._preconditioner!r})",
+                  installed="custom-P geometric MG (resolved at first solve)",
+                  reason="declined",
+                  detail=f"native FMG needs DMCreateInjection, which PETSc cannot build "
+                         f"for a degree-{velocity_degree} velocity on a refined DMPlex "
+                         f"(#821); the velocity block takes custom-P transfers over the "
+                         f"mesh hierarchy instead, degrading to GAMG (recorded) if the "
+                         f"transfer build fails")
             want_fmg = False
 
         # The option VALUES live in utilities.multigrid_options, which is the
@@ -6635,6 +6663,12 @@ class SolverBaseClass(uw_object):
         cdef DM _time_dm
         if not (self._rotated_freeslip_bcs or self._fault_contact_faults):
             return False
+        # every solver's rotated path passes here (a vector projection with a
+        # law included); the check reads registrations only, the same on every
+        # rank (#940)
+        from underworld3.utilities.fault_contact import (
+            refuse_essential_conditions_on_law_faults)
+        refuse_essential_conditions_on_law_faults(self)
         # Rotated strong free-slip: delegate to the rotated_bc module (per-node DOF
         # rotation + strong v_n=0 + reaction=sigma_nn). Handles the whole assemble/
         # solve/rotate-back/gauge-removal; stashes info for boundary_normal_traction.
@@ -13881,7 +13915,10 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         self._reject_mixed_constraint_mechanisms("solve")
         # a split fault this solver neither ties nor constrains is an open
         # crack: said, not refused (#1099)
-        from underworld3.utilities.fault_contact import warn_unpaired_split_faults
+        from underworld3.utilities.fault_contact import (
+            refuse_essential_conditions_on_law_faults, warn_unpaired_split_faults)
+        # a law and an essential condition on one fault: refused (#940)
+        refuse_essential_conditions_on_law_faults(self)
         warn_unpaired_split_faults(self)
 
         _check_homotopy_value(homotopy)

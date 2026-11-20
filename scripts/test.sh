@@ -362,6 +362,8 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
 
   # Units system tests (0800-0899: unit-aware functions, arrays, and conversions)
   batch 3 tests/test_08*py
+  # the 09xx decade (#940 opened it): on shard 6, not shard 3, the longest (#1245)
+  batch 6 tests/test_09*py
 
   # 0900-0999 (the spherical generators' refinement, #949). The band had no
   # line, so a test placed in it matched no glob.
@@ -445,6 +447,8 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   batch 3 tests/parallel/test_0874_mirrored_mesh_cut_parallel.py
   # So are the multigrid levels an adapt keeps, the same at any rank count (#865).
   batch 3 tests/parallel/test_1177_mg_levels_same_at_any_rank_count_parallel.py
+  # So is a P3 velocity's route off native FMG, which PETSc cannot inject (#821).
+  batch 3 tests/parallel/test_0821_stokes_p3_velocity_fmg_parallel.py
   # So are custom_mg's builder statistics, per call, counting only nodes a rebuild can place (#885).
   batch 3 tests/parallel/test_0885_custom_mg_builder_stats_parallel.py
   # So is the monotone clamp by the containing cell, the same bound at any rank count for a point inside a cell (#682).
