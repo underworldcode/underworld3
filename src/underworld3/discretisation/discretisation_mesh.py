@@ -2608,12 +2608,25 @@ class Mesh(Stateful, uw_object):
         finest (:meth:`_move_coarse_levels_with_the_finest`). Collective.
         """
 
+        from underworld3.cython.petsc_maths import dm_force_coordinate_field
+
         self._move_coarse_levels_with_the_finest()
         dm_hierarchy = self.dm_hierarchy
 
+        # A clone does not carry the coordinate field (DMClone copies the
+        # coordinates, not the DMField over them), so PETSc creates it lazily
+        # the first time an assembly needs a cell's geometry -- and a rank
+        # holding no cells never does in the residual. Creating a PETSc object
+        # on the mesh's communicator takes a tag from that communicator, so the
+        # ranks' tag counters drift apart, and a later two-sided exchange on it
+        # (the next mesh load's label read) waits on messages under a tag the
+        # other ranks never use. The field is created here, where every rank
+        # clones.
         new_dm_hierarchy = []
         for dm in dm_hierarchy:
-            new_dm_hierarchy.append(dm.clone())
+            clone = dm.clone()
+            dm_force_coordinate_field(clone)
+            new_dm_hierarchy.append(clone)
 
         for i, dm in enumerate(new_dm_hierarchy[:-1]):
             new_dm_hierarchy[i + 1].setCoarseDM(new_dm_hierarchy[i])
@@ -8572,8 +8585,11 @@ class Mesh(Stateful, uw_object):
     # ownership unique: a point within the slab of a partition seam is claimed
     # by the ranks on both sides (measured by H1 on #1175: 30 to 2,690 points
     # per run claimed twice), and the rank that does not contain it evaluates
-    # it in a cell that does not (up to 2.8e-4 off, 1e-5 typical). Claiming by
-    # exact containment first is the follow-up named on #1175.
+    # it in a cell that does not (up to 2.8e-4 off, 1e-5 typical).
+    # global_evaluate therefore hands each point it holds without containing it
+    # to a rank that contains it, after its migration (#1178,
+    # _hand_points_to_containing_rank in function/_function.pyx); the face
+    # tolerance decides only for points no rank contains.
     _EVAL_FACE_TOL = 1.0e-2
     # Containment to rounding, relative like _EVAL_FACE_TOL. A point some local
     # cell contains to this tolerance is evaluated in that cell (#1115).
@@ -8673,6 +8689,22 @@ class Mesh(Stateful, uw_object):
                 dtype=numpy.int64,
             )
         return cells
+
+    def _contained_in_local_cells(self, coords):
+        """Whether a local cell contains each point (coords in model units),
+        with no face tolerance: the exact walk on a simplex mesh
+        (:meth:`_walk_to_owning_cells`), containment to rounding
+        (``_EVAL_CONTAIN_TOL``) on other meshes. Rank-local."""
+        coords = numpy.asarray(coords)
+        cStart, cEnd = self.dm.getHeightStratum(0)
+        if coords.shape[0] == 0 or cEnd == cStart:
+            return numpy.zeros(coords.shape[0], dtype=bool)
+        locator = self._simplex_locator()
+        if locator is not None:
+            cells, _, _ = self._walk_to_owning_cells(locator, coords)
+        else:
+            cells = self._get_closest_local_cells_internal(coords, tol=self._EVAL_CONTAIN_TOL)
+        return numpy.asarray(cells) >= 0
 
     def _simplex_locator(self):
         """The exact barycentric locator for this mesh's local cells, or None
