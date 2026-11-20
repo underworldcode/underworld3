@@ -1,3 +1,4 @@
+# WIP (#944): moved from docs/examples/porous_flow/advanced/Ex_viscousFingering.py: particle recycling (Swarm recycle_rate > 1) is not implemented.
 # ---
 # jupyter:
 #   jupytext:
@@ -255,7 +256,7 @@ mat.data[...] = 0
 mat.data[mat.coords[:, 0] + fluctuation < x0] = 1
 
 # Initialize swarm material
-material.data[:, 0] = uw.function.evalf(mat.sym, swarm._particle_coordinates.data)
+material.array[:, 0, 0] = uw.function.evaluate(mat.sym, swarm._particle_coordinates.data)[:, 0, 0]
 
 # %% [markdown]
 """
@@ -376,7 +377,6 @@ for iteration in range(0, params.uw_n_steps):
         V_fn=v_soln.sym * sympy.Matrix.diag(1 / porosity, 1 / sympy.sympify(1000000000)),
         delta_t=dt,
         order=2,
-        evalf=True,
     )
 
     # Compute Vrms

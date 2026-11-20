@@ -918,7 +918,7 @@ def BoxInternalBoundary(
         useMultipleTags=True,
         useRegions=False,  # BoxInternalBoundary uses _dm_unstack_bcs instead
         markVertices=True,
-        refinement=0.0,
+        refinement=refinement,
         refinement_callback=None,
         return_coords_to_bounds=box_return_coords_to_bounds,
         units=units,

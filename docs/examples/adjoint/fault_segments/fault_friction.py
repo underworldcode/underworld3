@@ -239,7 +239,8 @@ eta_1 = eta_0 - band * (eta_0 - eta_plane)
 # %%
 stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
 stokes.constitutive_model = uw.constitutive_models.TransverseIsotropicFlowModel
-stokes.constitutive_model.Parameters.shear_viscosity_0 = eta_0
+# eta_0 = 1 is one model unit: the parameter takes it as the quantity it stands for
+stokes.constitutive_model.Parameters.shear_viscosity_0 = REF_VISCOSITY
 stokes.constitutive_model.Parameters.shear_viscosity_1 = eta_1
 stokes.constitutive_model.Parameters.director = n_hat
 stokes.tolerance = 1e-8

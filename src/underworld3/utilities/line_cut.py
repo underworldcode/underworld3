@@ -1475,7 +1475,8 @@ def pull_vertex_onto(dm, targets, min_quality=0.1, on_shared="warn"):
         with uw.selective_ranks(0) as selected:
             if selected:
                 warnings.warn(
-                    f"pull_vertex_onto: {len(left)} target(s) were left without a "
+                    f"pull_vertex_onto: {len(left)} of the call's {len(placed_on)} "
+                    f"target(s) were left without a "
                     f"vertex, the first at {left[0]}: a later target of the call "
                     f"chose the same vertex and took it. The trace is sampled finer "
                     f"than the mesh there; thin it to the cell spacing "

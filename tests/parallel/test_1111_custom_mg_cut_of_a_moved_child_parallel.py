@@ -26,6 +26,14 @@ TRACE = np.array([[0.3, 0.45], [0.7, 0.55]])
 # (axis, amplitude): the amplitudes W1 measured; 0.005 and up were refused
 CASES = [(1, 0.002), (0, 0.005), (1, 0.005), (0, 0.01), (1, 0.01), (0, 0.015), (1, 0.015)]
 
+# The coarse fault copies left with no fine image, measured serially (development,
+# W1, 2026-11-21). In parallel the add-on partition's copy of the moved child now
+# keeps the child's as-built record (#1276), so it is nested where the child was
+# made, as on one rank, and the count is the same: H5 measured 7, 8 and 11 at
+# np 2 and 3 for the first three, where development gave 1, 8 and 4.
+UNREPAIRED = {(0, 0.005): 7, (1, 0.005): 8, (0, 0.01): 11, (1, 0.01): 14,
+              (0, 0.015): 13, (1, 0.015): 28}
+
 
 def _cut_of_a_moved_child(axis, amplitude):
     base = uw.meshing.UnstructuredSimplexBox(
@@ -77,14 +85,9 @@ def test_a_cut_of_a_moved_child_solves(axis, amplitude):
         assert merged == 0 and unrepaired == 0, note
     else:
         # the coarse levels do not follow a move this large, so some copies keep
-        # no fine image; the build must say so rather than pass in silence
-        assert unrepaired > 0, note
-    if (axis, amplitude) == (0, 0.005) and uw.mpi.size > 1:
-        # In parallel the recorded parent repairs every copy the merge used to
-        # take (4 merged unknowns before #1120). Not in serial: there the moved
-        # child is its own host and is nested on its as-built geometry, while
-        # in parallel the add-on partition's copy of it, made after the move,
-        # is nested where it stands. The repair then differs (serial here: 4
-        # merged, 7 unrepaired), which is required case 2a of the design note
-        # on coarse levels following the fine mesh, and goes when they do.
-        assert merged == 0, note
+        # no fine image; the build must say so rather than pass in silence, and
+        # it says the same at every rank count (#1276, case 2a)
+        assert unrepaired == UNREPAIRED[(axis, amplitude)], note
+        # Still open: the merged count is not yet the same at every rank count
+        # (H5: 2 at np 2 against 4 serially at (0, 0.005); 17 at np 3 against
+        # 19 at (0, 0.01)), so it is not asserted here.

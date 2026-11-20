@@ -1014,10 +1014,7 @@ class _DDtBase(uw_object):
     # ----- velocity-expression snapshots (mid-time trace-back) -----
     def _V_matrix(self):
         """``V_fn`` as a sympy row matrix (a mesh variable contributes its symbol)."""
-        V = self.V_fn
-        if hasattr(V, "sym") and not isinstance(V, sympy.Basic):
-            return sympy.Matrix(V.sym)
-        return sympy.Matrix(V)
+        return _velocity_row(self.V_fn, self.mesh.cdim)
 
     def _velocity_degree(self):
         """Degree of the nodal velocity cache: the highest degree among the
@@ -1412,6 +1409,19 @@ class _DDtBase(uw_object):
 def _as_matrix(R):
     """A residual as a sympy Matrix: a bare scalar becomes ``(1, 1)``."""
     return R if isinstance(R, sympy.MatrixBase) else sympy.Matrix([[R]])
+
+
+def _velocity_row(V, dim):
+    """A velocity expression as a sympy row matrix: a mesh variable contributes
+    its symbol, and a ``(dim, 1)`` column is transposed to the ``(1, dim)`` row
+    it means (the trace reads row components; a column gave its first row, the
+    x component alone)."""
+    if hasattr(V, "sym") and not isinstance(V, sympy.Basic):
+        V = V.sym
+    V = sympy.Matrix(V)
+    if dim > 1 and V.shape == (dim, 1):
+        return V.T
+    return V
 
 
 def _as_row_vector(V_fn, dim):
@@ -2613,10 +2623,7 @@ class CharacteristicTrace:
     # -- the velocity ---------------------------------------------------------
 
     def V_matrix(self):
-        V = self.V_fn
-        if hasattr(V, "sym") and not isinstance(V, sympy.Basic):
-            return sympy.Matrix(V.sym)
-        return sympy.Matrix(V)
+        return _velocity_row(self.V_fn, self.mesh.cdim)
 
     def velocity_degree(self):
         _, varfns, _ = uw.function.expressions.mesh_vars_in_expression(self.V_matrix())
