@@ -1361,6 +1361,15 @@ def CubedSphere(
 
         return
 
+    # what to do when the refinement holds wall vertices back (#949, item 1):
+    # measured on development, a simplex mesh at numElements 4 held none at
+    # refinement 1 and 2, where 2 and 3 held up to 24
+    spherical_mesh_refinement_callback.remedy = (
+        "CubedSphere(simplex=True) leaves them on a crease between two wall "
+        "patches (#949). numElements=4 held none at refinements 1 and 2 "
+        "(measured); simplex=False has no such crease."
+        if simplex else None)
+
     new_mesh = Mesh(
         uw_filename,
         degree=degree,

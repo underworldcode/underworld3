@@ -1,3 +1,4 @@
+# WIP (#944): moved from docs/examples/utilities/advanced/Ex_Tensor_Variables_etc.py: uses t_soln without defining it, and the AdvDiffusionSwarm API.
 # %% [markdown]
 """
 # 🎓 Tensor Variables etc

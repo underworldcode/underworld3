@@ -1,3 +1,4 @@
+# WIP (#944): moved from docs/examples/convection/advanced/Ex_Convection_Cartesian-Swarm.py: written for the AdvDiffusionSwarm projection API, which is gone.
 # %% [markdown]
 """
 # 🎓 Convection Cartesian-Swarm
