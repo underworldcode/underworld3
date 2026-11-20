@@ -13,9 +13,12 @@ clip merged away. Measured on development:
 * a unit square, the rung 1e-7 or 1e-8 below the top wall: "the ladder's outcrop
   cap meets no part of the domain".
 
-A row now counts as inside only when its points are at least a quarter of a cell
-from the boundary; a closer rung goes to the cap, which then starts one rung
-back. This file uses the square, which every platform meshes the same.
+The failure edge is the kernel's absolute tolerance: on the square, refused at
+3e-7 and closer and built at 5e-7 and further, at cell sizes 0.3, 0.03 and
+0.003 alike. A row now counts as inside only when its points are at least 1e-5
+from the boundary (``place_surface._LADDER_CAP_MARGIN``); a closer rung goes to
+the cap, which then starts one rung back. This file uses the square, which
+every platform meshes the same.
 """
 import numpy as np
 import pytest

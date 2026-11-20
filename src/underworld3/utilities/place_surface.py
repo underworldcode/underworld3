@@ -5712,6 +5712,20 @@ def _ladder_domain_gate_2d(pts, domain):
             "band (which clips).")
 
 
+# How far inside the domain a ladder row's points must be for the row to end the
+# structured band before the outcrop cap (#1090). A row closer to the wall leaves
+# a cap sliver that the geometry kernel's clip merges away, and the cap then
+# meshes short of its CAD area, loses a rung vertex, or meets no part of the
+# domain. Measured on a unit square with the rung under a straight wall, at cell
+# sizes 0.3, 0.03 and 0.003 alike: refused at 3e-7 and closer, built at 5e-7 and
+# further, so the limit is the kernel's own (absolute) tolerance, not a fraction
+# of the cell; on an annulus the two refusals of #1090 came at about 3e-8 and
+# 3e-7. 1e-5 is twenty times the measured edge. A placement changes only where a
+# rung lies within it of the wall: its band, and a split along it, end one rung
+# earlier. Coordinates are the mesh's own, non-dimensional.
+_LADDER_CAP_MARGIN = 1.0e-5
+
+
 def _distance_to_loops_2d(pts, domain):
     """Each point's distance to the nearest segment of the domain's boundary
     loops."""
@@ -5751,14 +5765,10 @@ def _ladder_outcrop_assembly_2d(S, R, width, size, domain):
     rows = np.stack([S + 0.5 * width * R, S, S - 0.5 * width * R], axis=1)
     flat = rows.reshape(-1, 2)
     # A row counts as inside when its three points are inside the domain and
-    # at least a quarter of a cell from its boundary. A rung closer to the wall
-    # goes to the cap, which then starts at the rung before it and is never
-    # thinner than that between its rung and the wall. Without the margin, a
-    # rail point 3e-8 to 3e-7 inside the wall's chord polygon (measured on an
-    # annulus, #1090) left a cap whose sliver the geometry kernel merged
-    # away: the cap meshed short of its CAD area, or lost a rung vertex.
+    # at least _LADDER_CAP_MARGIN from its boundary; a closer rung goes to the
+    # cap, which then starts at the rung before it (#1090).
     inside = (_inside_domain_2d(flat, domain)
-              & (_distance_to_loops_2d(flat, domain) >= 0.25 * size)
+              & (_distance_to_loops_2d(flat, domain) >= _LADDER_CAP_MARGIN)
               ).reshape(-1, 3).all(axis=1)
     if inside.all():
         return _ladder_curved_assembly_2d(S, width, size, reach=R)
