@@ -4012,12 +4012,15 @@ def _report_given_normal_extra_constraint(solver, boundaries):
             f"boundary. The constant-pressure continuity row then holds a weighted sum of "
             f"the wall slip fixed (the weights are where the given normal differs from "
             f"the facet-weighted normal; the mean pressure is its multiplier), a "
-            f"constraint the continuous problem does not have. On a curved wall that is "
-            f"not a circle this can stop the velocity converging: 63 to 67 % error, not "
-            f"falling with refinement, on a manufactured free-slip solution on an "
-            f"elliptical annulus (#1168). Use normal=None (the default, facet-weighted "
-            f"normal) unless the given normal is needed for an exact rigid-rotation "
-            f"null mode.")
+            f"constraint the continuous problem does not have. Where the wall facets "
+            f"are unequal it can stop the velocity converging, on manufactured free-slip "
+            f"solutions (#1168): 63 to 67 % error on an elliptical annulus, and 32 to 34 "
+            f"% on an annulus whose wall nodes have slid along the circles, neither "
+            f"falling with refinement. Annulus and SphericalShell walls as built have "
+            f"equal facets and are not affected; the error appears once wall nodes "
+            f"slide along the wall (a mesh mover with slip, adaptation, a free "
+            f"surface). Use normal=None (the default, facet-weighted normal) unless the "
+            f"given normal is needed for an exact rigid-rotation null mode.")
 
 
 def _given_normal_walls(solver):

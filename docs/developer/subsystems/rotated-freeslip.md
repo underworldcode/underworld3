@@ -119,9 +119,13 @@ facet-weighted one, so the same row holds a weighted sum of the wall *slip* fixe
 with the mean pressure as its multiplier. The continuous problem has no such
 constraint. The weights shrink like $h^2$, but their pattern along the wall
 does not, so any slip that lines up with that pattern is removed at every
-resolution. On a circle or sphere a circulating flow does not line up with it,
-which is why the shell and annulus cases above are unaffected. On a wall that is
-not a circle it can be ruinous. A manufactured Stokes solution on an elliptical
+resolution. At a wall node of a circle the weight is
+$(|f_1|^2 - |f_2|^2)/12R$, for the lengths of the two facets that meet there, so
+it vanishes where the facets are equal: `Annulus` and `SphericalShell` walls as
+built are unaffected, which is why the shell and annulus cases above are. Once
+the wall nodes slide along the wall (a mesh mover with slip, adaptation, a free
+surface) the facets are unequal and the circle is affected too (below). On a
+wall that is not a circle it can be ruinous. A manufactured Stokes solution on an elliptical
 annulus (outer semi-axes 1.5 and 1, inner circle 0.5; free slip exact on both
 walls, slip odd in x and y), relative L2 velocity error:
 
@@ -132,7 +136,15 @@ walls, slip odd in x and y), relative L2 velocity error:
 | rotated, `normal=` the exact ellipse normal | 63 % | 66 % | 67 % |
 
 With the given normal the mean pressure grows like $1/h^2$ (−2.6e4, −1.1e5,
-−4.5e5). The solve reports this case with a warning naming the extra constraint;
+−4.5e5). The same on an annulus, radii 0.5 and 1, with free slip exact on both
+walls and a slip like $\sin 2\theta$:
+
+| mesh | condition | cell 0.1 | cell 0.05 | cell 0.025 |
+|---|---|---:|---:|---:|
+| as built | default normal, or `normal=` $\mathbf{x}/|\mathbf{x}|$ (identical) | 1.45e-2 | 2.48e-3 | 3.82e-4 |
+| wall nodes slid along the circles | default normal | 1.44e-2 | 2.61e-3 | 5.31e-4 |
+| wall nodes slid along the circles | `normal=` $\mathbf{x}/|\mathbf{x}|$ | 32 % | 34 % | 34 % |
+ The solve reports this case with a warning naming the extra constraint;
 it does not change it. Until the given normal is separated from the constraint
 direction, use `normal=None` on a closed domain unless the given normal is needed
 for an exact rigid-rotation null mode (the shell gauge above).
