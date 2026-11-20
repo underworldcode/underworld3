@@ -474,7 +474,7 @@ def _is_native_refine_pair(coarse_mesh, fine_mesh):
 
 def nested_refine_pair_prolongation(coarse_mesh, fine_mesh, degree, continuous,
                                     coarse_coords=None, fine_coords=None,
-                                    fine_vertices=None):
+                                    fine_vertices=None, coarse_vertices=None):
     """EXACT node-level prolongation for a native ``refine()`` pair, at ANY
     polynomial degree — the FE embedding of the coarse Lagrange space in the
     fine one. Returns a scipy CSR ``(n_fine_nodes, n_coarse_nodes)`` matrix,
@@ -521,7 +521,7 @@ def nested_refine_pair_prolongation(coarse_mesh, fine_mesh, degree, continuous,
     dim = cdm.getDimension()
     if cdm.getCoordinateDim() != dim:      # embedded surface: no affine pullback
         return None
-    vP = nested_prolongation_from_dms(cdm, fdm, fine_vertices)
+    vP = nested_prolongation_from_dms(cdm, fdm, fine_vertices, coarse_vertices)
     if vP is None:
         return None
     parents = nested_cell_parents(cdm, fdm, vP)
@@ -550,7 +550,8 @@ def nested_refine_pair_prolongation(coarse_mesh, fine_mesh, degree, continuous,
     ccS, ccE = cdm.getHeightStratum(0)
     cvS, cvE = cdm.getDepthStratum(0)
     vxy = np.ascontiguousarray(
-        cdm.getCoordinatesLocal().array.reshape(-1, dim))
+        cdm.getCoordinatesLocal().array.reshape(-1, dim)
+        if coarse_vertices is None else coarse_vertices)
     cell_verts = np.empty((ccE - ccS, dim + 1), dtype=np.int64)
     for c in range(ccS, ccE):
         vv = [q - cvS for q in cdm.getTransitiveClosure(c)[0]
@@ -2221,6 +2222,23 @@ class CustomMGHierarchy:
             built_nodes.append(coords[l] if moved is None else moved)
             built_vertices.append(None if moved is None
                                   else level._transfer_vertices)
+        # The coarse side of each pair. A coarse level that moved with the
+        # finest (Mesh._move_coarse_levels_with_the_finest) is read where it was
+        # made when the fine level is, so the pair stands on one geometry and
+        # its transfer is the one it had before the move. Any other coarse level
+        # is read where it stands: unmoved, that is where it was made, and a
+        # level a mesh was made on after it moved (an adapt child's parent) is
+        # the geometry the fine level was built on.
+        coarse_nodes, coarse_vertices = [None], [None]
+        for l in range(1, nlev):
+            below = self.level_meshes[l - 1]
+            agree()                    # the move check is collective
+            followed = (built_vertices[l] is not None
+                        and getattr(below, "_moves_with_the_finest", False))
+            moved = (fault_mg.as_built_nodes(below, degree, continuous)
+                     if followed else None)
+            coarse_nodes.append(coords[l - 1] if moved is None else moved)
+            coarse_vertices.append(None if moved is None else below._transfer_vertices)
 
         # Operator-faithful check: the finest reduced map must span exactly the
         # assembled operator's rows. Checkable directly for the monolithic
@@ -2309,13 +2327,13 @@ class CustomMGHierarchy:
                     agree()
                     P = fault_mg.cell_located_transfer_parallel(
                         self.level_meshes[l - 1], self.level_meshes[l], degree,
-                        continuous, coords[l - 1], built_nodes[l], maps[l - 1],
+                        continuous, coarse_nodes[l], built_nodes[l], maps[l - 1],
                         maps[l], nc, comm, fine_vertices=built_vertices[l])
                     self.level_transfer_stats[l] = fault_mg.last_transfer_stats
                 else:
                     Pn = fault_mg.cell_located_prolongation(
                         self.level_meshes[l - 1], self.level_meshes[l], degree,
-                        continuous, coarse_coords=coords[l - 1],
+                        continuous, coarse_coords=coarse_nodes[l],
                         fine_coords=built_nodes[l],
                         fine_vertices=built_vertices[l])
                     P = _to_petsc_aij(
@@ -2324,7 +2342,7 @@ class CustomMGHierarchy:
                 Ps.append(P)
                 continue
             if parallel:
-                args = (coords[l - 1], built_nodes[l], maps[l - 1], maps[l], nc,
+                args = (coarse_nodes[l], built_nodes[l], maps[l - 1], maps[l], nc,
                         self.builder, comm)
                 if pre is not None:
                     P = provenance_transfer()
@@ -2460,8 +2478,9 @@ class CustomMGHierarchy:
                     Pn = nested_refine_pair_prolongation(
                         self.level_meshes[l - 1], self.level_meshes[l],
                         degree, continuous,
-                        coarse_coords=coords[l - 1], fine_coords=built_nodes[l],
-                        fine_vertices=built_vertices[l])
+                        coarse_coords=coarse_nodes[l], fine_coords=built_nodes[l],
+                        fine_vertices=built_vertices[l],
+                        coarse_vertices=coarse_vertices[l])
                 if Pn is None:
                     Pn = self._recorded_node_transfer(
                         l, nlev, degree, coords[l - 1].shape[0],
@@ -2469,7 +2488,7 @@ class CustomMGHierarchy:
                 if Pn is not None:
                     Pr = _reduced_from_node_transfer(Pn, maps[l - 1], maps[l], nc)
                 else:
-                    Pr = _reduced_transfer(coords[l - 1], built_nodes[l],
+                    Pr = _reduced_transfer(coarse_nodes[l], built_nodes[l],
                                            maps[l - 1], maps[l], nc, self.builder)
                 # an orphan coarse DOF (no fine image) is dropped at install
                 # (restrict_unreached), never injected — see drop_orphans
@@ -2557,7 +2576,9 @@ class CustomMGHierarchy:
         fault is then absent from the preconditioner until the patch is rebuilt, which
         is one step of the fault-move cycle: move the fault, re-refine the base from
         it, and register the hierarchy with the cut fault again (``set_custom_fmg``).
-        The registered coarse levels do not move with the fine mesh, so the patch
+        The registered coarse levels of a faulted mesh do not move with it (only a
+        refined hierarchy's own levels do, Mesh._move_coarse_levels_with_the_finest),
+        so the patch
         test, which reads a fine row as background only where it lands on a
         coincident coarse node, would take every moved row as patch and the cover gate
         would decline it without saying why.
@@ -2779,7 +2800,7 @@ class _DMLevelView:
     is built: a coarse MG level needs no variables, caches, or registries.
     """
 
-    def __init__(self, dm, fine_mesh):
+    def __init__(self, dm, fine_mesh, built_vertices=None):
         # A CLONE, never the hierarchy DM itself: the base (gmsh-imported)
         # level may need its coordinate field repaired below, and the shared
         # hierarchy DMs also feed the native Stokes FMG route.
@@ -2788,9 +2809,14 @@ class _DMLevelView:
         self.cdim = fine_mesh.cdim
         self.isSimplex = fine_mesh.isSimplex
         self.qdegree = fine_mesh.qdegree
-        # the views wrap the levels under the finest, which no move reaches:
-        # the view answers fault_mg.as_built_nodes as an unmoved mesh does
-        self._moved_since_built = False
+        # A level under the finest moves with it
+        # (Mesh._move_coarse_levels_with_the_finest), and ``built_vertices`` is
+        # then where it was made: the view answers fault_mg.as_built_nodes as
+        # the level's own wrap does. Without the record, the level has not
+        # moved, and the view answers as an unmoved mesh.
+        self._transfer_vertices = built_vertices
+        self._moved_since_built = built_vertices is not None
+        self._moves_with_the_finest = built_vertices is not None
 
         # The gmsh-imported BASE level carries section-only coordinates (its
         # coordinate field is a PetscContainer, no PetscFE). PETSc's
@@ -2808,9 +2834,17 @@ class _DMLevelView:
             cdm.setField(0, fe)
             cdm.createDS()
 
-    def _get_coords_for_basis(self, degree, continuous):
+    def _get_coords_for_basis(self, degree, continuous, **kwargs):
         from underworld3.discretisation import Mesh
-        return Mesh._get_coords_for_basis(self, degree, continuous)
+        return Mesh._get_coords_for_basis(self, degree, continuous, **kwargs)
+
+    def _moved_off_transfer_geometry(self):
+        from underworld3.discretisation import Mesh
+        return Mesh._moved_off_transfer_geometry(self)
+
+    def _coordinate_vector_of(self, *args, **kwargs):
+        from underworld3.discretisation import Mesh
+        return Mesh._coordinate_vector_of(self, *args, **kwargs)
 
     def _basis_coordinate_dm(self, degree, continuous):
         from underworld3.discretisation import Mesh
@@ -3012,7 +3046,11 @@ def build_transfers(solver, field_id=None):
                 detail="the refinement hierarchy is gone (collapsed by a "
                        "remesh between build and solve)")
             return None, None
-        level_tail = [_DMLevelView(dm, solver.mesh) for dm in hierarchy_dms[:-1]]
+        solver.mesh._move_coarse_levels_with_the_finest()
+        built = getattr(solver.mesh, "_coarse_built_vertices", None)
+        level_tail = [_DMLevelView(dm, solver.mesh,
+                                   built_vertices=None if built is None else built[k])
+                      for k, dm in enumerate(hierarchy_dms[:-1])]
         # Stamp the refine-family slots so consecutive pairs (including the
         # finest pair, whose fine level is the solver's own mesh) take the
         # exact nested transfer. Reuse the mesh's token if _coarse_level_meshes
