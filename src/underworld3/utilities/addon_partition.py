@@ -366,9 +366,9 @@ def inherit_provenance(child, host):
 # --------------------------------------------------------------------------- #
 #  The parent relation and the units
 # --------------------------------------------------------------------------- #
-def _cell_centroids(mesh):
+def _cell_centroids(mesh, as_built=False):
     from underworld3.utilities.fault_mg import _cell_vertex_table
-    vxy, cv = _cell_vertex_table(mesh)
+    vxy, cv = _cell_vertex_table(mesh, as_built=as_built)
     return vxy[cv].mean(axis=1), vxy, cv
 
 
@@ -381,8 +381,9 @@ def _parent_cells_local(coarse, fine):
 
     The centroid is the one ``fine`` has in the geometry of ``coarse``
     (``fault_mg.reference_vertices``): a move changes the coordinates of
-    ``fine`` and not of ``coarse``, and the parent of a cell is the one it was
-    made in, not the one its moved centroid lies over (#1091)."""
+    ``fine``, and the parent of a cell is the one it was made in, not the one its
+    moved centroid lies over (#1091). A coarse level that moved with the finest
+    is then read where it was made too."""
     from underworld3.utilities.fault_mg import (locate_in_cells_exhaustive,
                                                 reference_vertices)
     comm = fine.dm.getComm().tompi4py()
@@ -394,7 +395,8 @@ def _parent_cells_local(coarse, fine):
     problem = None
     try:
         fcent, _vf, cvf = _cell_centroids(fine)
-        _cc, vxy_c, cv_c = _cell_centroids(coarse)
+        # read where it was made when the fine centroids are (the reference)
+        _cc, vxy_c, cv_c = _cell_centroids(coarse, as_built=reference is not None)
         n_f, n_c = cvf.shape[0], cv_c.shape[0]
         cell = np.full(n_f, -1, dtype=np.int64)
         if reference is not None:

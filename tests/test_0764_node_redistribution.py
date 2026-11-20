@@ -160,7 +160,8 @@ class TestEngineLessAdapt:
     def test_redistribute_then_adapt_composition(self, caplog):
         """adapt() after redistribute_nodes refines the MOVED geometry. The
         move gives the parent's finest hierarchy level the moved coordinates
-        (#1037); its coarse levels keep the originals.
+        (#1037), and its coarse levels move with it: each coarse vertex takes
+        its finest vertex's displacement (Louis, 2026-11-19).
 
         The same mover run also guards #376: masked in-place updates
         (``data[mask] /= s``) must not fire the canonical PETSc-sync
@@ -204,9 +205,16 @@ class TestEngineLessAdapt:
         dist, _ = cKDTree(child_verts).query(base_verts)
         assert dist.max() < 1e-12
         # ... the parent's finest level carries the move, so solves on it see
-        # the moved geometry (#1037), and its coarse level keeps the original
+        # the moved geometry (#1037), and its coarse level moves with it: each
+        # coarse vertex stands on the finest vertex it is under the refinement
+        from underworld3.discretisation.discretisation_mesh import _vertex_coordinates
+        from underworld3.utilities._plex_topology import inherited_vertices
         assert np.array_equal(mesh.dm_hierarchy[-1].getCoordinatesLocal().array, moved)
-        assert np.array_equal(mesh.dm_hierarchy[0].getCoordinatesLocal().array, coarse_before)
+        coarse = mesh.dm_hierarchy[0]
+        to_finest = inherited_vertices(coarse) - mesh.dm_hierarchy[1].getDepthStratum(0)[0]
+        assert not np.array_equal(coarse.getCoordinatesLocal().array, coarse_before)
+        assert np.array_equal(_vertex_coordinates(coarse),
+                              _vertex_coordinates(mesh.dm)[to_finest])
 
     def test_engine_less_adapt_is_nvb(self):
         """The engine-less child matches an explicit engine='nvb' child

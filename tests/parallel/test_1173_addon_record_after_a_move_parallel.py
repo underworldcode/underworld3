@@ -4,11 +4,11 @@ In parallel, the fault routes (``Mesh.add_fault``, ``place_fault_ribbon_2d``)
 start with ``addon_partition.partition_addon``, which records the parent of each
 finest cell on the level below and moves the fault's cells onto one rank. A move
 of the mesh (``mesh.deform``, the MMPDE mover, the Laplacian smoother) changes
-the finest level's coordinates and leaves the level below where it was. The
-partition located each cell's parent at its moved centroid: it refused wherever
-that put the parent on another rank ("N fine cell(s) have no local parent cell
-on the level below"), and recorded a wrong parent where it did not. Serial runs
-skip the partition.
+the finest level's coordinates, and the level below then stood where it was
+made (since #1244 it moves with the finest). The partition located each cell's
+parent at its moved centroid: it refused wherever that put the parent on another
+rank ("N fine cell(s) have no local parent cell on the level below"), and
+recorded a wrong parent where it did not. Serial runs skip the partition.
 
 The mesh is moved three ways. ``mesh.deform`` moves it by one fine cell in the
 interior, 0.7 of a cell of the level below. ``node_redistribution`` and
@@ -108,10 +108,12 @@ def test_a_moved_base_is_partitioned_on_the_parents_it_was_refined_from(
     # the parents are those of the refinement: four children each
     count = children_per_parent(below, out)
     assert comm.allreduce(int((count != 4).sum())) == 0
-    # the fixture moves far enough to tell: where the cells are now, some are
-    # outside their parent (920 of the 2,048 after the redistribution and 51
-    # of the 2,592 after the smoother, in serial)
-    assert parents_contain_centroids(below, out) > 0
+    # The level below moved with the finest (#1244): each cell lies inside its
+    # parent where both stand now. Before, the level below stayed where it was
+    # made and the move put cells outside their parent (920 of the 2,048 after
+    # the redistribution and 51 of the 2,592 after the smoother, in serial).
+    assert getattr(below, "_moves_with_the_finest", False)
+    assert parents_contain_centroids(below, out) == 0
     held = out._addon_reference
     assert held is not None and held[0] is below
     reference = held[1]
@@ -120,9 +122,9 @@ def test_a_moved_base_is_partitioned_on_the_parents_it_was_refined_from(
         # the geometry the base was made in rode the move vertex by vertex:
         # every vertex of the moved copy is its reference position, shifted
         assert _largest(vxy - (reference + _shift(reference))) < 1e-12
-    # each child lies inside its parent where it was made
+    # each child lies inside its parent where both were made
     made_at = reference[cv].mean(axis=1)
-    assert parents_contain_centroids(below, out, centroids=made_at) == 0
+    assert parents_contain_centroids(below, out, centroids=made_at, as_built=True) == 0
 
 
 @pytest.mark.parametrize("mover, regular, moved, pres_its, peak_slip", MOVERS)

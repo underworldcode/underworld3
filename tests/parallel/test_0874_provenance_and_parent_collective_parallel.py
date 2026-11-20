@@ -239,10 +239,10 @@ def test_a_cell_table_failure_before_the_parent_location_is_raised_on_every_rank
     levels = [tail[i] for i in addon_level_indices(tail)] + [child]
     original = ap._cell_centroids
 
-    def failing(mesh):
+    def failing(mesh, **kwargs):
         if uw.mpi.rank == uw.mpi.size - 1:
             raise IndexError("cell table (forced on one rank)")
-        return original(mesh)
+        return original(mesh, **kwargs)
 
     ap._cell_centroids = failing
     try:
@@ -322,7 +322,10 @@ def test_a_damaged_old_address_is_refused_on_every_rank(damage, message, which):
 #  The sweep (#874): every rank-local step of the remaining builders is raised
 #  on every rank. Each case forces one failure on the last rank only.
 # --------------------------------------------------------------------------- #
-def test_a_failure_after_the_parent_fetch_is_raised_on_every_rank():
+def test_a_failure_reading_the_reference_vertices_is_raised_on_every_rank():
+    # The reference is read once, before the level tables (#1244): the coarse
+    # side's move check depends on it. Unguarded there, a failure on one rank
+    # left the others waiting at the tables' agreement point.
     args, kwargs = _captured_provenance_call()
     _same_error_everywhere(lambda: fault_mg.provenance_transfer_parallel(*args, **kwargs),
                            "reference_vertices", "Reference vertices",

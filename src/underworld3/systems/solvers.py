@@ -581,6 +581,11 @@ class _StressHistoryMixin:
         (default), ``"integration_point"``, ``"forward"``, ``"lagrangian"`` or
         ``"eulerian"``.
 
+        On a mesh with a split-node fault the default is ``"eulerian"`` instead,
+        and the tracing flavours (``"semi_lagrangian"``, ``"integration_point"``,
+        ``"forward"``) are refused when the history is made: a trace next to the
+        slit can read the other side of it (#871).
+
         ``"forward"`` carries the stress from a fixed set of launch points inside
         the cells (the integration points), one forward trajectory a step, and
         fits the arrivals per cell; the constitutive flux is read at the launch
@@ -609,7 +614,12 @@ class _StressHistoryMixin:
         it before the constitutive model is assigned: assigning the model
         creates the history, and the choice cannot change after that.
         """
-        return getattr(self, "_stress_transport", "semi_lagrangian")
+        if hasattr(self, "_stress_transport"):
+            return self._stress_transport
+        # the effective default: on a mesh with a split-node fault the history
+        # is made on the grid (see _resolve_stress_transport_for_faults; this
+        # read is rank-local, the decision when the history is made is not)
+        return "eulerian" if getattr(self.mesh, "_fault_point_pairs", None) else "semi_lagrangian"
 
     @stress_transport.setter
     def stress_transport(self, value):
@@ -703,6 +713,39 @@ class _StressHistoryMixin:
         self.is_setup = True
         self.constitutive_model._solver_is_setup = True
 
+    #: The flavours that locate points along a trajectory and evaluate the stored
+    #: history there; next to a split-node fault that evaluation can read the
+    #: other side of the slit (#871).
+    _TRACING_STRESS_TRANSPORTS = ("semi_lagrangian", "integration_point", "forward")
+
+    def _resolve_stress_transport_for_faults(self):
+        """Keep a stress history from tracing across a split-node fault (#871).
+
+        A trajectory traced back (or forward) from a point within about h/2 of a
+        split-node fault can be located in a cell on the other side of the slit,
+        and the history read there belongs to the other block: measured as a
+        period-2-step slip-rate oscillation on a Maxwell thin sheet, removed by
+        the grid history. Until the trace respects the fault, a mesh with a
+        split-node fault gets the grid history (``"eulerian"``) by default, and a
+        tracing flavour chosen explicitly is refused. ``"none"`` (no transport)
+        and ``"lagrangian"`` (material points) do not trace and stay available.
+        Collective: every rank takes the same decision.
+        """
+        split = bool(getattr(self.mesh, "_fault_point_pairs", None))
+        split = bool(uw.mpi.comm.allreduce(int(split), op=uw.MPI.MAX))
+        if not split:
+            return
+        chosen = getattr(self, "_stress_transport", None)
+        if chosen is None:
+            self._stress_transport = "eulerian"
+        elif chosen in self._TRACING_STRESS_TRANSPORTS:
+            raise ValueError(
+                f"stress_transport={chosen!r} traces the stress history along "
+                "characteristics, and this mesh has a split-node fault: next to the "
+                "slit the trace can read the history on the other side of it (#871). "
+                "Use 'eulerian' (the default on a faulted mesh) or 'none' (for a "
+                "step that moves far less than a cell, as in a seismic or tidal cycle).")
+
     def _create_stress_history_ddt(self, order=2):
         """Create DFDt for stress history tracking (VE/VEP models).
 
@@ -718,6 +761,7 @@ class _StressHistoryMixin:
         if self.Unknowns.DFDt is not None:
             return  # already created
 
+        self._resolve_stress_transport_for_faults()
         self._order = order
         # Constitutive model may request extra SemiLagrangian kwargs (e.g.
         # with_forcing_history for ETD-2 integration).
@@ -4658,11 +4702,13 @@ class SNES_AdvectionDiffusion(SNES_Scalar):
           non-nodal upstream points in cells with sharp gradients
           (e.g. thin boundary layers in deformed cells); legacy
           behaviour.
-        - ``"clamp"``: clip the FE trace-back result to
-          ``[nbr_min, nbr_max]`` of the ``k = dim + 1`` nearest
-          ``psi_star`` DOFs. Bit-identical to pure FE in smooth
-          regions; bounds overshoots where the FE interpolant would
-          otherwise leave the local data range.
+        - ``"clamp"``: clip the FE trace-back result to the range of
+          the ``psi_star`` DOFs on the closure of the cell containing
+          the departure point (#682; ``UW_MONOTONE_CLAMP_BOUND=nearest``
+          restores the earlier ``dim + 1`` nearest DOFs, to reproduce old
+          results only). Bit-identical to pure FE in smooth regions;
+          bounds overshoots where the FE interpolant would otherwise
+          leave the local data range.
         - ``"pick"``: keep the FE result where in-bounds; for
           out-of-bounds DOFs only, re-evaluate via Shepard's-method
           RBF. More conservative than clamp at the catastrophe edge.
