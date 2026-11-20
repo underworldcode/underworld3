@@ -1495,6 +1495,7 @@ def DiscInternalBoundaries(
     degree: int = 1,
     qdegree: int = 2,
     filename=None,
+    refinement=None,
     gmsh_verbosity=0,
     verbose=False,
 ):
@@ -1531,6 +1532,9 @@ def DiscInternalBoundaries(
         Quadrature degree for numerical integration.
     filename : str, optional
         Path to save the mesh file.
+    refinement : int, optional
+        Number of uniform refinement levels; the walls are snapped back onto
+        their circles at each level.
     gmsh_verbosity : int, default=0
         Gmsh output verbosity level.
     verbose : bool, default=False
@@ -1708,8 +1712,10 @@ def DiscInternalBoundaries(
 
     ## This has an additional step to move the inner boundary
     def annulus_internal_mesh_refinement_callback(dm):
-        r_o = radiusOuter
-        r_i = radiusInner
+        # this generator's own radii (the callback once read another
+        # generator's radiusOuter and radiusInner, and raised NameError)
+        r_o = radiusUpper
+        r_i = radiusLower
         r_int = radiusInternal
 
         import underworld3 as uw
