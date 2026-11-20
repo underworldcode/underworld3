@@ -55,6 +55,40 @@ def test_an_unfactorable_pressure_preconditioner_is_refused_on_every_rank(viscos
     messages = uw.mpi.comm.allgather(message)
     assert all(messages), f"some rank did not refuse: {messages}"
     assert all("set_reference_quantities" in m and "#1059" in m for m in messages), messages[0]
+    assert not any("contrast" in m for m in messages), messages[0]
+
+
+def test_a_viscosity_contrast_is_refused_with_the_contrast_remedy():
+    """1 below y = 0.8 and 1e12 above: only some entries are tiny. Reference
+    quantities rescale every viscosity together and cannot help, so the message
+    must not offer them."""
+    import sympy as sp
+    stokes, _ = _box(1.0)
+    y = stokes.mesh.X[1]
+    stokes.constitutive_model.Parameters.shear_viscosity_0 = sp.Piecewise(
+        (1.0e12, y > 0.8), (1.0, True))
+    message = ""
+    try:
+        stokes.solve()
+    except RuntimeError as error:
+        message = str(error)
+    messages = uw.mpi.comm.allgather(message)
+    assert all("contrast" in m and "zeropivot" in m for m in messages), messages[0]
+    assert not any("set_reference_quantities" in m for m in messages), messages[0]
+
+
+def test_the_same_solver_solves_once_the_viscosity_is_fixed():
+    """A preconditioner that failed kept its failed state, so the next solve on the
+    same solver failed again at iteration 0 with a healthy matrix."""
+    stokes, v = _box(1.0e12)
+    with pytest.raises(RuntimeError):
+        stokes.solve()
+    stokes.constitutive_model.Parameters.shear_viscosity_0 = 1.0
+    stokes.solve()
+    assert stokes.snes.getConvergedReason() > 0
+    unit, v_unit = _box(1.0)
+    unit.solve()
+    assert _speed(v) == pytest.approx(_speed(v_unit), rel=1e-6)
 
 
 def test_a_viscosity_of_1e10_still_solves():

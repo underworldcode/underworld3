@@ -562,6 +562,16 @@ class SolverReset:
         self.discretisation()
 
 
+#: PETSc's default zero-pivot tolerance for LU and ILU in double precision: a
+#: pivot below it is treated as zero (#1059).
+_PETSC_ZERO_PIVOT = 2.22045e-14
+
+#: How far above that tolerance a pressure block's smallest diagonal entry may
+#: lie and still be blamed for a failed factorisation (#1059). ILU pivots can fall
+#: a little below the diagonal they start from; a hundredfold is a wide margin.
+_PIVOT_SUSPECT = 100.0
+
+
 class SolverBaseClass(uw_object):
     r"""
     The Generic `Solver` is used to build the `SNES Solvers`
@@ -4448,47 +4458,83 @@ class SolverBaseClass(uw_object):
 
     def _refuse_unfactorable_pressure_preconditioner(self):
         """Raise on every rank when the solve failed because the pressure block's
-        preconditioner could not be factored (#1059).
+        preconditioner hit a zero pivot (#1059); and make the next solve rebuild a
+        preconditioner that failed.
 
-        That matrix is the pressure mass matrix divided by the viscosity. PETSc's
-        LU and ILU treat a pivot below an ABSOLUTE tolerance (2.2e-14) as zero, so
-        once the viscosity in the solver's frame is about 1e11 or more the
-        factorisation fails, the solve stops at iteration 0 and u = 0. A warning
-        is not enough: the fields look like a solution. Collective, and reached
-        only when the solve diverged, which every rank agrees on."""
+        The pressure block's preconditioner matrix is the pressure mass matrix
+        divided by the viscosity, so its entries scale as element size over
+        viscosity. PETSc's LU and ILU treat a pivot below an ABSOLUTE tolerance
+        (``_PETSC_ZERO_PIVOT``) as zero: with the viscosity large everywhere (a model
+        in raw SI units) or across a large contrast, the factorisation fails, the
+        solve stops, and the fields look like a solution. A warning is not enough.
+
+        Only a failure the matrix explains is refused: the pressure PC failed with a
+        zero pivot, or with a sub-preconditioner error (GASM reports its ILU blocks'
+        zero pivots that way) while its smallest diagonal entry is within
+        ``_PIVOT_SUSPECT`` of the tolerance. Any other failure keeps the diverged-solve
+        warning. Collective: reached on every rank, since the SNES reason is global;
+        the flags are reduced and the diagonal extremes are global reductions."""
         if self.snes.getConvergedReason() >= 0:
             return
         from petsc4py import PETSc
-        bad = (PETSc.PC.FailedReason.FACTOR_STRUCT_ZEROPIVOT,
-               PETSc.PC.FailedReason.FACTOR_NUMERIC_ZEROPIVOT,
-               PETSc.PC.FailedReason.SUBPC_ERROR)
-        failed, largest, pressure = 0, float("nan"), None
+        ksp = self.snes.getKSP()
+        # A PC that failed keeps its failed state: the next solve on this solver
+        # failed again at iteration 0 with a healthy matrix, until a setup was
+        # forced. The KSP reason is global, so every rank sets the flag alike.
+        if ksp.getConvergedReason() == PETSc.KSP.ConvergedReason.DIVERGED_PCSETUP_FAILED:
+            self._rebuild_after_pc_failure = True
+        zero_pivot = (PETSc.PC.FailedReason.FACTOR_STRUCT_ZEROPIVOT,
+                      PETSc.PC.FailedReason.FACTOR_NUMERIC_ZEROPIVOT,
+                      PETSc.PC.FailedReason.SUBPC_ERROR)
+        pressure = None
         try:
-            for sub in self.snes.getKSP().getPC().getFieldSplitSubKSP():
+            for sub in ksp.getPC().getFieldSplitSubKSP():
                 if (sub.getOptionsPrefix() or "").endswith("fieldsplit_pressure_"):
                     pressure = sub
         except Exception:
             pressure = None
-        if pressure is not None:
-            failed = int(pressure.getPC().getFailedReason() in bad)
-        failed = uw.mpi.comm.allreduce(failed, op=uw.MPI.MAX)
-        if not failed:
+        failed = int(pressure is not None
+                     and pressure.getPC().getFailedReason() in zero_pivot)
+        if not uw.mpi.comm.allreduce(failed, op=uw.MPI.MAX):
             return
-        # Collective. Every rank has the same split, so either every rank found the
-        # pressure block or none did; then the norm is skipped everywhere.
-        if uw.mpi.comm.allreduce(int(pressure is not None), op=uw.MPI.MIN):
-            largest = pressure.getOperators()[1].getDiagonal().norm(PETSc.NormType.INFINITY)
-        raise RuntimeError(
+        # Every rank has the same split, so either every rank found the pressure
+        # block or none did; then the reductions below are skipped everywhere.
+        if not uw.mpi.comm.allreduce(int(pressure is not None), op=uw.MPI.MIN):
+            return
+        diagonal = pressure.getOperators()[1].getDiagonal()
+        diagonal.abs()
+        smallest = diagonal.min()[1]
+        largest = diagonal.max()[1]
+        if smallest > _PIVOT_SUSPECT * _PETSC_ZERO_PIVOT:
+            return                  # not the matrix's scale: the warning stands
+        iterations = self.snes.getIterationNumber()
+        held = "the initial guess" if iterations == 0 else "the last iterate"
+        head = (
             f"{type(self).__name__}: the pressure block's preconditioner could not be "
-            f"factored, so the solve stopped at iteration {self.snes.getIterationNumber()} "
-            f"and the fields hold the initial guess. That matrix is the pressure mass "
-            f"matrix divided by the viscosity; its largest diagonal entry is "
-            f"{largest:.3g}, and PETSc's factorisation treats pivots below 2.2e-14 as "
-            f"zero. This happens when the viscosity in the solver's frame is about 1e11 "
-            f"or more, as in a model in raw SI units. Give the model reference "
-            f"quantities (uw.get_default_model().set_reference_quantities(...), see the "
-            f"units-system guide), so the viscosity it solves with is of order one. "
-            f"(#1059)")
+            f"factored (a zero pivot), so the solve stopped at iteration {iterations} "
+            f"and the fields hold {held}. That matrix is the pressure mass matrix "
+            f"divided by the viscosity, and PETSc's factorisation treats pivots below "
+            f"{_PETSC_ZERO_PIVOT:.2g} as zero; its diagonal runs from {smallest:.3g} to "
+            f"{largest:.3g}. Where the limit falls depends on the element size as well "
+            f"as the viscosity. ")
+        if largest <= _PIVOT_SUSPECT * _PETSC_ZERO_PIVOT:
+            remedy = (
+                "Every entry is that small, so the viscosity is large everywhere, as in "
+                "a model in raw SI units. Give the model reference quantities "
+                "(uw.get_default_model().set_reference_quantities(...), see the "
+                "units-system guide), so the viscosity it solves with is of order one.")
+        else:
+            remedy = (
+                f"The entries span a factor of {largest / smallest:.2g}: a viscosity "
+                f"contrast, which reference quantities cannot remove, since they rescale "
+                f"every viscosity together. Setting solver.petsc_options["
+                f"'fieldsplit_pressure_sub_pc_factor_zeropivot'] = 0 lets this "
+                f"factorisation through, but a contrast this large can then defeat the "
+                f"velocity multigrid as well (1e12 on a unit box needed a direct "
+                f"velocity solve, fieldsplit_velocity_pc_type = 'lu'); a smaller "
+                f"contrast is the robust remedy. Whether these should be defaults is "
+                f"open.")
+        raise RuntimeError(head + remedy + " (#1059)")
 
     def _warn_on_diverged_solve(self):
         """Warn when the solve diverged (#1059). The printed notice of
@@ -13766,6 +13812,12 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                 return rate_strengthening_continuation(self, **options)
             return self._solve_yield_homotopy(homotopy_options, verbose=verbose)
 
+        if getattr(self, "_rebuild_after_pc_failure", False):
+            # The last solve's preconditioner failed and keeps its failed state;
+            # without a fresh setup this solve fails the same way at iteration 0,
+            # however healthy the operator now is (#1059).
+            self._rebuild_after_pc_failure = False
+            _force_setup = True
         if _force_setup:
             self.is_setup = False
         elif not self.constitutive_model._solver_is_setup:
