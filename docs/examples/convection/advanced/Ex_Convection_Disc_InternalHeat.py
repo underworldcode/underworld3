@@ -414,14 +414,14 @@ for step in range(0, int(params.uw_max_steps)):
     calculate_diffusivity.solve()
 
     if step % 10 == 0:
-        delta_t = adv_diff.estimate_dt(v_factor=2.0, diffusivity=kappa.sym[0])
+        delta_t = adv_diff.estimate_dt()
 
     adv_diff.solve(timestep=delta_t, zero_init_guess=False)
 
     # Statistics
     tstats = t_soln.stats()
     Tgrad_stats = kappa.stats()
-    dt_estimate = adv_diff.estimate_dt(v_factor=2.0, diffusivity=kappa.sym[0])
+    dt_estimate = adv_diff.estimate_dt()
 
     uw.pprint(f"Timestep {ts}, dt {delta_t:.2e} ({dt_estimate:.2e})", flush=True)
 

@@ -137,8 +137,7 @@ pv.global_theme.jupyter_backend = "trame"
 pv.global_theme.smooth_shading = True
 
 
-meshbox.vtk("tmp_box.vtk")
-pvmesh = pv.read("tmp_box.vtk")
+pvmesh = uw.visualisation.mesh_to_pv_mesh(meshbox)
 
 points = np.zeros((swarm.data.shape[0], 3))
 points[:, 0] = swarm.data[:, 0]

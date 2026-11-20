@@ -98,7 +98,7 @@ print(f"Domain: {domain_width} × {domain_height}")
 
 gravity = 9.81 * uw.units.m / uw.units.s**2
 thermal_expansion = 3e-5 * uw.units.K**-1
-thermal_diffusivity = 1e-6 * uw.units.m**2 / uw.units.s
+thermal_diffusivity = uw.quantity(1e-6, "m**2/s")
 reference_density = 3300 * uw.units.kg / uw.units.m**3
 reference_viscosity = 1e21 * uw.units.Pa * uw.units.s
 

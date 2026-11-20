@@ -161,7 +161,7 @@ stokes.solve()
 ## From now on, use V_r to drive deformation. Again, create a smooth, continuous field
 diffuser.reset.all()
 diffuser.add_essential_bc(
-    (v.sym.dot(mesh.CoordinateSystem.unit_e_0)), mesh.boundaries.Upper.name
+    (v.sym.dot(mesh.CoordinateSystem.unit_e_0),), mesh.boundaries.Upper.name
 )
 diffuser.add_essential_bc((0,), mesh.boundaries.Lower.name)
 diffuser.solve()

@@ -317,9 +317,11 @@ pl.show()
 stokes.F1.sym
 
 # %%
-0 / 0
+if not uw.is_notebook():
+    exit()
 
 # %%
-0 / 0
+if not uw.is_notebook():
+    exit()
 
 # %%

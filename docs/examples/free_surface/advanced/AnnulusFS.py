@@ -105,8 +105,7 @@ def plot_mesh(title,mesh,showFig=True,color='Black'):
     pv.global_theme.show_edges = True
     pv.global_theme.axes.show = True
 
-    mesh.vtk("tmp_box_mesh.vtk")
-    pvmesh = pv.read("tmp_box_mesh.vtk")
+    pvmesh = uw.visualisation.mesh_to_pv_mesh(mesh)
     pl = pv.Plotter()
     pl.add_mesh(pvmesh,color, 'wireframe')
 
@@ -133,8 +132,7 @@ def plot_stream(title,showFig=False):
     pv.global_theme.show_edges = True
     pv.global_theme.axes.show = True
     
-    mesh.vtk("tmp_box_mesh.vtk")
-    pvmesh = pv.read("tmp_box_mesh.vtk")
+    pvmesh = uw.visualisation.mesh_to_pv_mesh(mesh)
     pl = pv.Plotter()
     #pl.add_mesh(pvmesh,'k', 'wireframe')
     
@@ -369,13 +367,11 @@ if render:
     pv.global_theme.show_edges = True
     pv.global_theme.axes.show = True
     
-    mesh.vtk("tmp_box_mesh.vtk")
-    pvmesh = pv.read("tmp_box_mesh.vtk")
+    pvmesh = uw.visualisation.mesh_to_pv_mesh(mesh)
     pl = pv.Plotter()
     pl.add_mesh(pvmesh,'red', 'wireframe',label='mesh1')
     
-    mesh0.vtk("tmp_box_mesh0.vtk")
-    pvmesh0 = pv.read("tmp_box_mesh0.vtk")
+    pvmesh0 = uw.visualisation.mesh_to_pv_mesh(mesh0)
     pl.add_mesh(pvmesh0,'Black', 'wireframe',label='mesh0')
 
     # init_mesh.vtk("tmp_box_mesh_init.vtk")

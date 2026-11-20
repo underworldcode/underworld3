@@ -46,6 +46,9 @@ nest_asyncio.apply()
 # +
 from petsc4py import PETSc
 import underworld3 as uw
+import os
+
+os.makedirs("output", exist_ok=True)
 from underworld3.systems import Poisson
 import numpy as np
 

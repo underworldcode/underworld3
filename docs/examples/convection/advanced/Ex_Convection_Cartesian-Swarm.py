@@ -117,8 +117,6 @@ stokes = Stokes(
                 meshbox,
                 velocityField=v_soln,
                 pressureField=p_soln,
-                u_degree=v_soln.degree,
-                p_degree=p_soln.degree,
                 verbose=False)
 
 # Set solve options here (or remove default values

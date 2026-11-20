@@ -107,7 +107,7 @@ meshdisc = uw.discretisation.Mesh(
     dmplex,
     coordinate_system_type=uw.coordinates.CoordinateSystemType.CYLINDRICAL2D)
 uw.cython.petsc_discretisation.petsc_dm_set_periodicity(
-    meshdisc.dm, [0.0, 1.0], [0.0, 0.0], [0.0, 2 * np.pi]
+    meshdisc.dm, [0.0, 1.0], [0.0, 0.0], [-1.0, 2 * np.pi]
 )
 
 
