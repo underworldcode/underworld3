@@ -1599,7 +1599,7 @@ class CoordinateSystem:
                     [
                         -sympy.sin(r2),
                         +sympy.cos(r2),
-                        self.independent_of_N,
+                        sympy.Integer(0),
                     ],
                 ]
             )
@@ -1622,7 +1622,7 @@ class CoordinateSystem:
                     [
                         -y / rz,
                         +x / rz,
-                        self.independent_of_N,
+                        sympy.Integer(0),
                     ],
                 ]
             )
@@ -1743,7 +1743,7 @@ class CoordinateSystem:
             rxy = sympy.sqrt(x**2 + y**2)
             unit_east_x = -y / rxy
             unit_east_y = x / rxy
-            unit_east_z = self.independent_of_N  # Zero, but symbolic
+            unit_east_z = sympy.Integer(0)
 
             # Unit north vector (tangent to meridian, perpendicular to both up and east)
             # Computed via cross product: north = up × east
@@ -1792,7 +1792,7 @@ class CoordinateSystem:
                 [
                     [x / r, y / r, z / r],
                     [(x * z) / r_x_rz, (y * z) / r_x_rz, -(x**2 + y**2) / r_x_rz],
-                    [-y / rz, +x / rz, self.independent_of_N],
+                    [-y / rz, +x / rz, sympy.Integer(0)],
                 ]
             )
             self._rRotN = rRotN
