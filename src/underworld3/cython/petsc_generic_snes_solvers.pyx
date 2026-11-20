@@ -1658,16 +1658,18 @@ class SolverBaseClass(uw_object):
         velocity_degree = getattr(getattr(self, "u", None), "degree", 0) or 0
         if want_fmg and prefix == "fieldsplit_velocity_" and velocity_degree >= 3:
             self._pc_single_field_geo_requested = True
-            self._record_pc_fallback(
-                "high_degree_velocity_gate",
-                requested=f"native geometric FMG (preconditioner={self._preconditioner!r})",
-                installed="custom-P geometric MG (resolved at first solve)",
-                reason="declined",
-                detail=f"native FMG needs DMCreateInjection, which PETSc cannot build "
-                       f"for a degree-{velocity_degree} velocity on a refined DMPlex "
-                       f"(#821); the velocity block takes custom-P transfers over the "
-                       f"mesh hierarchy instead, degrading to GAMG (recorded) if the "
-                       f"transfer build fails")
+            # an explicit set_custom_fmg already owns the block: nothing was declined
+            if getattr(self, "_custom_mg", None) is None:
+                self._record_pc_fallback(
+                  "high_degree_velocity_gate",
+                  requested=f"native geometric FMG (preconditioner={self._preconditioner!r})",
+                  installed="custom-P geometric MG (resolved at first solve)",
+                  reason="declined",
+                  detail=f"native FMG needs DMCreateInjection, which PETSc cannot build "
+                         f"for a degree-{velocity_degree} velocity on a refined DMPlex "
+                         f"(#821); the velocity block takes custom-P transfers over the "
+                         f"mesh hierarchy instead, degrading to GAMG (recorded) if the "
+                         f"transfer build fails")
             want_fmg = False
 
         # The option VALUES live in utilities.multigrid_options, which is the

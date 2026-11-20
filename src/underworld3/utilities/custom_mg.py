@@ -2860,6 +2860,11 @@ class _DMLevelView:
         self.cdim = fine_mesh.cdim
         self.isSimplex = fine_mesh.isSimplex
         self.qdegree = fine_mesh.qdegree
+        # The boundary enum, which every level of a refine() hierarchy shares:
+        # the rotated and fault walls read their labels by it
+        # (fault_mg.level_wall_rotation), and a P3 velocity on a refined mesh
+        # reaches them through this view (#821).
+        self.boundaries = fine_mesh.boundaries
         # A level under the finest moves with it
         # (Mesh._move_coarse_levels_with_the_finest), and ``built_vertices`` is
         # then where it was made: the view answers fault_mg.as_built_nodes as
