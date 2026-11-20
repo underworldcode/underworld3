@@ -2630,9 +2630,10 @@ class Mesh(Stateful, uw_object):
         # (the next mesh load's label read) waits on messages under a tag the
         # other ranks never use. The field is created here, where every rank
         # clones. dm_force_coordinate_field also strips every label but depth
-        # and celltype from the clone's coordinate DM, a clone of the level's
-        # own, whose labels were stripped when the level was built: nothing a
-        # solver reads is lost there (#96).
+        # and celltype from the clone's coordinate DM. On a refined mesh the
+        # levels' coordinate DMs carry the boundary labels, so the clones lose
+        # them; the solver reads its labels from the clone itself, not from its
+        # coordinate DM (#96).
         new_dm_hierarchy = []
         for dm in dm_hierarchy:
             clone = dm.clone()
