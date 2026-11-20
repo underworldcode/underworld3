@@ -95,9 +95,19 @@ def communicator_names(node):
     return names
 
 
+#: Agreement points (``utilities.agreed_build``, #874) are collectives too: every
+#: rank must reach each one, so one under a rank-local guard is the same defect.
+AGREEMENT_POINTS = {"agree", "agreed_allreduce", "agreed_allgather", "agreed_bcast"}
+
+
 def is_collective(call, aliases=frozenset()):
-    """The ``receiver.op`` label if *call* is an MPI collective, else None."""
+    """The ``receiver.op`` label if *call* is an MPI collective, else None. An
+    agreement point (``agree()``, an agreed wrapper) counts as one."""
     function = call.func
+    name = (function.id if isinstance(function, ast.Name)
+            else function.attr if isinstance(function, ast.Attribute) else None)
+    if name in AGREEMENT_POINTS:
+        return f"{name}()"
     if not isinstance(function, ast.Attribute) or function.attr not in MPI_COLLECTIVES:
         return None
     base = function.value
@@ -141,14 +151,23 @@ ACCEPTED = {
         "pass by every rank before the test, so every rank leaves the loop on "
         "the same pass and the reductions of the next pass are reached by all "
         "or by none.",
-    ("utilities/custom_mg.py", "build"):
+    # Keyed on the guard as well (path, function, guard): _build_body is
+    # long, and only these two guards are accepted in it; any other guarded
+    # agreement point there is flagged.
+    ("utilities/custom_mg.py", "_build_body", "pre is not None"):
         "`pre` is `fault_mg.provenance_source(coarse, fine)`, which walks the "
-        "`_addon_below` / `_addon_parent` attributes of the mesh objects. "
+        "`_addon_below` / `_addon_parent` attributes of the mesh objects; "
         "`addon_partition` sets them on every rank together when it builds or "
-        "moves the add-on hierarchy: an array (empty on a rank with no cells) "
-        "or None everywhere, never None on some ranks only. So `pre is not "
-        "None` is the same on every rank. (Seen once the scan read "
-        "`tompi4py()` collectives.)",
+        "moves the add-on hierarchy, an array (empty on a rank with no cells) "
+        "or None everywhere, never None on some ranks only. The agreement "
+        "points under it (#874) are reached by all ranks or by none.",
+    ("utilities/custom_mg.py", "_build_body", "keyed or split is not None"):
+        "`keyed` is the hierarchy's own `fac_zone`; the split is called on a "
+        "condition built from `fault_mg.is_split_level` (the fault-pair dict "
+        "carries a key per fault on every rank: "
+        "`fault_split.collect_point_pairs` sets `out[name]` everywhere), "
+        "`structural_on` (the FAC kill flags are allreduced) and `keyed`; and "
+        "it returns None only on the cover gate's allreduced counts.",
     ("utilities/rotated_bc.py", "solve_rotated_freeslip"):
         "the cache is created and destroyed on all ranks together, so "
         "`cache is not None` is uniform; the allgather inside exists "
@@ -465,13 +484,24 @@ def test_scan_sees_collectives_on_a_petsc_communicator():
     """)
 
 
+def _accepts(entry, finding):
+    """Whether an ACCEPTED / IN_FLIGHT key covers a finding: ``(path,
+    function)`` covers every guard in the function, ``(path, function,
+    guard)`` only that guard, by its exact text."""
+    path, _line, function, _call, guard = finding
+    return entry[:2] == (path, function) and (len(entry) == 2 or entry[2] == guard)
+
+
+def _unexpected(findings, known):
+    return [f for f in findings if not any(_accepts(k, f) for k in known)]
+
+
 def test_no_collective_under_a_rank_local_guard():
     """Every ``comm.<op>`` is reached on every rank, or is listed in ACCEPTED.
 
     A failure here is a latent ``np>1`` hang, not a style point.
     """
-    known = set(ACCEPTED) | set(IN_FLIGHT)
-    unexpected = [f for f in scan_source() if (f[0], f[2]) not in known]
+    unexpected = _unexpected(scan_source(), set(ACCEPTED) | set(IN_FLIGHT))
 
     if unexpected:
         report = "\n".join(
@@ -499,14 +529,37 @@ def test_accepted_list_has_no_stale_entries():
     Otherwise the list silently grows into a blanket exemption and a genuine
     new defect at the same coordinates is waved through.
     """
-    live = {(path, function) for path, _line, function, _call, _guard
-            in scan_source()}
-    stale = sorted((set(ACCEPTED) | set(IN_FLIGHT)) - live)
+    findings = scan_source()
+    stale = sorted(k for k in set(ACCEPTED) | set(IN_FLIGHT)
+                   if not any(_accepts(k, f) for f in findings))
     assert not stale, (
         "ACCEPTED / IN_FLIGHT list sites that no longer trip the scan; "
         "delete them:\n"
-        + "\n".join(f"  {path}::{function}" for path, function in stale)
+        + "\n".join("  " + "::".join(k) for k in stale)
     )
+
+
+def test_a_guard_keyed_entry_flags_any_other_guard_in_the_function():
+    """A planted rank-local guard around an agreement point in _build_body is
+    flagged, while the accepted ``pre is not None`` guard there is not (H1's
+    review of #1225: keyed on the function alone, the entry waved any guard
+    in the function through). The planted guard is one the scan classes as
+    rank-local, a local array's size."""
+    planted = (
+        "def _build_body(self, a, b):\n"
+        "    pre = provenance_source(a, b)\n"
+        "    cells = locate(a)\n"
+        "    if pre is not None:\n"
+        "        agree()\n"
+        "    if cells.size:\n"
+        "        agree()\n")
+    scan = Scan()
+    scan.visit(ast.parse(planted))
+    findings = [("utilities/custom_mg.py", line, function, call, guard)
+                for line, function, call, guard in scan.findings]
+    assert {f[4] for f in findings} == {"pre is not None", "cells.size"}, findings
+    flagged = _unexpected(findings, set(ACCEPTED))
+    assert [f[4] for f in flagged] == ["cells.size"], flagged
 
 
 # --------------------------------------------------------------------------- #

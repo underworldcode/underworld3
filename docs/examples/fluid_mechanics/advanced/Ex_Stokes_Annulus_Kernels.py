@@ -211,7 +211,7 @@ uw.pprint(f"AN: Pressure (C0): {pstats0}")
 # +
 ## Now solve with normals from nodal projection
 
-stokes._reset()
+stokes.reset.all()
 
 stokes.bodyforce = sympy.Matrix([0,0])
 Gamma = meshball.Gamma / sympy.sqrt(meshball.Gamma.dot(meshball.Gamma))

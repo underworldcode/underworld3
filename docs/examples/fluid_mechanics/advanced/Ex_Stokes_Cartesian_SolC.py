@@ -265,7 +265,7 @@ Compare with free-slip using natural (Neumann) BCs.
 """
 
 # %%
-stokes._reset()
+stokes.reset.all()
 stokes.tolerance = 1.0e-6
 
 # Free-slip via penalty on normal velocity
@@ -287,7 +287,7 @@ v1.data[...] = v.data[...]
 """
 
 # %%
-stokes._reset()
+stokes.reset.all()
 stokes.tolerance = 1.0e-6
 
 Gamma = mesh.Gamma

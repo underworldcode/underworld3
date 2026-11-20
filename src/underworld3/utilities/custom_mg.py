@@ -1229,16 +1229,22 @@ def _agreed_node_transfer(builder, coarse_coords, fine_coords, comm):
     is raised on all of them. The builders do no communication, so every rank
     reaches the verdict; a rank that kept its own error would go on to retry
     while the others assemble the transfer, and the two would meet in different
-    collectives (#886)."""
+    collectives (#886).
+
+    The verdict is an agreement point (``fault_contact._collective_raise``, the
+    library's one verdict protocol, #874): it pairs with an ``agreed_build``
+    exit or ``agree()`` on another rank, which an allgather of its own on the
+    solver's communicator could not. The error carries the first failing
+    rank's message, prefixed with its rank."""
+    from underworld3.utilities.fault_contact import _collective_raise
+
     problem = None
     try:
         Pn = _drop_structural_zeros(
             _node_transfer_no_repair(builder, coarse_coords, fine_coords))
     except Exception as exc:    # sanctioned: the verdict below raises it on every rank
         Pn, problem = None, f"rank {comm.getRank()}: {exc}"
-    problems = [p for p in comm.tompi4py().allgather(problem) if p is not None]
-    if problems:
-        raise CollectiveBuildError("; ".join(problems), builder_failure=True)
+    _collective_raise(problem, error=CollectiveBuildError, builder_failure=True)
     return Pn
 
 
@@ -1253,6 +1259,8 @@ def _assemble_node_transfer(Pn, coarse_cols, fine_layout, coarse_layout, ncomp,
     are another rank's); constrained coarse DOFs (column ``-1``) drop out, so
     the map is reduced->reduced."""
     import scipy.sparse as sp
+    from underworld3.utilities.agreed_build import (agree,
+                                                    allreduce as agreed_allreduce)
     l2g_f = np.asarray(fine_layout.l2g, dtype=np.int64)
     fstart, fend = fine_layout.rstart, fine_layout.rend
     nloc_f = fend - fstart
@@ -1269,10 +1277,14 @@ def _assemble_node_transfer(Pn, coarse_cols, fine_layout, coarse_layout, ncomp,
         vals.append(Pn.data[keep])
     rows, cols, vals = (np.concatenate(rows), np.concatenate(cols),
                         np.concatenate(vals))
-    n_cols = int(comm.tompi4py().allreduce(nloc_c))
+    # agreement points before the two collectives (#874): inside an
+    # agreed_build a failure in the rank-local rows above, or in the CSR
+    # below, is raised on every rank there
+    n_cols = int(agreed_allreduce(comm.tompi4py(), nloc_c))
     loc = sp.csr_matrix((vals, (rows, cols)), shape=(nloc_f, n_cols))
     loc.sum_duplicates()
     loc.sort_indices()
+    agree()
     P = PETSc.Mat().createAIJ(
         size=((nloc_f, None), (nloc_c, None)),
         csr=(loc.indptr.astype(PETSc.IntType), loc.indices.astype(PETSc.IntType),
@@ -1306,12 +1318,16 @@ def _gather_coarse_cloud(coarse_coords, coarse_layout, ncomp, comm):
     BC-constrained DOF). Ghost copies are bit-identical and dedup by rounded
     coordinate; constrained nodes stay in the cloud as barycentric vertices but
     carry ``-1`` so they are dropped from the transfer columns."""
+    from underworld3.utilities.agreed_build import allgather as agreed_allgather
+
     m4 = comm.tompi4py()
     ncn = coarse_coords.shape[0]
     cols_local = np.asarray(coarse_layout.l2g, dtype=np.int64).reshape(ncn, ncomp)
-    cc_all = np.vstack(m4.allgather(
-        np.ascontiguousarray(coarse_coords, dtype=float)))
-    cols_all = np.vstack(m4.allgather(np.ascontiguousarray(cols_local)))
+    # agreed gathers (#874): a failure in the reads above is raised on every
+    # rank here
+    cc_all = np.vstack(agreed_allgather(
+        m4, np.ascontiguousarray(coarse_coords, dtype=float)))
+    cols_all = np.vstack(agreed_allgather(m4, np.ascontiguousarray(cols_local)))
     _key, uidx = np.unique(np.round(cc_all, 9), axis=0, return_index=True)
     uidx = np.sort(uidx)
     return cc_all[uidx], cols_all[uidx]
@@ -1348,7 +1364,8 @@ def _count_zero_columns_parallel(P, comm):
     colsum = P.createVecRight()
     P.multTranspose(ones_f, colsum)
     nzero_local = int((colsum.array == 0.0).sum())
-    nzero = comm.tompi4py().allreduce(nzero_local)
+    from underworld3.utilities.agreed_build import allreduce as agreed_allreduce
+    nzero = agreed_allreduce(comm.tompi4py(), nzero_local)
     ones_f.destroy()
     colsum.destroy()
     return nzero
@@ -2098,8 +2115,26 @@ class CustomMGHierarchy:
 
         Serial: scipy reduced->reduced CSR. Parallel (np>1): rank-local node-level
         weights assembled into MPIAIJ transfers with global-section reduced
-        numbering (nested co-partitioned path)."""
+        numbering (nested co-partitioned path).
+
+        COLLECTIVE, and agreed on failure (#874): the build runs inside one
+        ``agreed_build`` context, so a rank-local exception on one rank is
+        raised on every rank as the same ``CollectiveBuildError`` (a builder
+        failure, which the mesh-owned path retries with the next builder), at
+        the next agreement point or at the build's end. The set-up phase has an
+        agreement point before each of its collectives, and so does the
+        per-level loop's own body (each level starts at one); the transfer
+        builders it calls keep their own guards until they are converted."""
+        from underworld3.utilities.agreed_build import agreed_build
+
+        with agreed_build("custom_mg.build"):
+            return self._build_body(solver)
+
+    def _build_body(self, solver):
+        """The body of :meth:`build`, inside its agreement context."""
         from underworld3 import mpi
+        from underworld3.utilities.agreed_build import (agree,
+                                                        allreduce as agreed_allreduce)
         var = solver.Unknowns.u
         degree = var.degree
         continuous = getattr(var, "continuous", True)
@@ -2133,11 +2168,16 @@ class CustomMGHierarchy:
 
         coords, maps, ncomp = [], [], []
         for k, mesh in enumerate(self.level_meshes):
+            # an agreement point before each collective of the set-up phase
+            # (#874): the node coordinates build a basis DM, the layouts clone
+            # the level's DM
+            agree()
             c = np.asarray(mesh._get_coords_for_basis(degree, continuous))
             finest = (k == nlev - 1)
             if parallel:
                 # ``maps`` holds a LevelLayout per level in parallel, and a
                 # bare reduced->full index array per level in serial.
+                agree()
                 lay = (_level_dof_layout(solver.dm, self.field_id) if finest
                        else _coarse_dof_layout(solver, mesh, self.field_id))
                 nfull = lay.n_full
@@ -2151,7 +2191,8 @@ class CustomMGHierarchy:
             nodes, dofs = c.shape[0], nfull
             if parallel:
                 level_comm = solver.dm.comm.tompi4py()
-                nodes, dofs = level_comm.allreduce(nodes), level_comm.allreduce(dofs)
+                nodes = agreed_allreduce(level_comm, nodes)
+                dofs = agreed_allreduce(level_comm, dofs)
             nc = dofs // nodes
             if dofs % nodes != 0:      # allreduced: every rank raises
                 raise CollectiveBuildError(
@@ -2176,6 +2217,7 @@ class CustomMGHierarchy:
         built_vertices, built_nodes = [None], [coords[0]]
         for l in range(1, nlev):
             level = self.level_meshes[l]
+            agree()                    # the move check is collective
             moved = fault_mg.as_built_nodes(level, degree, continuous)
             built_nodes.append(coords[l] if moved is None else moved)
             built_vertices.append(None if moved is None
@@ -2203,6 +2245,7 @@ class CustomMGHierarchy:
         # e.g. Poisson, Projection, semi-Lagrangian AdvDiffusion on an adapt child).
         # Fail here with an actionable message rather than deep inside PETSc's PtAP.
         if self.field_id is None:
+            agree()
             self._assert_finest_matches_operator(solver, maps[-1], parallel)
 
         Ps = []
@@ -2228,10 +2271,14 @@ class CustomMGHierarchy:
         # zone-keyed level only the rows the coincidence test found (#1017). That
         # test and the cut of a zone into blocks still read the current
         # coordinates, so the ruling stands as it is.
+        agree()
         killed = self._fac_patch_killed(solver)
         fac_on = (not os.environ.get("UW_CUSTOM_MG_DISABLE_FAC")
                   and killed != "all")
         structural_on = killed is None
+        # the end of the set-up phase: an agreement point before the per-level
+        # transfer loop's collectives (#874)
+        agree()
         for l in range(1, nlev):
             # A pair the add-on partition recorded (the base's finest static
             # level against the first add-on level, which the partition moved
@@ -2242,11 +2289,15 @@ class CustomMGHierarchy:
             # their pairs keep the side-aware cell-located transfer. The
             # recorded route takes a moved level back to its reference geometry
             # itself, so it is handed the current coordinates.
+            # each level starts at an agreement point (#874): a failure in the
+            # previous level's rank-local tail is raised here on every rank
+            agree()
             pre = (fault_mg.provenance_source(self.level_meshes[l - 1],
                                               self.level_meshes[l])
                    if parallel else None)
 
             def provenance_transfer():
+                agree()
                 P = fault_mg.provenance_transfer_parallel(
                     self.level_meshes[l - 1], self.level_meshes[l], pre, degree,
                     continuous, coords[l - 1], coords[l], maps[l - 1], maps[l],
@@ -2272,6 +2323,7 @@ class CustomMGHierarchy:
                 if pre is not None:
                     P = provenance_transfer()
                 elif parallel:
+                    agree()
                     P = fault_mg.cell_located_transfer_parallel(
                         self.level_meshes[l - 1], self.level_meshes[l], degree,
                         continuous, coarse_nodes[l], built_nodes[l], maps[l - 1],
@@ -2294,8 +2346,10 @@ class CustomMGHierarchy:
                 if pre is not None:
                     P = provenance_transfer()
                 elif self.cross_partition is True:
+                    agree()
                     P = _build_crosspart_transfer(*args)
                 else:
+                    agree()
                     P = _build_parallel_transfer(*args)
                     # "auto": a zero-column transfer means the coarse level is NOT
                     # co-partitioned with the fine level (a fine leaf sits in an
@@ -2307,6 +2361,7 @@ class CustomMGHierarchy:
                     # injected all of them and the coarse operator was
                     # nonsense (KSP reason -11 at the first iteration). The
                     # few genuine orphans are the repair's job below.
+                    agree()
                     n_zero = _count_zero_columns_parallel(P, comm)
                     # A fine node outside its rank's LOCAL coarse hull is snapped
                     # to the nearest local coarse node: a WRONG row, which no
@@ -2315,10 +2370,12 @@ class CustomMGHierarchy:
                     # fault star was moved to one rank (measured: 3026 of 7500
                     # nodes on that rank, 2192 wrong rows). Such a level is
                     # rebuilt across partitions whatever its column count.
-                    n_out = comm.tompi4py().allreduce(
-                        int(last_builder_stats.get("outside_hull", 0)))
+                    n_out = agreed_allreduce(
+                        comm.tompi4py(), int(last_builder_stats.get("outside_hull", 0)))
                     if self.cross_partition == "auto" and (n_zero > 0 or n_out > 0):
+                        agree()
                         P_x = _build_crosspart_transfer(*args)
+                        agree()
                         n_x = _count_zero_columns_parallel(P_x, comm)
                         if n_out > 0 or n_x < n_zero:
                             P.destroy()
@@ -2348,6 +2405,7 @@ class CustomMGHierarchy:
                     blocks = []
                     zones = []
                     if self.fac_zone is not None:
+                        agree()            # the node table builds a basis DM
                         cn = self.level_meshes[l]._cell_node_indices(
                             degree, continuous)
                         for mk in self.fac_zone:
@@ -2377,6 +2435,7 @@ class CustomMGHierarchy:
                     mpi_comm = comm.tompi4py()
                     if (split_level or not keyed) and structural_on:
                         gate = {}
+                        agree()
                         split = _fac_patch_split_parallel(
                             P, coords[l - 1], coords[l], maps[l - 1], lay, nc,
                             mpi_comm,
@@ -2390,11 +2449,12 @@ class CustomMGHierarchy:
                         # default comes from the size sweep.
                         cap = int(os.environ.get("UW_FAC_BLOCK_ROWS",
                                                  self.fac_block_rows))
+                        agree()
                         blocks = _gathered_patch_blocks(
                             zones, split, cap, lay.rstart, mpi_comm)
                     # every rank installs the patch, or none does: a rank with
                     # no rows of its own still sets the smoother type
-                    n_any = comm.tompi4py().allreduce(len(blocks), op=MPI.MAX)
+                    n_any = agreed_allreduce(comm.tompi4py(), len(blocks), op=MPI.MAX)
                     if n_any:
                         self.level_patch_rows[l] = (
                             blocks if len(blocks) != 1 else blocks[0]) \
