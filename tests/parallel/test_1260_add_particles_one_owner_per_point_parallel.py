@@ -115,3 +115,28 @@ def test_a_rank_with_no_cells_adds_nothing_and_the_others_add_each_point_once():
     points = np.unique(np.concatenate([_seam_vertices(mesh), _cell_centroids(mesh, 20)],
                                       axis=0), axis=0)
     _assert_each_point_once(points, mesh, "triangle")
+
+
+@pytest.mark.tier_b
+def test_points_given_to_one_rank_only_are_each_added_once():
+    """Pre-partitioned input: only rank 0 is given the points, seam vertices
+    included, and the other ranks pass an empty array. Each point is added once
+    (by rank 0 or, after migration, by the rank holding it); none is dropped."""
+    mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0),
+                                             cellSize=0.1)
+    points = np.unique(np.concatenate([_seam_vertices(mesh), _cell_centroids(mesh, 20)],
+                                      axis=0), axis=0)
+    given = points if uw.mpi.rank == 0 else np.zeros((0, 2))
+    swarm = uw.swarm.Swarm(mesh)
+    swarm.add_particles_with_coordinates(given)
+    local = np.asarray(swarm.coords).reshape(-1, mesh.cdim)
+    every = np.concatenate(uw.mpi.comm.allgather(local), axis=0)
+    # points_in_domain is collective: every rank asks, rank 0's answer counts.
+    claimed_here = int(np.asarray(mesh.points_in_domain(points)).sum())
+    claimed_on_zero = uw.mpi.comm.bcast(claimed_here, root=0)
+    # Rank 0 adds what its part of the mesh claims; a point it does not claim is
+    # not added (add_particles_with_coordinates keeps only local points).
+    assert every.shape[0] == claimed_on_zero, (
+        f"rank 0 claims {claimed_on_zero} of the points it was given, and "
+        f"{every.shape[0]} particles were added")
+    assert np.unique(every, axis=0).shape[0] == every.shape[0], "a point was added twice"
