@@ -491,6 +491,52 @@ def _agreed_on_every_rank(call):
     return result
 
 
+def _hand_points_to_containing_rank(evaluation_swarm, mesh):
+    """Move each evaluation point to a rank whose cell contains it (#1178).
+
+    The swarm's migration lets a rank keep a point that none of its cells
+    contains but that lies within the evaluation face tolerance of one of
+    them. Near a partition seam the neighbour rank's cell contains that point,
+    and evaluating it in the keeping rank's cell is off by about |grad f| times
+    its distance from that cell. Here the points each rank holds without
+    containing them are gathered, every rank tests them for exact containment
+    (:meth:`Mesh._contained_in_local_cells`), and each goes to the lowest rank
+    that contains it. A point no rank contains (on or just outside the domain
+    boundary) stays where the migration put it, under the face tolerance.
+
+    Collective: every rank reaches every gather, reduction and the migration,
+    which are guarded only by reduced counts.
+    """
+    from mpi4py import MPI
+
+    comm = uw.mpi.comm
+    if comm.size == 1:
+        return
+    coords = np.array(evaluation_swarm.dm.getField("DMSwarmPIC_coor")).reshape(-1, mesh.cdim)
+    evaluation_swarm.dm.restoreField("DMSwarmPIC_coor")
+    uncontained = np.flatnonzero(~mesh._contained_in_local_cells(coords))
+    counts = np.array(comm.allgather(int(uncontained.shape[0])), dtype=int)
+    total = int(counts.sum())
+    if total == 0:
+        return
+    candidates = np.concatenate(comm.allgather(coords[uncontained]), axis=0).reshape(total, -1)
+    claim = np.where(mesh._contained_in_local_cells(candidates), comm.rank, comm.size)
+    claim = np.ascontiguousarray(claim, dtype=np.int32)
+    owner = np.empty_like(claim)
+    comm.Allreduce([claim, MPI.INT], [owner, MPI.INT], op=MPI.MIN)
+    offset = int(counts[:comm.rank].sum())
+    destination = owner[offset:offset + uncontained.shape[0]]
+    moving = destination < comm.size
+    if comm.allreduce(int(moving.sum()), op=MPI.SUM) == 0:
+        return
+    ranks = evaluation_swarm.dm.getField("DMSwarm_rank").reshape(-1)
+    ranks[...] = comm.rank
+    ranks[uncontained[moving]] = destination[moving]
+    evaluation_swarm.dm.restoreField("DMSwarm_rank")
+    evaluation_swarm.dm.migrate(remove_sent_points=True)
+    evaluation_swarm._invalidate_canonical_data()
+
+
 def global_evaluate_nd(   expr,
                 coords=None,
                 coord_sys=None,
@@ -670,6 +716,7 @@ def global_evaluate_nd(   expr,
     n_input_points = coords_array.shape[0]
 
     evaluation_swarm.migrate(remove_sent_points=True, delete_lost_points=False)
+    _hand_points_to_containing_rank(evaluation_swarm, mesh)
     local_coords = evaluation_swarm._particle_coordinates.array[...].reshape(-1,evaluation_swarm.cdim)
     # Forward `simplify`: without it the local evaluator's default (True) ran
     # sympy.simplify on every call for any expression holding a mesh variable

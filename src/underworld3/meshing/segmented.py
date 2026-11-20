@@ -28,6 +28,18 @@ import underworld3.cython.petsc_discretisation
 import sympy
 
 
+def _refuse_native_coordinates(generator, alternative):
+    """Raise for a generator's native-coordinate mode (UNFILED 28). The native
+    coordinate systems (``SPHERE_SURFACE_NATIVE``, ``SPHERICAL_NATIVE``) were
+    removed from ``CoordinateSystemType`` in ee29df2a (2025-10-10), with the
+    vector calculus they needed; these paths have failed since. Raised before any
+    work, on every rank alike."""
+    raise NotImplementedError(
+        f"{generator}: native (longitude, latitude) coordinates are not supported. "
+        f"The native coordinate systems were removed from CoordinateSystemType in "
+        f"ee29df2a (2025-10-10), with the vector calculus they needed. {alternative}")
+
+
 @timing.routine_timer_decorator
 def SegmentedSphericalSurface2D(
     radius: float = 1.0,
@@ -98,6 +110,10 @@ def SegmentedSphericalSurface2D(
     """
 
     uw.discretisation.Mesh._require_straight_sided_cells(degree)
+    _refuse_native_coordinates(
+        "SegmentedSphericalSurface2D",
+        "For a mesh of the sphere's surface use uw.meshing.SphericalManifold, which "
+        "keeps Cartesian coordinates on the sphere.")
 
     num_segments = numSegments
     meshRes = cellSize
@@ -214,7 +230,7 @@ def SegmentedSphericalSurface2D(
 
         # Does this get saved by the viewer ?
         uw.cython.petsc_discretisation.petsc_dm_set_periodicity(
-            plex_0[1], [np.pi, 0.0], [-np.pi, 0.0], [np.pi * 2, 0.0]
+            plex_0[1], [np.pi, 0.0], [-np.pi, 0.0], [np.pi * 2, -1.0]
         )
 
         viewer = PETSc.ViewerHDF5().create(uw_filename + ".h5", "w", comm=PETSc.COMM_SELF)
@@ -348,10 +364,11 @@ def SegmentedSphericalShell(
     meshRes = cellSize
     num_segments = numSegments
 
-    if coordinatesNative == True:
-        coordinate_system = CoordinateSystemType.SPHERICAL_NATIVE
-    else:
-        coordinate_system = CoordinateSystemType.SPHERICAL
+    if coordinatesNative:
+        _refuse_native_coordinates(
+            "SegmentedSphericalShell",
+            "Use coordinatesNative=False (Cartesian coordinates).")
+    coordinate_system = CoordinateSystemType.SPHERICAL
 
     if filename is None:
         if uw.mpi.rank == 0:
@@ -587,7 +604,7 @@ def SegmentedSphericalShell(
             plex_0[1].setCoordinates(rthph_vec)
 
             uw.cython.petsc_discretisation.petsc_dm_set_periodicity(
-                plex_0[1], [0.0, 0.0, np.pi], [0.0, 0.0, -np.pi], [0.0, 0.0, np.pi * 2]
+                plex_0[1], [0.0, 0.0, np.pi], [0.0, 0.0, -np.pi], [-1.0, -1.0, np.pi * 2]
             )
 
         # Composite label - upper + wedge slices
@@ -811,10 +828,11 @@ def SegmentedSphericalBall(
     meshRes = cellSize
     num_segments = numSegments
 
-    if coordinatesNative == True:
-        coordinate_system = CoordinateSystemType.SPHERICAL_NATIVE
-    else:
-        coordinate_system = CoordinateSystemType.SPHERICAL
+    if coordinatesNative:
+        _refuse_native_coordinates(
+            "SegmentedSphericalBall",
+            "Use coordinatesNative=False (Cartesian coordinates).")
+    coordinate_system = CoordinateSystemType.SPHERICAL
 
     if filename is None:
         if uw.mpi.rank == 0:
@@ -1027,7 +1045,7 @@ def SegmentedSphericalBall(
             plex_0[1].setCoordinates(rthph_vec)
 
             uw.cython.petsc_discretisation.petsc_dm_set_periodicity(
-                plex_0[1], [0.0, 0.0, np.pi], [0.0, 0.0, -np.pi], [0.0, 0.0, np.pi * 2]
+                plex_0[1], [0.0, 0.0, np.pi], [0.0, 0.0, -np.pi], [-1.0, -1.0, np.pi * 2]
             )
 
         # Composite label - upper + wedge slices
