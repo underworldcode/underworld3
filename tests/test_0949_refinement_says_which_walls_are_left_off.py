@@ -3,12 +3,15 @@ what to do (#949, item 1).
 
 CubedSphere(simplex=True) holds wall vertices back at refinement: the guard
 keeps the cells valid by leaving vertices where refinement put them, on a crease
-between two wall patches. Measured on development: numElements 3 held 1 vertex
-at refinement 1 and 21 at refinement 2; numElements 4 held none. The guard
+between two wall patches. How many depends on the platform's gmsh mesh:
+numElements 3 at refinement 2 held 21 vertices on macOS (12-core Apple M4) and
+47 on the Linux CI runner (3 at refinement 1, the issue's count); numElements 4
+held none on both. So the test asserts a positive count, not one. The guard
 warned only that "N vertices ... stay where refinement placed them". The warning
 now names the walls they are left off and, for CubedSphere, the remedy. The
 cross-patch flip that would place them is still open on #949.
 """
+import re
 import warnings
 
 import pytest
@@ -31,8 +34,10 @@ def test_a_crease_that_holds_vertices_back_names_the_walls_and_the_remedy():
     with uw.selective_ranks(0) as selected:
         if selected:
             assert len(messages) == 1, messages
-            # 21 vertices, all on the inner wall (measured)
-            assert "21 vertices" in messages[0] and "off the walls ['Lower']" in messages[0]
+            # all on the inner wall; the count is the platform's gmsh mesh's
+            held = re.search(r"(\d+) vertices it moved", messages[0])
+            assert held and int(held.group(1)) > 0, messages[0]
+            assert "off the walls ['Lower']" in messages[0]
             assert "numElements=4" in messages[0] and "simplex=False" in messages[0]
 
 

@@ -1850,10 +1850,10 @@ class Mesh(Stateful, uw_object):
                 if count:
                     left_off_surface |= _labels_holding_vertices(dm, put_back, boundary_names)
             self._refinement_left_off_surface = frozenset(left_off_surface)
+            # the walls are each rank's own, gathered for the message (#949);
+            # gathered before the branch, so every rank with a callback is here
+            walls = sorted(set().union(*uw.mpi.comm.allgather(left_off_surface)))
             if held:
-                # ``held`` is global, so every rank is here; the walls are each
-                # rank's own, gathered for the message (#949)
-                walls = sorted(set().union(*uw.mpi.comm.allgather(left_off_surface)))
                 remedy = getattr(refinement_callback, "remedy", None)
                 with uw.selective_ranks(0) as selected:
                     if selected:
