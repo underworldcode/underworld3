@@ -204,7 +204,11 @@ def test_a_cut_made_on_a_moved_mesh_reaches_the_level_below_through_it():
     shared = distance < 1e-12
     # the cut adds a few nodes on the trace; the rest are the moved mesh's
     assert shared.sum() >= len(X0) - 5
-    assert np.abs((P @ Xc)[shared] - X0[node[shared]]).max() < 1e-10
+    # The level below moved with the mesh (Mesh._move_coarse_levels_with_the_finest);
+    # the transfer is read where it was made, so it is applied to its nodes there.
+    built = fault_mg.as_built_nodes(below, 1, True)
+    Xc_built = Xc if built is None else built
+    assert np.abs((P @ Xc_built)[shared] - X0[node[shared]]).max() < 1e-10
     # A vertex the cut added or pulled onto the trace is no vertex of the moved
     # mesh. It is taken back through the cell it lies in, which undoes the move
     # to the accuracy of a straight-sided cell: 1e-4 here, where the move is
