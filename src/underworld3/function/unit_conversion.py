@@ -303,17 +303,10 @@ def compute_expression_units(expr):
             # Multiplication: multiply units
             result_unit = None
             found_any_units = False  # Track if we found any unit-aware terms
-            # A factor of unknown units (a field without units) leaves a product
-            # that would otherwise be dimensionless unknown, not dimensionless:
-            # 2*u is not a known pure number. A plain number gives no units.
-            unknown = False
 
             for arg in expr.args:
                 arg_units = compute_expression_units(arg)
                 if arg_units is None:
-                    unknown = True
-                    continue
-                if arg.is_Number:
                     continue
 
                 found_any_units = True
@@ -338,13 +331,13 @@ def compute_expression_units(expr):
             if found_any_units:
                 if result_unit is None:
                     # All units canceled out - return dimensionless Unit (not Quantity)
-                    return None if unknown else uw.units.dimensionless
+                    return uw.units.dimensionless
                 elif hasattr(result_unit, 'dimensionality'):
                     # Check if Pint says it's dimensionless
                     dim = result_unit.dimensionality
                     # UnitsContainer is empty (len == 0) for dimensionless units
                     if len(dim) == 0:
-                        return None if unknown else uw.units.dimensionless
+                        return uw.units.dimensionless
 
             return result_unit
 
@@ -371,21 +364,43 @@ def compute_expression_units(expr):
             from underworld3.function.expressions import UWexpression
 
             # Addition: the terms share a dimension, and the sum has it. A sum of
-            # dimensionless terms is dimensionless (T/T0 - 1). It used to return
-            # None, which means "unknown", and get_units then took the units of
-            # the first field it found: kelvin for T/T0 - 1. A plain number may
-            # sit beside a dimensional term (T + 0); terms of different
-            # dimensions are refused, naming them.
+            # dimensionless terms that carry units (T/T0 - 1, units cancelling)
+            # is dimensionless. It used to return None, "unknown", and get_units
+            # then took the units of the first field in it: kelvin for T/T0 - 1.
+            # A term that carries no units at all (a field without units, read
+            # as a pure number) is left unknown, as before, and so is a sum of
+            # only such terms. A plain number may sit beside a dimensional term
+            # (T + 0); two terms that carry units of different dimensions are
+            # refused, naming them.
+            def carries_units(term):
+                for atom in term.atoms(sympy.Symbol, sympy.Function):
+                    if isinstance(atom, UWexpression) and atom.has_units:
+                        return True
+                    if getattr(atom, "_units", None) is not None or (
+                            getattr(type(atom), "units", None) is not None
+                            and not isinstance(atom, UWexpression)
+                            and getattr(atom, "units", None) is not None):
+                        return True
+                    owner = getattr(type(atom), "meshvar", None)
+                    var = owner() if callable(owner) else owner
+                    if var is not None and getattr(var, "units", None) is not None:
+                        return True
+                return False
+
             known, unknown = [], False
             for arg in expr.args:
                 arg_units = compute_expression_units(arg)
-                if arg_units is None:
+                if arg_units is None or (is_dimensionless_unit(arg_units)
+                                         and not arg.is_Number
+                                         and not carries_units(arg)):
                     unknown = True
                 else:
                     known.append((arg, arg_units))
             dimensional = [(a, u) for a, u in known if not is_dimensionless_unit(u)]
             if not dimensional:
-                return None if unknown or not known else uw.units.dimensionless
+                if unknown or not any(not a.is_Number for a, _ in known):
+                    return None
+                return uw.units.dimensionless
             first_arg, first_units = dimensional[0]
             first_dim = (1 * first_units).dimensionality
             for arg, arg_units in known:
