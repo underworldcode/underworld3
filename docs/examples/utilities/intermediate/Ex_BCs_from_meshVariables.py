@@ -110,7 +110,7 @@ with pygmsh.occ.Geometry() as geom:
 
 import meshio
 
-mesh = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.0, cellSize=0.1)
+mesh = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.0, cellSize=0.1, centre=True)
 
 mesh.dm.view()
 
