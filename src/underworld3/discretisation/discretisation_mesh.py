@@ -8004,7 +8004,9 @@ class Mesh(Stateful, uw_object):
             on_seam = numpy.isin(vertices, seam_vertices).any(axis=1)
             compared[located[on_seam[where]]] = True
 
-        mine = numpy.asarray(points, dtype=float).reshape(claimed.shape[0], -1)[compared]
+        # Shaped by the mesh, not the input: a rank given no points has an
+        # empty array, and must still reach the gather below.
+        mine = numpy.asarray(points, dtype=float).reshape(-1, self.cdim)[compared]
         counts = numpy.array(uw.mpi.comm.allgather(int(mine.shape[0])), dtype=int)
         if counts.sum() == 0:
             return claimed
