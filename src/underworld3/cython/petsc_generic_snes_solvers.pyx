@@ -571,6 +571,14 @@ _PETSC_ZERO_PIVOT = 2.22045e-14
 #: a little below the diagonal they start from; a hundredfold is a wide margin.
 _PIVOT_SUSPECT = 100.0
 
+#: The widest span of a pressure block's diagonal that one rescaling of the
+#: viscosity brings into range (#1059). Measured on a unit box (cell size 0.1, P2/P1)
+#: with the viscosity centred on one: a viscosity contrast of 1e8 (diagonal span
+#: 4.4e8) solves by default, 1e9 does not. Within it a model whose pivots fail is too
+#: viscous as a whole (reference quantities fix it); beyond it, the contrast is the
+#: problem.
+_RESCALABLE_SPAN = 1.0e8
+
 
 class SolverBaseClass(uw_object):
     r"""
@@ -4517,17 +4525,18 @@ class SolverBaseClass(uw_object):
             f"{_PETSC_ZERO_PIVOT:.2g} as zero; its diagonal runs from {smallest:.3g} to "
             f"{largest:.3g}. Where the limit falls depends on the element size as well "
             f"as the viscosity. ")
-        if largest <= _PIVOT_SUSPECT * _PETSC_ZERO_PIVOT:
+        if largest <= _RESCALABLE_SPAN * smallest:
             remedy = (
-                "Every entry is that small, so the viscosity is large everywhere, as in "
-                "a model in raw SI units. Give the model reference quantities "
-                "(uw.get_default_model().set_reference_quantities(...), see the "
-                "units-system guide), so the viscosity it solves with is of order one.")
+                f"The entries span a factor of {largest / smallest:.2g}, which one "
+                f"rescaling brings into range: the viscosity is too large as a whole, "
+                f"as in a model in raw SI units. Give the model reference quantities "
+                f"(uw.get_default_model().set_reference_quantities(...), see the "
+                f"units-system guide), so the viscosity it solves with is of order one.")
         else:
             remedy = (
                 f"The entries span a factor of {largest / smallest:.2g}: a viscosity "
-                f"contrast, which reference quantities cannot remove, since they rescale "
-                f"every viscosity together. Setting solver.petsc_options["
+                f"contrast wider than one rescaling brings into range, which reference "
+                f"quantities cannot remove, since they rescale every viscosity together. Setting solver.petsc_options["
                 f"'fieldsplit_pressure_sub_pc_factor_zeropivot'] = 0 lets this "
                 f"factorisation through, but a contrast this large can then defeat the "
                 f"velocity multigrid as well (1e12 on a unit box needed a direct "

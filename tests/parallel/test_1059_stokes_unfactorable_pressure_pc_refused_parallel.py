@@ -1,12 +1,13 @@
 """A Stokes solve whose pressure preconditioner cannot be factored refuses (#1059).
 
 That matrix is the pressure mass matrix divided by the viscosity, and PETSc's ILU
-treats a pivot below 2.2e-14 as zero. From a viscosity of about 1e11 in the
-solver's frame (a model in raw SI units) the factorisation failed, the solve
-stopped at iteration 0, and the fields held u = 0 with only a warning. It now
-raises on every rank and names the remedy: reference quantities, so the viscosity
-the solver sees is of order one. A viscosity of 1e10 still solves, and its answer
-scales as 1/viscosity.
+treats a pivot below 2.2e-14 as zero. With the viscosity large in the solver's
+frame (a model in raw SI units; on this box from about 5.5e10, a limit that also
+depends on the element size) the factorisation failed, the solve stopped at
+iteration 0, and the fields held u = 0 with only a warning. It now raises on every
+rank and names the remedy: reference quantities when one rescaling brings the
+model into range, the contrast when it does not. A viscosity of 1e10 still solves,
+and its answer scales as 1/viscosity.
 
     python scripts/mpi_supervisor.py --silence 300 -- mpirun -n 2 python -m pytest --with-mpi tests/parallel/test_1059_stokes_unfactorable_pressure_pc_refused_parallel.py
 """
@@ -75,6 +76,30 @@ def test_a_viscosity_contrast_is_refused_with_the_contrast_remedy():
     messages = uw.mpi.comm.allgather(message)
     assert all("contrast" in m and "zeropivot" in m for m in messages), messages[0]
     assert not any("set_reference_quantities" in m for m in messages), messages[0]
+
+
+def test_a_viscous_model_with_a_moderate_contrast_gets_the_scale_remedy():
+    """1e9 below y = 0.8 and 1e12 above: a contrast of 1e3, too viscous as a whole.
+    The same model divided by 1e9 solves, so the remedy is reference quantities,
+    not the contrast."""
+    import sympy as sp
+    stokes, _ = _box(1.0)
+    y = stokes.mesh.X[1]
+    stokes.constitutive_model.Parameters.shear_viscosity_0 = sp.Piecewise(
+        (1.0e12, y > 0.8), (1.0e9, True))
+    message = ""
+    try:
+        stokes.solve()
+    except RuntimeError as error:
+        message = str(error)
+    messages = uw.mpi.comm.allgather(message)
+    assert all("set_reference_quantities" in m for m in messages), messages[0]
+    assert not any("contrast" in m for m in messages), messages[0]
+    rescaled, _ = _box(1.0)
+    rescaled.constitutive_model.Parameters.shear_viscosity_0 = sp.Piecewise(
+        (1.0e3, rescaled.mesh.X[1] > 0.8), (1.0, True))
+    rescaled.solve()
+    assert rescaled.snes.getConvergedReason() > 0
 
 
 def test_the_same_solver_solves_once_the_viscosity_is_fixed():
