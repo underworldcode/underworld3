@@ -5551,10 +5551,9 @@ class SolverBaseClass(uw_object):
         # is: 5 mm/yr against a 10 mm/yr reference is 0.5. Its SI magnitude
         # (1.6e-10 m/s) read as a model value was 3e9 off (#1238). Without
         # reference quantities, or in a dimension the model has no reference
-        # for, the model works in SI, and the SI magnitude is the value. Entries converted here are in their final form and are not
-        # rescaled below.
+        # for, the model works in SI, and the SI magnitude is the value.
         units_model = uw.get_default_model().has_units()
-        in_model_units = set()
+        from_quantity = set()       # entries given as quantities: not plain numbers
         n_values = len(conds) if isinstance(conds, (tuple, list)) else 1
 
         def quantity_value(q, index):
@@ -5562,6 +5561,7 @@ class SolverBaseClass(uw_object):
             if isinstance(q, pint.Quantity):
                 q = uw.quantity(q.magnitude, str(q.units))
             si = q._pint_qty.to_base_units()
+            from_quantity.add(index)
             if c_type == 'dirichlet':
                 # The value of an essential condition is a value of the field: on
                 # a field with units its dimension must be the field's. 1 MPa on
@@ -5581,7 +5581,10 @@ class SolverBaseClass(uw_object):
                             f"value {q} has the dimension {si.dimensionality}, and the "
                             f"field '{getattr(field, 'name', field)}' is in {field_units}, "
                             f"{field_dim}. Give the value in the field's units.")
-            if not units_model:
+            if not units_model or not uw.is_nondimensional_scaling_active():
+                # without reference quantities, or with the model's scaling
+                # switched off (uw.use_nondimensional_scaling(False)), fields run
+                # unscaled, in SI, and the SI magnitude is the model value
                 return si.magnitude
             try:
                 uw.get_default_model().get_scale_for_dimensionality(si.dimensionality)
@@ -5592,7 +5595,6 @@ class SolverBaseClass(uw_object):
                 # magnitude is the model value, as before.
                 return si.magnitude
             nd = uw.non_dimensionalise(q)
-            in_model_units.add(index)
             return float(nd.magnitude if hasattr(nd, "magnitude") else nd)
 
         def is_quantity(x):
@@ -5622,6 +5624,10 @@ class SolverBaseClass(uw_object):
             conds = (quantity_value(conds, 0),)
         elif isinstance(conds, uw.function.quantities.UWQuantity):
             conds = (conds.value,)
+        elif isinstance(conds, sympy.Basic) and not isinstance(conds, sympy.MatrixBase):
+            # a lone value given as an expression (a uw.expression, or sin(x)):
+            # one entry, as a lone number is (UNFILED 33c)
+            conds = (conds,)
         elif hasattr(conds, 'magnitude') and hasattr(conds, 'units'):
             raise ValueError(f"Unknown quantity type: {type(conds)}")
         elif isinstance(conds, sympy.Matrix):
@@ -5691,57 +5697,40 @@ class SolverBaseClass(uw_object):
                 f"entry per field component, None for the free ones{example}, "
                 f"rather than a short value with components=.")
 
-        # ======================================================================
-        # Apply non-dimensional scaling to BC values if ND is enabled
-        # IMPORTANT: Only scale numeric values (floats, UWQuantity), NOT symbolic
-        # expressions. Symbolic expressions (like Gamma_N, v_soln.sym) go through
-        # the standard unwrap() pipeline during JIT compilation.
-        # ======================================================================
-        if uw.is_nondimensional_scaling_active():
-            # Get the field variable for this f_id
-            field_var = None
-            if f_id == 0:
-                field_var = self.Unknowns.u
-            elif f_id == 1 and hasattr(self.Unknowns, 'p'):
-                field_var = self.Unknowns.p
-            else:
-                # For other field IDs, try to get from Unknowns (future-proofing)
-                pass
-
-            # If we have a field variable with a scaling coefficient, scale numeric BCs
-            if field_var is not None and hasattr(field_var, 'scaling_coefficient'):
-                scale = field_var.scaling_coefficient
-                if scale != 1.0 and scale != 0.0:
-                    # Scale ONLY numeric values: dimensional → ND by dividing by scale
-                    # This converts e.g. T=1000K to T*=1000/1000=1.0 (ND)
-                    # Symbolic expressions are left unchanged - they go through unwrap()
-                    def is_numeric_only(val):
-                        """Check if value is a pure number (no symbols)."""
-                        if val == sympy.oo or val == -sympy.oo:
-                            return False  # Don't scale infinity
-                        if isinstance(val, (int, float)):
-                            return True
-                        if isinstance(val, sympy.Basic):
-                            # Check if it has any free symbols (i.e., is it symbolic?)
-                            # Pure numbers like sympy.Float(1.0) have no free_symbols
-                            return len(val.free_symbols) == 0
-                        return False
-
-                    scaled_conds = []
-                    for index, val in enumerate(conds):
-                        if index in in_model_units:
-                            # a quantity, already non-dimensionalised above
-                            scaled_conds.append(val)
-                        elif val == sympy.oo or val == -sympy.oo:
-                            # Don't scale infinity (unconstrained components)
-                            scaled_conds.append(val)
-                        elif is_numeric_only(val):
-                            # Scale only pure numeric values
-                            scaled_conds.append(val / scale)
-                        else:
-                            # Symbolic expression - leave unchanged, will go through unwrap()
-                            scaled_conds.append(val)
-                    conds = scaled_conds
+        # A nonzero plain number on a field with units, in a model with
+        # reference quantities, is ambiguous (metres or model lengths?) and is
+        # refused, as a bare number for a dimensional parameter is (ruling,
+        # 2026-11-14, extended to boundary values). Zero means the same in any
+        # units, and a field without units keeps its plain numbers. The older
+        # path that divided plain numbers by the field's scaling coefficient is
+        # gone with it: on a field with units it no longer receives one, and on
+        # a field without units its coefficient is 1.
+        from underworld3.function import functions_unit_system as _fus
+        field = (self.Unknowns.u if f_id == 0
+                 else getattr(self.Unknowns, "p", None) if f_id == 1 else None)
+        field_units = getattr(field, "units", None)
+        if (units_model and field_units is not None
+                and not _fus._internal_resampling_depth
+                and bool(dict(uw.units(str(field_units)).dimensionality))):
+            entries = list(conds)
+            for index, val in enumerate(entries):
+                if index in from_quantity or val in (sympy.oo, -sympy.oo):
+                    continue
+                plain = isinstance(val, (int, float, np.integer, np.floating)) or (
+                    isinstance(val, sympy.Basic) and val.is_Number)
+                if plain and float(val) != 0.0:
+                    where = f" component {index}" if len(entries) > 1 else ""
+                    kind = ("essential (Dirichlet)" if c_type == 'dirichlet'
+                            else "natural (Neumann)")
+                    shown = (f"uw.quantity({float(val):g}, \"{field_units}\")"
+                             if c_type == 'dirichlet'
+                             else f"uw.quantity({float(val):g}, <the flux's units>)")
+                    raise ValueError(
+                        f"{kind} condition on '{label}'{where}: the plain number "
+                        f"{float(val):g} on the field '{getattr(field, 'name', field)}', "
+                        f"which is in {field_units}, in a model with reference quantities, "
+                        f"is ambiguous: {float(val):g} of what? Give it units, e.g. "
+                        f"{shown}. Zero needs none.")
 
         sympy_fn = sympy.Matrix(conds).as_immutable()
 
@@ -5827,6 +5816,11 @@ class SolverBaseClass(uw_object):
         conds : array-like, float, or sympy.Matrix
             Boundary condition values. Use ``None`` or ``sympy.oo`` for
             unconstrained components.
+            In a model with reference quantities, a value on a field with
+            units is given with units (``uw.quantity(5, "mm/yr")``) and must
+            have the field's dimension; a plain number other than zero is
+            refused as ambiguous. On a field without units the values are
+            plain model numbers and are not checked.
         boundary : str
             Name of the boundary label (e.g., ``"Top"``, ``"Bottom"``).
             **Case-sensitive**: must match mesh boundary names exactly.
@@ -5929,6 +5923,11 @@ class SolverBaseClass(uw_object):
         conds : array-like, float, or sympy.Matrix
             Boundary condition values. Use ``None`` or ``sympy.oo`` for
             unconstrained components (partial Dirichlet conditions).
+            In a model with reference quantities, a value on a field with
+            units is given with units (``uw.quantity(5, "mm/yr")``) and must
+            have the field's dimension; a plain number other than zero is
+            refused as ambiguous. On a field without units the values are
+            plain model numbers and are not checked.
         boundary : str
             Name of the boundary label (e.g., ``"Top"``, ``"Bottom"``).
             **Case-sensitive**: must match mesh boundary names exactly.

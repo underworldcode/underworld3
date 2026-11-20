@@ -94,8 +94,8 @@ def test_vector_projection_after_poisson_with_units():
     poisson.constitutive_model = uw.constitutive_models.DiffusionModel
     poisson.constitutive_model.Parameters.diffusivity = model_units(1, "m**2/s")
     poisson.f = 0.0
-    poisson.add_dirichlet_bc(300.0, "Bottom")
-    poisson.add_dirichlet_bc(1600.0, "Top")
+    poisson.add_dirichlet_bc(uw.quantity(300.0, "kelvin"), "Bottom")
+    poisson.add_dirichlet_bc(uw.quantity(1600.0, "kelvin"), "Top")
 
     poisson.solve()
 

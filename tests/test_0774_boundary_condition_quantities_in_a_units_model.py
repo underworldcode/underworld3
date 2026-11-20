@@ -137,12 +137,23 @@ def test_a_pure_number_on_a_field_without_units_is_accepted(units_model):
 @pytest.mark.parametrize("value", [uw.quantity(1300, "K"), uw.quantity(1026.85, "degC"),
                                    uw.quantity(0, "degC")], ids=["K", "degC", "0 degC"])
 def test_a_temperature_on_a_celsius_field_is_accepted(units_model, value):
-    """An offset unit: the field's dimension is read from the unit itself."""
+    """An offset unit: the field's dimension is read from the unit itself. The
+    recorded value is the temperature in kelvin over the model's temperature
+    scale (one kelvin here: no temperature reference), and a field held at it on
+    both walls reads it back."""
     mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0),
                                              cellSize=0.25)
     T = uw.discretisation.MeshVariable("T_c", mesh, 1, degree=1, units="degC")
     poisson = uw.systems.Poisson(mesh, u_Field=T)
+    poisson.constitutive_model = uw.constitutive_models.DiffusionModel
+    poisson.constitutive_model.Parameters.diffusivity = uw.quantity(1e-6, "m**2/s")
     poisson.add_dirichlet_bc(value, "Left")
+    poisson.add_dirichlet_bc(value, "Right")
+    kelvin = float(value.to("K").magnitude) if hasattr(value, "to") else float(value)
+    assert _recorded(poisson.essential_bcs[-1]) == pytest.approx([kelvin])
+    poisson.solve()
+    read = uw.function.evaluate(T.sym[0], np.array([[0.5, 0.5]]))
+    assert float(np.asarray(read.to("K").magnitude).ravel()[0]) == pytest.approx(kelvin, rel=1e-5)
 
 
 def test_a_length_on_a_celsius_field_is_refused(units_model):
@@ -152,3 +163,31 @@ def test_a_length_on_a_celsius_field_is_refused(units_model):
     poisson = uw.systems.Poisson(mesh, u_Field=T)
     with pytest.raises(ValueError, match=r"essential \(Dirichlet\) condition on 'Left'"):
         poisson.add_dirichlet_bc(uw.quantity(5, "km"), "Left")
+
+
+# --- Plain numbers on a field with units (ruling, 2026-11-14, extended) ---
+
+
+def test_a_plain_number_on_a_field_with_units_is_refused(units_model):
+    st = _stokes()
+    with pytest.raises(ValueError, match=r"plain number 0.5 .* uw.quantity\(0.5, "):
+        st.add_essential_bc((0.5, None), "Left")
+    with pytest.raises(ValueError, match="natural \\(Neumann\\)"):
+        st.add_natural_bc((0.0, 3.0), "Top")
+
+
+def test_zero_on_a_field_with_units_is_accepted(units_model):
+    st = _stokes()
+    st.add_essential_bc((0.0, 0.0), "Bottom")
+    st.add_essential_bc((None, 0), "Left")
+    assert _recorded(st.essential_bcs[-1]) == pytest.approx([0.0])
+
+
+def test_a_lone_expression_is_one_entry(units_model):
+    mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0),
+                                             cellSize=0.25)
+    T = uw.discretisation.MeshVariable("T_e", mesh, 1, degree=1, units="K")
+    poisson = uw.systems.Poisson(mesh, u_Field=T)
+    T_wall = uw.expression(r"T_w", uw.quantity(300, "K"), "wall temperature")
+    poisson.add_dirichlet_bc(T_wall, "Left")
+    assert uw.unwrap(poisson.essential_bcs[-1].fn[0], keep_constants=False) == pytest.approx(300.0)
