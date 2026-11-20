@@ -697,6 +697,11 @@ if [ $PARALLEL_RANKS -gt 0 ] && shard_owns 6 && command -v mpirun &> /dev/null; 
     # rank's global_evaluate with no points; at three ranks two of them do.
     OMPI_MCA_rmaps_base_oversubscribe=1 $SUPERVISE mpirun -n 3 python -m pytest --with-mpi \
       tests/parallel/test_1243_parallel_plot_helpers_parallel.py || status=1
+
+    # add_particles_with_coordinates with a rank without cells: the triangle of
+    # cells leaves a rank empty only from np 3, so this file runs at np 3 always.
+    OMPI_MCA_rmaps_base_oversubscribe=1 $SUPERVISE mpirun -n 3 python -m pytest --with-mpi \
+      tests/parallel/test_1260_add_particles_one_owner_per_point_parallel.py || status=1
     # adapt(engine='nvb') with a rank without cells: the box that leaves a rank
     # empty does so from np 3 (at np 2 the test skips), so it runs at np 3 always.
     OMPI_MCA_rmaps_base_oversubscribe=1 $SUPERVISE mpirun -n 3 python -m pytest --with-mpi \
