@@ -24,7 +24,7 @@ def _points_on_this_rank(sample_points, viz_rank):
 
     Only ``viz_rank``'s points are read. Their dimension is broadcast from it, so
     the other ranks may pass anything, ``None`` included. Points on ``viz_rank``
-    that are not an ``(n, dim)`` array are refused on every rank together,
+    that are not a finite ``(n, dim)`` array are refused on every rank together,
     before the collective, instead of leaving the other ranks waiting in it."""
     points, dim = None, None
     if uw.mpi.rank == viz_rank:
@@ -33,13 +33,15 @@ def _points_on_this_rank(sample_points, viz_rank):
         except (TypeError, ValueError):
             # Not convertible to numbers: refused below, on every rank.
             points = None
-        if points is not None and points.ndim == 2:
+        # A non-finite coordinate cannot be located, and global_evaluate does not
+        # refuse it the same way on every rank.
+        if points is not None and points.ndim == 2 and np.isfinite(points).all():
             dim = points.shape[1]
     dim = uw.mpi.comm.bcast(dim, root=viz_rank)
     if dim is None:
         raise ValueError(
             f"the sample points on the plotting rank (viz_rank={viz_rank}) must be "
-            f"an array of shape (n, dim)")
+            f"a finite array of shape (n, dim)")
     if uw.mpi.rank == viz_rank:
         return points
     return np.zeros((0, dim))
