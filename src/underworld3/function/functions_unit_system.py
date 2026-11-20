@@ -537,7 +537,8 @@ def _global_evaluate_impl(
     scaling_is_active = uw.is_nondimensional_scaling_active()
     _, result_dimensionality = unwrap_for_evaluate(expr, scaling_active=scaling_is_active)
 
-    # Every rank calls this, whatever its own points: it is collective (#786).
+    # Every rank calls both, whatever its own points: they are collective (#786).
+    _refuse_non_finite_points(expr, coords_for_cython)
     if not check_extrapolated:
         _refuse_points_far_outside(expr, coords_for_cython, collective=True)
 
@@ -1387,6 +1388,52 @@ def _refuse_mixed_unit_leaves(expr):
         "the field units (MeshVariable(..., units=...), or units='dimensionless' "
         "for a pure multiplier), or evaluate the pieces separately (#771, #904)."
     )
+
+
+def _refuse_non_finite_points(expr, coords_nd):
+    """Refuse query points with a NaN or infinite coordinate, on every rank.
+
+    Such a point lies in no cell and cannot be located. A NaN passes the
+    far-outside refusal (a comparison with NaN is false), so before this it
+    reached the swarm migration of ``global_evaluate``, where the ranks parted:
+    one raised from the point location while another waited in the migration's
+    barrier. Each rank counts its own non-finite points and the count is
+    reduced over the ranks before any other collective, so a rank whose own
+    points are finite raises the same error. Only expressions that read mesh
+    data are checked, as in :func:`_refuse_points_far_outside`: a pure sympy
+    expression is evaluated pointwise and returns NaN for NaN. COLLECTIVE:
+    every rank calls it, a rank with no points contributing none.
+    """
+    from mpi4py import MPI
+    from .expressions import mesh_vars_in_expression, unwrap
+
+    # Unwrapped, so a field inside a named expression is seen too.
+    if mesh_vars_in_expression(unwrap(_as_symbolic(expr)))[0] is None:
+        return
+    n_bad, n_all = 0, 0
+    if coords_nd is not None:
+        try:
+            pts = np.asarray(coords_nd, dtype=np.float64)
+        except (TypeError, ValueError):
+            # Unit-aware tuples are converted later, in global_evaluate_nd; this
+            # rank contributes nothing here rather than raising alone before the
+            # reduction.
+            pts = None
+        if pts is not None and pts.ndim >= 1 and pts.size:
+            pts = pts.reshape(-1, pts.shape[-1])
+            n_bad = int(np.count_nonzero(~np.isfinite(pts).all(axis=1)))
+            n_all = int(pts.shape[0])
+    if uw.mpi.size > 1:
+        n_bad = uw.mpi.comm.allreduce(n_bad, op=MPI.SUM)
+        n_all = uw.mpi.comm.allreduce(n_all, op=MPI.SUM)
+    if n_bad == 0:
+        return
+    raise ValueError(
+        f"global_evaluate: {n_bad} of {n_all} query points have non-finite "
+        "coordinates (NaN or infinite), over all ranks. Such a point lies in no "
+        "cell; remove it before evaluating."
+    )
+
 
 def _refuse_points_far_outside(expr, coords_nd, collective):
     """Refuse query points further outside the mesh than its largest cell (#786).

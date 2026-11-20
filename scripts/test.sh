@@ -429,6 +429,8 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   batch 3 tests/parallel/test_1167_constrained_stokes_discontinuous_pressure_parallel.py
   # So are a solver's scoped resets, the same on every rank (#1169).
   batch 3 tests/parallel/test_1169_solver_reset_scopes_parallel.py
+  # So is a constrained Stokes solve with a P3 velocity, the essential-wall solution.
+  batch 3 tests/parallel/test_1200_constrained_stokes_p3_velocity_parallel.py
   # So is #1123's sheared mesh: every inside point owned at any rank count, exact serially.
   batch 3 tests/parallel/test_1123_exact_locator_parallel.py
   # So are the contained points the walk misses on that mesh, found by the exact fallback (#1183).
@@ -482,6 +484,16 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   batch 4 tests/test_117*py
   batch 4 tests/test_118*py
   batch 4 tests/test_119*py
+  batch 4 tests/test_120*py
+  batch 4 tests/test_121*py
+  batch 4 tests/test_122*py
+  batch 4 tests/test_123*py
+  batch 4 tests/test_124*py
+  batch 4 tests/test_125*py
+  batch 4 tests/test_126*py
+  batch 4 tests/test_127*py
+  batch 4 tests/test_128*py
+  batch 4 tests/test_129*py
   batch 4 tests/test_1450*py
 
   # Named (un-numbered) test files - JIT, docstrings, projections
@@ -514,6 +526,7 @@ PTEST_FILES=(
   tests/parallel/ptest_0844_reconnect_parallel.py
   tests/parallel/ptest_0845_fault_split_parallel.py
   tests/parallel/ptest_0845_relax_pinned_band_parallel.py
+  tests/parallel/ptest_0851_fault_network_3d_parallel.py
   tests/parallel/ptest_0852_place_split_contact.py
   tests/parallel/ptest_0853_place_lines_parallel.py
   tests/parallel/ptest_0854_place_sheet_parallel.py

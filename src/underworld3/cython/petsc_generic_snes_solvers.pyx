@@ -508,7 +508,9 @@ class SolverReset:
         they are rebuilt from the nullspace settings on the next solve.
     ``discretisation``
         The DM, its hierarchy and the SNES; rebuilt on the next solve. The
-        registered conditions are kept.
+        nullspace objects are numbered on the DM, so they go with it (and
+        with ``conditions``, which drops the DM too). The registered
+        conditions are kept.
     ``all``
         All of the above: a new boundary-value problem on the same solver and
         fields.
@@ -7452,9 +7454,14 @@ class SNES_Scalar(SolverBaseClass):
                 
                 bd_F0  = sympy.Array(bc.fn_f)
                 bc.fns["u_f0"] = sympy.ImmutableDenseMatrix(bd_F0)
-                
-                G0 = derive_by_array_wrt_field(bd_F0, U)
-                G1 = derive_by_array_wrt_field(bd_F0, L)
+
+                # The tangent is taken of the unwrapped term, as for the volume flux: a
+                # named expression in fn_f (the viscosity in a Nitsche penalty) was a
+                # constant to the derivative, and the tangent missed its dependence on
+                # the unknowns (#1162). The residual stays exact.
+                bd_F0_jac = self._jacobian_source(bd_F0)
+                G0 = derive_by_array_wrt_field(bd_F0_jac, U)
+                G1 = derive_by_array_wrt_field(bd_F0_jac, L)
 
                 bc.fns["uu_G0"] = sympy.ImmutableMatrix(G0.reshape(1, 1)) 
                 bc.fns["uu_G1"] = sympy.ImmutableMatrix(G1.reshape(dim, 1))
@@ -8503,11 +8510,16 @@ class SNES_Vector(SolverBaseClass):
                 # BC G1[fc*Nc + gc, df]       = ∂bd_f0[fc]/∂L[gc, df]
                 bd_G0 = sympy.zeros(Nc, Nc)
                 bd_G1 = sympy.zeros(Nc * Nc, cdim)
+                # The tangent is taken of the unwrapped term, as for the volume flux: a
+                # named expression in fn_f (the viscosity in a Nitsche penalty) was a
+                # constant to the derivative, and the tangent missed its dependence on
+                # the unknowns (#1162). The residual stays exact.
+                bd_f0_jac = list(self._jacobian_source(sympy.Array(bd_f0_list)))
                 for fc in range(Nc):
                     for gc in range(Nc):
-                        bd_G0[fc, gc] = diff_wrt_field(bd_f0_list[fc], U_list[gc])
+                        bd_G0[fc, gc] = diff_wrt_field(bd_f0_jac[fc], U_list[gc])
                         for df in range(cdim):
-                            bd_G1[fc * Nc + gc, df] = diff_wrt_field(bd_f0_list[fc], L[gc, df])
+                            bd_G1[fc * Nc + gc, df] = diff_wrt_field(bd_f0_jac[fc], L[gc, df])
 
                 bc.fns["uu_G0"] = sympy.ImmutableMatrix(bd_G0)
                 bc.fns["uu_G1"] = sympy.ImmutableMatrix(bd_G1)
@@ -9290,11 +9302,16 @@ class SNES_MultiComponent(SolverBaseClass):
 
                 bd_G0 = sympy.zeros(Nc, Nc)
                 bd_G1 = sympy.zeros(Nc * Nc, cdim)
+                # The tangent is taken of the unwrapped term, as for the volume flux: a
+                # named expression in fn_f (the viscosity in a Nitsche penalty) was a
+                # constant to the derivative, and the tangent missed its dependence on
+                # the unknowns (#1162). The residual stays exact.
+                bd_f0_jac = list(self._jacobian_source(sympy.Array(bd_f0_list)))
                 for fc in range(Nc):
                     for gc in range(Nc):
-                        bd_G0[fc, gc] = diff_wrt_field(bd_f0_list[fc], U_list[gc])
+                        bd_G0[fc, gc] = diff_wrt_field(bd_f0_jac[fc], U_list[gc])
                         for df in range(cdim):
-                            bd_G1[fc * Nc + gc, df] = diff_wrt_field(bd_f0_list[fc], L[gc, df])
+                            bd_G1[fc * Nc + gc, df] = diff_wrt_field(bd_f0_jac[fc], L[gc, df])
 
                 bc.fns["uu_G0"] = sympy.ImmutableMatrix(bd_G0)
                 bc.fns["uu_G1"] = sympy.ImmutableMatrix(bd_G1)
@@ -11923,7 +11940,11 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                 # explicit-index loops (the old permutedims form transposed
                 # fc/gc here too; harmless only while every natural-BC
                 # tangent happened to be symmetric).
-                bd_f0_list = list(sympy.Array(bc.fn_f).reshape(dim))
+                # The tangent is taken of the unwrapped term, as for the volume flux: a
+                # named expression in fn_f (the viscosity in a Nitsche penalty) was a
+                # constant to the derivative, and the tangent missed its dependence on
+                # the unknowns (#1162). The residual stays exact.
+                bd_f0_list = list(self._jacobian_source(sympy.Array(bc.fn_f).reshape(dim)))
 
                 # uu_G0[fc, gc]         = d bd_F0[fc] / dU[gc]
                 G0 = sympy.zeros(dim, dim)
@@ -12431,10 +12452,10 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         Note (scatter-back): PetscSection constraints remove DOFs from the GLOBAL
         section only; the LOCAL section still allocates them. The multiplier IS is
-        built with ``unconstrained=False`` and (for a scalar ``h``, 1 dof/point)
-        appends the local offset of every h-bearing point regardless of
-        constraint, so the copy back into the full-domain ``h`` MeshVariable is
-        size-correct without change.
+        built with ``unconstrained=False`` and takes every dof of every h-bearing
+        point (two on each edge for a P3 ``h``), constrained or not, so the copy
+        back into the full-domain ``h`` MeshVariable is size-correct without
+        change.
 
         Why this is lossless (and why disabling it is NOT a "more accurate"
         reference). The interior ``h`` rows are the screening block alone,
@@ -12531,6 +12552,10 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                 addl_total += add_here
             Snew.setConstraintDof(p, Sold.getConstraintDof(p) + addl_total)
 
+        # The field symmetries orient multi-dof edges and faces in reversed
+        # cells; without them a P3 velocity was read in the wrong order next
+        # to every such edge, and the constrained solve came out 26% low.
+        copy_section_symmetries(Sold, Snew)
         Snew.setUp()
 
         # 2b. Constraint INDICES — must follow setUp(). Rebuild the point-local

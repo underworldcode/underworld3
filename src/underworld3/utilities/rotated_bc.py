@@ -3919,7 +3919,11 @@ def _declared_mode_flags(solver):
                 f"{np.round(centre, 12).tolist()}: its vertices' distances from it "
                 f"spread over {rel:.2g} of the radius, against "
                 f"{_WALL_INVARIANCE_TOL:g}. The declared rotation modes therefore take "
-                f"the constraint test")
+                f"the constraint test, and where they fail it the answer may carry a "
+                f"rigid rotation that the solve does not remove and still reports "
+                f"converged. If the walls were moved rigidly (a translation by "
+                f"mesh.deform, for example), declare the rotation about their new "
+                f"centre: set mesh.nullspace_rotations (#969)")
     return [True] * n_modes, None
 
 

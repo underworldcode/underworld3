@@ -721,3 +721,32 @@ def test_an_undeclared_box_in_a_units_model_offers_the_cartesian_rotations():
         assert gauge["offered"] == 3 and gauge["orthonormal"] == 0, gauge
     finally:
         uw.reset_default_model()
+
+
+@pytest.mark.parametrize("move", ["as built", "slid along its walls", "translated"])
+def test_a_translated_mesh_is_told_to_redeclare_its_rotation(move):
+    # #969, ruled "warn, don't fit": an annulus translated by deform still declares
+    # its rotation about the origin. Its walls are circles about the new centre, so
+    # the rotation about the origin fails the sphere test, is rejected by the
+    # constraint test, and the rotation about the new centre is never offered: the
+    # answer may carry it while the solve reports converged (0.60 of v_rms measured
+    # at a shift of 1e-3, serial, custom FMG). The note says so and names the
+    # declaration to change. A mesh as built, or moved with its wall vertices
+    # sliding along their circles, keeps the exemption and is told nothing.
+    if move == "as built":
+        mesh = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.5, cellSize=0.2, qdegree=3)
+    elif move == "slid along its walls":
+        mesh = _slid_annulus()
+    else:
+        mesh = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.5, cellSize=0.2, qdegree=3)
+        mesh.deform(np.array(mesh.X.coords) + np.array([1.0e-3, 0.0]))
+    _mesh, _v, stokes = _annulus_stokes(f"1131t{move[0]}", mesh=mesh)
+    for wall in ("Lower", "Upper"):
+        stokes.add_rotated_freeslip_bc(0, wall)
+    exempt, note = rotated_bc._declared_mode_flags(stokes)
+    if move == "translated":
+        assert exempt == [False]
+        assert "may carry a rigid rotation" in note, note
+        assert "mesh.nullspace_rotations" in note, note
+    else:
+        assert exempt == [True] and note is None, note

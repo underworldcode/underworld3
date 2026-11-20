@@ -896,21 +896,12 @@ def BoxInternalBoundary(
             gmsh.finalize()
 
     def box_return_coords_to_bounds(coords):
-        x00s = coords[:, 0] < minCoords[0]
-        x01s = coords[:, 0] > maxCoords[0]
-        x10s = coords[:, 1] < minCoords[1]
-        x11s = coords[:, 1] > maxCoords[1]
-
-        coords[x00s, :] = minCoords[0]
-        coords[x01s, :] = maxCoords[0]
-        coords[x10s, :] = minCoords[1]
-        coords[x11s, :] = maxCoords[1]
-
-        if dim == 3:
-            x20s = coords[:, 1] < minCoords[2]
-            x21s = coords[:, 1] > maxCoords[2]
-            coords[x20s, :] = minCoords[2]
-            coords[x21s, :] = maxCoords[2]
+        # Onto the wall the point left by, that coordinate only (as
+        # StructuredQuadBox): every coordinate used to be set to the bound, and
+        # the z bounds were tested against the y column.
+        for axis in range(dim):
+            coords[coords[:, axis] < minCoords[axis], axis] = minCoords[axis]
+            coords[coords[:, axis] > maxCoords[axis], axis] = maxCoords[axis]
 
         return coords
 
