@@ -184,8 +184,8 @@ ycoords = np.full_like(xcoords, 5)
 zcoords = np.full_like(xcoords, 0)
 xyz_coords = np.column_stack([xcoords, ycoords, zcoords])
 
-pressure_interp = uw.function.evaluate(p_soln.sym[0], xyz_coords)
-pressure_interp_0 = uw.function.evaluate(p_soln_0.sym[0], xyz_coords)
+pressure_interp = uw.function.evaluate(p_soln.sym[0], xyz_coords)[:, 0, 0]
+pressure_interp_0 = uw.function.evaluate(p_soln_0.sym[0], xyz_coords)[:, 0, 0]
 
 
 # + editable=true slideshow={"slide_type": ""}

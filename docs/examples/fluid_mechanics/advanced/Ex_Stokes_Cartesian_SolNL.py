@@ -156,7 +156,7 @@ stokes.solve(zero_init_guess=False)
 sol_vel.T
 
 # %%
-vdiff = stokes.u.sym - sol_vel.T
+vdiff = stokes.u.sym - sol_vel
 vdiff_dot_vdiff = uw.maths.Integral(mesh, vdiff.dot(vdiff)).evaluate()
 v_dot_v = uw.maths.Integral(mesh, stokes.u.fn.dot(stokes.u.fn)).evaluate()
 

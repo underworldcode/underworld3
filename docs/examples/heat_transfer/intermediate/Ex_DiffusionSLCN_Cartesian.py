@@ -232,7 +232,7 @@ sample_points[:, 0] = sample_x
 sample_points[:, 1] = sample_y
 
 # Initial profile
-t0 = uw.function.evaluate(adv_diff.u.fn, sample_points)
+t0 = uw.function.evaluate(adv_diff.u.fn, sample_points)[:, 0, 0]
 
 # %% [markdown]
 """

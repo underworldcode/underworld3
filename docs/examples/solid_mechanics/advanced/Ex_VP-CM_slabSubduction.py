@@ -95,7 +95,7 @@ ppcell = 5
 # %%
 mesh = uw.meshing.StructuredQuadBox(
     elementRes=(4 * n_els, n_els),
-    minCoords=(0.0) * dim,
+    minCoords=(0.0,) * dim,
     maxCoords=(boxLength, boxHeight))
 
 

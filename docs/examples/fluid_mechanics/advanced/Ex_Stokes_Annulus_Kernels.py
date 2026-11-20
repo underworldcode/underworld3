@@ -188,9 +188,8 @@ vnorm = I0.evaluate()
 
 # print(norm/vnorm, vnorm)
 
-with meshball.access(v_soln):
-    dv = uw.function.evaluate(norm * v_theta_fn_xy, v_soln.coords) / vnorm
-    v_soln.data[...] -= dv 
+dv = uw.function.evaluate(norm * v_theta_fn_xy, v_soln.coords) / vnorm
+v_soln.array[...] -= dv
 
 with meshball.access(v_soln1):
     v_soln1.data[...] = v_soln.data[...]

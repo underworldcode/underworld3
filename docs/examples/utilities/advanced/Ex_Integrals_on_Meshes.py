@@ -189,7 +189,7 @@ stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
 stokes.add_dirichlet_bc((0.0, 0.0, 0.0), "Upper", (0, 1, 2))
 
 stokes.viscosity = 1.0
-stokes.bodyforce = mesh.rvec * sympy.sin(th)
+stokes.bodyforce = mesh.X * sympy.sin(th)
 
 
 stokes.solve()

@@ -221,7 +221,7 @@ expt_name = "output/Ra{:.0e}_Rc{:.0e}".format(
 )
 
 buoyancy_force = params.uw_rayleigh_thermal * t_soln.fn + params.uw_rayleigh_chemical * mMat.fn
-stokes.bodyforce = meshbox.N.j * buoyancy_force
+stokes.bodyforce = sympy.Matrix([[0, buoyancy_force]])
 
 # Initial solve
 stokes.solve()

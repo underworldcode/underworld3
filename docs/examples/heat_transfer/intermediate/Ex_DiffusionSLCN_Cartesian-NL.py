@@ -229,7 +229,7 @@ sample_points = np.empty((sample_x.shape[0], 2))
 sample_points[:, 0] = sample_x
 sample_points[:, 1] = sample_y
 
-t0 = uw.function.evaluate(adv_diff.u.fn, sample_points)
+t0 = uw.function.evaluate(adv_diff.u.fn, sample_points)[:, 0, 0]
 
 
 def get_dt():
@@ -300,7 +300,7 @@ while step < nsteps:
         print(f"Step: {str(step).rjust(3)}, time: {time:6.5f}")
 
     ### 1D profile from underworld
-    t1 = uw.function.evaluate(adv_diff.u.fn, sample_points)
+    t1 = uw.function.evaluate(adv_diff.u.fn, sample_points)[:, 0, 0]
 
     if uw.mpi.size == 1 and step % 10 == 0:
         """compare 1D and 2D models"""
