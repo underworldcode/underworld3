@@ -1377,7 +1377,7 @@ def test_a_target_left_without_a_vertex_is_counted_and_named(first, second):
     from underworld3.utilities.line_cut import _coords
 
     dm = _grid_of_eighteen_triangles()
-    with pytest.warns(UserWarning, match="left without a vertex"):
+    with pytest.warns(UserWarning, match="1 of the call's 2 target"):
         out = pull_vertex_onto(dm, np.array([first, second]))
     moved, worst = _moves(dm, out)
     assert moved == {(1.0, 1.0): second}
