@@ -12,6 +12,10 @@ at those nodes. The lid leaked at its own end points (max|u_y| = 4.0e-3 against
 component-Dirichlet one by 2e-3 globally, with an exact linear solve on both
 sides. Issue #616; the corner reaction of #608 is the same node.
 
+Serial only. The corner tests read the velocity at the lid's ends with a
+rank-local ``evaluate``, so under ``mpirun`` a rank that does not hold an end
+fails them (H7's review of #1263); the serial batch is where they run.
+
 Run: pixi run python -m pytest tests/test_1066_rotated_meets_essential.py -v
 """
 
@@ -84,11 +88,15 @@ def test_rotated_lid_reproduces_the_component_condition():
 
 def _lid_against_a_pinned_wall(left, capsys, lid_normal=(sympy.Rational(3, 5), sympy.Rational(4, 5)),
                                right=None, clock=None, deprecated_component=None,
-                               rotated_floor=False, lid_datum=0):
+                               rotated_floor=False, lid_datum=0, corners=False, solves=None,
+                               reused=None):
     """Rotated free slip on Top with the given normal, meeting an essential
     condition ``left`` on Left (and ``right`` on Right, else rotated free slip);
     no slip on Bottom, so the only shared nodes are the lid's two ends.
-    Returns the warnings about a pinned value that the solve printed."""
+    Returns the warnings about a pinned value that the solve printed, and with
+    ``corners`` the velocity at the lid's two ends, Top-Left first. ``solves``,
+    a list of clock values, solves once at each and returns the corners of each;
+    ``reused``, a list, collects whether each solve reused the cached rotation."""
     mesh = uw.meshing.UnstructuredSimplexBox(
         minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.25, qdegree=3)
     x, z = mesh.X
@@ -114,26 +122,42 @@ def _lid_against_a_pinned_wall(left, capsys, lid_normal=(sympy.Rational(3, 5), s
         s.add_dirichlet_bc(left, "Left", deprecated_component)
     if clock is not None:
         uw.get_default_model().tracker.time = clock
+    ends = np.array([[0.0, 1.0], [1.0, 1.0]])
     capsys.readouterr()
-    s.solve()
+    at_each = []
+    for t in (solves or [None]):
+        if t is not None:
+            uw.get_default_model().tracker.time = t
+        s.solve()
+        if reused is not None:
+            reused.append(bool(s._rotated_freeslip_info["rotation_reused"]))
+        at_each.append(np.asarray(uw.function.evaluate(v.sym, ends)).reshape(2, 2))
     out = capsys.readouterr().out
     # the report is printed by rank 0 alone: every rank asserts on what it printed
     lines = [line for line in out.splitlines() if "essential BC on" in line]
-    return uw.mpi.comm.bcast(lines if uw.mpi.rank == 0 else None, root=0)
+    lines = uw.mpi.comm.bcast(lines if uw.mpi.rank == 0 else None, root=0)
+    if solves is not None:
+        return lines, at_each
+    return (lines, at_each[0]) if corners else lines
 
 
 @pytest.mark.tier_b
-def test_a_pinned_value_along_the_wall_normal_is_reported(capsys):
-    """The corner's reduced constraint holds the pinned components at zero (#939).
+@pytest.mark.parametrize("left, corner", [((None, 0.05), (-1.0 / 15.0, 0.05)),
+                                          ((0.05, None), (0.05, -0.0375))],
+                         ids=["u_z pinned", "u_x pinned"])
+def test_the_corner_carries_the_pinned_value_into_the_wall_condition(left, corner, capsys):
+    """The corner's reduced constraint is n_F.v_F = -n_P.g_P (#939).
 
-    With u_z = 1/20 pinned on Left and the lid normal (3/5, 4/5), the wall-normal
-    velocity at the Top-Left corner comes out as 4/5 x 1/20 = 0.04 where the wall
-    asks for zero. Until the affine reduction is implemented the solve says so,
-    once, naming the wall and the size.
+    With the lid normal (3/5, 4/5) and u_z = 1/20 pinned on Left, the wall asks
+    for 3/5 u_x + 4/5 x 1/20 = 0 at the Top-Left corner, so u_x = -1/15. The
+    corner used to hold the pinned component at zero in the reduction: u_x came
+    out 0 and n.v = 0.04 (u_x pinned instead: n.v = 0.03). Both conditions now
+    hold to the solve, and nothing is reported.
     """
-    warnings = _lid_against_a_pinned_wall((None, 0.05), capsys)
-    assert len(warnings) == 1
-    assert "'Left'" in warnings[0] and "component of 0.04 along the wall normal" in warnings[0]
+    warnings, ends = _lid_against_a_pinned_wall(left, capsys, corners=True)
+    assert warnings == []
+    assert np.allclose(ends[0], corner, atol=1.0e-9), ends[0]
+    assert abs(0.6 * ends[0][0] + 0.8 * ends[0][1]) < 1.0e-9, ends[0]
 
 
 @pytest.mark.tier_b
@@ -144,11 +168,14 @@ def test_a_node_with_every_component_pinned_is_reported_too(capsys):
 
 
 @pytest.mark.tier_b
-def test_each_essential_wall_is_named_once(capsys):
-    warnings = _lid_against_a_pinned_wall((None, 0.05), capsys, right=(None, 0.07))
-    assert len(warnings) == 2
-    assert "'Left'" in warnings[0] and "0.04" in warnings[0]
-    assert "'Right'" in warnings[1] and "0.056" in warnings[1]
+def test_each_end_of_the_lid_carries_its_own_pin(capsys):
+    """u_z = 1/20 on Left and 7/100 on Right: each end of the lid meets its own
+    pin and satisfies the lid's condition with it (#939)."""
+    warnings, ends = _lid_against_a_pinned_wall((None, 0.05), capsys, right=(None, 0.07),
+                                                corners=True)
+    assert warnings == []
+    assert np.allclose(ends[:, 1], [0.05, 0.07], atol=1.0e-9), ends
+    assert np.abs(ends @ np.array([0.6, 0.8])).max() < 1.0e-9, ends
 
 
 @pytest.mark.tier_b
@@ -177,14 +204,34 @@ def test_a_pin_that_leaves_the_wall_condition_intact_is_silent(case, capsys):
 
 
 @pytest.mark.tier_b
-def test_a_pinned_value_that_follows_the_clock_is_reported_once_it_is_nonzero(capsys):
+def test_a_pinned_value_that_follows_the_clock_is_read_at_every_solve(capsys):
+    """u_z = t/20 on Left, solved at t = 0, then 2, then 1 on one solver: the
+    corner takes each solve's value (#939). A rotation cached from the first
+    solve would keep u_z = 0 there."""
     try:
-        warnings = _lid_against_a_pinned_wall(
+        warnings, at_each = _lid_against_a_pinned_wall(
             lambda mesh: sympy.Matrix([[sympy.oo, sympy.Rational(1, 20) * mesh.t]]), capsys,
-            clock=2.0)
+            solves=[0.0, 2.0, 1.0])
     finally:
         uw.get_default_model().tracker.time = 0.0
-    assert len(warnings) == 1 and "component of 0.08 along the wall normal" in warnings[0]
+    assert warnings == []
+    for t, ends in zip((0.0, 2.0, 1.0), at_each):
+        assert abs(ends[0][1] - t / 20) < 1.0e-9, (t, ends[0])
+        assert abs(0.6 * ends[0][0] + 0.8 * ends[0][1]) < 1.0e-9, (t, ends[0])
+
+
+def test_a_fixed_pinned_value_keeps_the_cached_rotation(capsys):
+    """u_z = 1/20 on Left, a number, solved three times on one solver: the second
+    and third solves reuse the cached rotation, and the corner keeps the pin
+    (u_x = -1/15) in each. The rotation was rebuilt at every solve for any nonzero
+    pin, 0.04 to 0.11 s a solve (H7's review of #1263); only a pin that can change
+    between solves (the clock, a named expression, a field) needs that."""
+    reused = []
+    warnings, at_each = _lid_against_a_pinned_wall((None, 0.05), capsys,
+                                                   solves=[0.0, 0.0, 0.0], reused=reused)
+    assert reused == [False, True, True], reused
+    for ends in at_each:
+        assert np.allclose(ends[0], (-1.0 / 15.0, 0.05), atol=1.0e-9), ends[0]
 
 
 @pytest.mark.tier_b
@@ -217,13 +264,15 @@ def test_the_older_short_components_form_is_refused_on_every_rank(capsys):
 
 
 @pytest.mark.tier_b
-@pytest.mark.parametrize("left, size", [((None, "x"), None), ((None, "z"), "0.8"), (("z", 0.0), "0.6")],
+@pytest.mark.parametrize("left, size", [((None, "x"), None), ((None, "z"), None), (("z", 0.0), "0.6")],
                          ids=["u_z = x", "u_z = z", "u_x = z"])
 def test_a_pin_that_is_a_bare_coordinate_solves_and_is_read_at_the_node(left, size, capsys):
     """A value that is one coordinate symbol is evaluated like any other.
 
     On Left (x = 0) with the lid normal (3/5, 4/5): u_z = x is zero at the corner;
-    u_z = z is 1 there, so n.v = 4/5; u_x = z (simple shear on the side wall) gives 3/5.
+    u_z = z is 1 there, and the free u_x takes it up (#939), so nothing is reported;
+    u_x = z with u_z = 0 pins both components (simple shear on the side wall), and
+    n.v = 3/5 is reported.
     """
     def value(mesh):
         coordinate = dict(x=mesh.X[0], z=mesh.X[1])

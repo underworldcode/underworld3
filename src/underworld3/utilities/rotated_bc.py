@@ -124,6 +124,29 @@ def _point_coord(dm, dim, cvec, csec, v0, v1, q):
     return np.mean([cvec[csec.getOffset(v) // dim] for v in verts], axis=0)
 
 
+def _refuse_a_field_normal(normal, boundary):
+    """Refuse a ``normal=`` that holds a field. It takes an expression of the
+    mesh coordinates, evaluated at each wall node; a mesh variable's ``.sym`` is a
+    function of the coordinates, passes the check for stray symbols, and failed
+    inside ``lambdify`` with a SyntaxError (UNFILED 37). The expression is the
+    same on every rank, so every rank refuses alike."""
+    if not isinstance(normal, sympy.MatrixBase):
+        return
+    from sympy.core.function import AppliedUndef
+    from underworld3.function.expressions import unwrap
+    fields = set()
+    for c in normal:
+        expr = sympy.sympify(unwrap(c, keep_constants=False, return_self=False))
+        fields |= {str(f.func) for f in expr.atoms(AppliedUndef)}
+    if fields:
+        raise ValueError(
+            f"add_rotated_freeslip_bc: normal= for boundary '{boundary}' holds the "
+            f"field(s) {sorted(fields)}. normal= takes an expression of the mesh "
+            f"coordinates (mesh.X), such as X / |X| on a spherical wall, or a "
+            f"constant; it is evaluated at each wall node, and a field is not. "
+            f"Leave normal=None for the geometric normal of the mesh's own wall.")
+
+
 def _normal_source(solver, normal, boundary):
     """``(sym_fn, const_normal)`` for an analytic / constant normal spec: a
     lambdified numpy callable of ``mesh.X`` for a sympy normal (unwrapped first,
@@ -133,6 +156,7 @@ def _normal_source(solver, normal, boundary):
     if normal is None:
         return None, None
     if isinstance(normal, sympy.Matrix):
+        _refuse_a_field_normal(normal, boundary)
         from underworld3.function.expressions import unwrap
         comps = [sympy.sympify(unwrap(normal[0, k], keep_constants=False,
                                       return_self=False))
@@ -531,6 +555,9 @@ def build_rotation(solver, boundaries, datum_specs=None):
     given_dofs = {}
     datum_nodes = []                             # (global row, point, boundary name, normal sign)
     pinned_value_conflicts = []
+    # rotated rows that carry a pinned value at a partly constrained node (#939)
+    pin_datum = {}
+    pins_live = False
     for q, nrms in node_normals.items():
         lo = lsec.getFieldOffset(q, _VELOCITY_FIELD)
         grows = [int(l2g.apply([lo + c])[0]) for c in range(dim)]
@@ -538,11 +565,14 @@ def build_rotation(solver, boundaries, datum_specs=None):
         # components an essential condition holds (read from the section, so a
         # ghost copy of the node gives the same answer as its owner)
         pinned = [int(c) for c in lsec.getFieldConstraintIndices(q, _VELOCITY_FIELD)]
+        pin = None
         if pinned and q not in node_dspec:
-            conflict = _pinned_value_along_normal(solver, dm, q, pinned, nrms)
+            pin = _pinned_values_at(solver, dm, q, pinned, nrms)
+            pins_live = pins_live or pin[3]
+        if not free:                             # every component pinned already
+            conflict = _pinned_value_along_normal(pin, nrms)
             if conflict is not None:
                 pinned_value_conflicts.append(conflict)
-        if not free:                             # every component pinned already
             continue
         if len(free) < dim:
             # PARTIALLY CONSTRAINED NODE — a rotated wall meeting an essential one.
@@ -557,19 +587,41 @@ def build_rotation(solver, boundaries, datum_specs=None):
             # sides (issue #616; the corner reaction of #608 is the same node).
             #
             # The constraint is still imposable on what is left: with the pinned
-            # components held at zero, n̂·v = 0 reduces to n̂_F·v_F = 0 on the free
-            # subspace F. Build the frame there and constrain its normal rows.
+            # components at their values g_P, n̂·v = 0 reduces to
+            # n̂_F·v_F = -n̂_P·g_P on the free subspace F (#939). Build the frame
+            # there, constrain its normal rows, and give them that value.
             if q in node_dspec:
                 # A prescribed v_n datum at such a node needs the pinned components'
                 # values to reduce the affine constraint, which are not read here.
                 # Preserve the previous behaviour rather than impose the wrong datum.
                 _warn_once_partial_datum()
                 continue
-            Mf = np.array(nrms, dtype=float)[:, free]
-            scale = float(np.linalg.norm(np.array(nrms, dtype=float)))
+            M = np.array(nrms, dtype=float)
+            Mf = M[:, free]
+            scale = float(np.linalg.norm(M))
             if float(np.linalg.norm(Mf)) <= 1e-12 * max(scale, 1.0):
-                # the normal lies entirely in the pinned subspace: already implied
+                # the normal lies entirely in the pinned subspace: the pinned value
+                # decides v.n there, and nothing free is left to correct it
+                conflict = _pinned_value_along_normal(pin, nrms)
+                if conflict is not None:
+                    pinned_value_conflicts.append(conflict)
                 continue
+            # the free components' share of each wall's condition: the least-squares
+            # v_F with M_F v_F = -M_P g_P. With one normal (a wall meeting a pin) it
+            # is exact; a residual means the node's walls ask for more than the free
+            # components can give, which is reported as before.
+            v_free = np.zeros(len(free))
+            if pin is not None:
+                values, walls, known, _live = pin
+                if values:
+                    cols = sorted(values)
+                    b = -M[:, cols] @ np.array([values[c] for c in cols])
+                    v_free = np.linalg.lstsq(Mf, b, rcond=None)[0]
+                    left_over = float(np.linalg.norm(Mf @ v_free - b))
+                    if left_over > 1.0e-12 * max(float(np.linalg.norm(b)), 1.0e-300):
+                        pinned_value_conflicts.append((walls, left_over, known))
+                if not known:
+                    pinned_value_conflicts.append((walls, 0.0, False))
             rows = [grows[c] for c in free]
             if not (rstart <= rows[0] < rend):   # not owned by this rank → skip
                 continue
@@ -579,6 +631,10 @@ def build_rotation(solver, boundaries, datum_specs=None):
                 for j in range(len(free)):
                     Q.setValue(rows[i], rows[j], float(Vtf[i, j]))
             normal_rows.extend(rows[:rf])
+            for i in range(rf):
+                held = float(Vtf[i] @ v_free)
+                if held != 0.0:
+                    pin_datum[rows[i]] = held
             for name, nrm in node_given.get(q, ()):
                 given_dofs.setdefault(name, []).append((grows, nrm))
             continue
@@ -728,6 +784,17 @@ def build_rotation(solver, boundaries, datum_specs=None):
                 # takes the untouched free-slip RHS path and is bit-identical to it.
                 if val != 0.0:
                     datum_map[grow0] = float(sgn * val)
+    # a pinned value at a partly constrained node is a datum on its reduced row
+    # (#939); a zero one is left out, as a zero datum is
+    datum_map.update(pin_datum)
+    # a fixed pin's datum is kept with a cached rotation and reused with it
+    solver._rotated_pin_datum = dict(pin_datum)
+    # whether any pin at such a node can change between solves (the clock, a
+    # named expression, a field): the rotation is then rebuilt at every solve,
+    # so the value is read again (a cached rotation would keep its first value).
+    # The same on every rank.
+    from mpi4py import MPI
+    solver._rotated_pins_live = bool(mpi.comm.allreduce(bool(pins_live), op=MPI.LOR))
     solver._rotated_given_wall_dofs = {
         name: (np.array([g for g, _n in entries], dtype=np.int64).reshape(-1, dim),
                np.array([n for _g, n in entries], dtype=float).reshape(-1, dim))
@@ -764,24 +831,22 @@ def _value_at_point(solver, value, x):
     return float(expr) if expr.is_number else None
 
 
-def _pinned_value_along_normal(solver, dm, point, pinned, normals):
-    """How far an essential value at ``point`` breaks the rotated wall's condition.
+def _pinned_values_at(solver, dm, point, pinned, normals):
+    """The essential values at ``point`` on the ``pinned`` velocity components that
+    the rotated walls' ``normals`` see (#939).
 
-    The reduced constraint at a node shared with an essential condition holds the
-    ``pinned`` components at zero, so the wall-normal velocity there comes out as
-    n_P . g_P: the pinned part of the normal against the prescribed value (#939).
-    Returns ``(walls, size, known)``: the essential walls whose values contribute,
-    the largest |n_P . g_P| over the node's normals, and whether every value could
-    be evaluated here. ``None`` when nothing contributes.
-
-    The value is read when the rotation is built. The rotation is kept across
-    solves, so a value that changes later (one that follows the model clock) is
-    not read again until the rotation is rebuilt.
+    Returns ``(values, walls, known, live)``: ``{component: value}`` for the values
+    that could be evaluated here and are nonzero, the essential walls whose values
+    contribute, whether every value could be evaluated, and whether any value is
+    not identically zero as written (one that follows the model clock is live at
+    t = 0). Rank-local; a value that cannot be read is reported as unknown, never
+    raised, so every rank reaches the collective steps after it.
     """
     dim = len(normals[0])
     values = {}
     walls = []
     known = True
+    live = False
     x = None
     for bc in solver.essential_bcs:
         if bc.f_id != _VELOCITY_FIELD or not dm.hasLabel(bc.boundary):
@@ -807,6 +872,23 @@ def _pinned_value_along_normal(solver, dm, point, pinned, normals):
                 value, number = bc, None
             if value is None:
                 continue
+            try:
+                # Read as written, before any unwrapping: the model clock (mesh.t)
+                # and any named expression unwrap to their values now, zero at a
+                # first solve, which says nothing about the next one. A value that
+                # can change between solves is live: a named expression or the
+                # clock (a symbol other than a coordinate) or a field (an applied
+                # function). A number or an expression of the coordinates alone is
+                # fixed on a fixed mesh, and a moved mesh tears the cache down.
+                written = sympy.sympify(value)
+                from sympy.core.function import AppliedUndef
+                from sympy.vector.scalar import BaseScalar
+                live = live or bool(
+                    {a for a in written.free_symbols if not isinstance(a, BaseScalar)}
+                    or written.atoms(AppliedUndef))
+            except Exception:
+                # Sanctioned: as above, a value that cannot be read is taken as live
+                live = True
             if number is None:
                 known = False
             elif number == 0.0:
@@ -815,6 +897,18 @@ def _pinned_value_along_normal(solver, dm, point, pinned, normals):
                 values[c] = number
             if bc.boundary not in walls:
                 walls.append(bc.boundary)
+    return values, walls, known, live
+
+
+def _pinned_value_along_normal(pin, normals):
+    """How far the pinned values ``pin`` (from :func:`_pinned_values_at`) break the
+    rotated wall's condition at a node where it cannot be met: every velocity
+    component pinned, or a wall normal that lies wholly in the pinned components.
+    Returns ``(walls, size, known)``, the largest |n_P . g_P| over the node's
+    normals, or ``None`` when nothing contributes."""
+    if pin is None:
+        return None
+    values, walls, known, _live = pin
     if not walls:
         return None
     size = max(abs(sum(float(n[c]) * g for c, g in values.items())) for n in normals)
@@ -839,17 +933,16 @@ def _report_pinned_values_along_normals(solver, conflicts):
     for wall in sorted(set(largest) - reported):
         reported.add(wall)
         size, known = largest[wall]
-        found = (f"has a component of {size:.3g} along the wall normal" if known else
+        found = (f"has a component of {size:.3g} along the wall normal that the free "
+                 f"velocity components there cannot cancel (every component is pinned, "
+                 f"or the walls meeting there ask for more than is left free), so v.n "
+                 f"there is not the prescribed one" if known else
                  "could not be evaluated at the node and may have a component along "
-                 "the wall normal")
+                 "the wall normal; the wall's condition there is reduced as if it were "
+                 "zero, so v.n may not be the prescribed one")
         mpi.pprint(f"[rotated_bc] WARNING: a rotated wall shares a node with the essential "
-                   f"BC on {wall!r}, whose prescribed value there {found}. The wall-normal "
-                   f"constraint at such a node is reduced as if the essential value were "
-                   f"zero (the affine reduction against the pinned components is not "
-                   f"implemented), so v.n there is not the prescribed one. Other nodes "
-                   f"are unaffected. The value was read as the rotation was built; a "
-                   f"value that changes later is not read again while the rotation is "
-                   f"kept.")
+                   f"BC on {wall!r}, whose prescribed value there {found}. Other nodes "
+                   f"are unaffected (#939).")
 
 
 _PARTIAL_DATUM_WARNED = [False]
@@ -1562,13 +1655,17 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
     if cache is not None:
         Q, Qt = cache["Q"], cache["Qt"]
         normal_rows = cache["normal_rows"]
-        datum_map = {}                       # cache_allowed excludes datum solves
+        # cache_allowed excludes datum solves; a fixed pin's datum rides the cache
+        datum_map = dict(cache.get("pin_datum", {}))
         custom_Pl = cache.get("custom_Pl")
         rotation_reused = True
     else:
         Q, Qt, normal_rows, datum_map = build_rotation(solver, boundaries, datum_specs)
         custom_Pl = None if use_lu else _build_rotated_custom_Pl(solver, Q, normal_rows)
         rotation_reused = False
+        if getattr(solver, "_rotated_pins_live", False):
+            # a pinned value on a reduced row is read at every solve (#939)
+            cache_allowed = False
 
     # The iteration-0 fast path: skip Jacobian assembly / ptap / PCSetUp when
     # the operator key proves nothing operator-relevant changed AND the
@@ -2161,6 +2258,7 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
             "geometry_sig": geometry_sig,
             "tolerance": float(solver.tolerance),
             "Q": Q, "Qt": Qt, "normal_rows": normal_rows,
+            "pin_datum": dict(getattr(solver, "_rotated_pin_datum", {})),
             "custom_Pl": custom_Pl,
             "Ahat": Ahat, "diag_scale": diag_scale, "ctx": ctx,
             "coefficient_variables": coefficient_variables,
