@@ -484,6 +484,16 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   batch 4 tests/test_117*py
   batch 4 tests/test_118*py
   batch 4 tests/test_119*py
+  batch 4 tests/test_120*py
+  batch 4 tests/test_121*py
+  batch 4 tests/test_122*py
+  batch 4 tests/test_123*py
+  batch 4 tests/test_124*py
+  batch 4 tests/test_125*py
+  batch 4 tests/test_126*py
+  batch 4 tests/test_127*py
+  batch 4 tests/test_128*py
+  batch 4 tests/test_129*py
   batch 4 tests/test_1450*py
 
   # Named (un-numbered) test files - JIT, docstrings, projections
