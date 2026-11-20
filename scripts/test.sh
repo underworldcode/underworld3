@@ -713,6 +713,10 @@ if [ $PARALLEL_RANKS -gt 0 ] && shard_owns 6 && command -v mpirun &> /dev/null; 
     # An SLCN step with an empty rank: the fixture empties a rank from np 3 only.
     OMPI_MCA_rmaps_base_oversubscribe=1 $SUPERVISE mpirun -n 3 python -m pytest --with-mpi \
       tests/parallel/test_1236_slcn_step_on_an_empty_rank_parallel.py || status=1
+    # A static field under the semi-Lagrangian history, with and without an empty
+    # rank: the same fixture, so np 3 always.
+    OMPI_MCA_rmaps_base_oversubscribe=1 $SUPERVISE mpirun -n 3 python -m pytest --with-mpi \
+      tests/parallel/test_1244_semi_lagrangian_static_field_parallel.py || status=1
     # A free surface with a rank without cells: the shell partition empties a rank
     # from np 3 (at np 2 it would leave one rank holding every cell), so np 3 always.
     OMPI_MCA_rmaps_base_oversubscribe=1 $SUPERVISE mpirun -n 3 python -m pytest --with-mpi \

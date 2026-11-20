@@ -317,8 +317,11 @@ def UnstructuredSimplexBox(
         gmsh.finalize()
 
     def box_return_coords_to_bounds(coords):
-
-        epsilon = 1.0e-3
+        # Onto the boundary, as StructuredQuadBox does: a continuous map. An
+        # inset (it was 1e-3 inside) moves a point that is a round-off outside
+        # by the inset and leaves one a round-off inside where it is, so a
+        # trace-back foot on a free-slip wall, where v.n is round-off, landed
+        # either side of a 1e-3 jump.
 
         x00s = coords[:, 0] < minCoords[0]
         x01s = coords[:, 0] > maxCoords[0]
@@ -329,14 +332,14 @@ def UnstructuredSimplexBox(
             x20s = coords[:, 2] < minCoords[2]
             x21s = coords[:, 2] > maxCoords[2]
 
-        coords[x00s, 0] = minCoords[0] + epsilon
-        coords[x01s, 0] = maxCoords[0] - epsilon
-        coords[x10s, 1] = minCoords[1] + epsilon
-        coords[x11s, 1] = maxCoords[1] - epsilon
+        coords[x00s, 0] = minCoords[0]
+        coords[x01s, 0] = maxCoords[0]
+        coords[x10s, 1] = minCoords[1]
+        coords[x11s, 1] = maxCoords[1]
 
         if dim == 3:
-            coords[x20s, 2] = minCoords[2] + epsilon
-            coords[x21s, 2] = maxCoords[2] - epsilon
+            coords[x20s, 2] = minCoords[2]
+            coords[x21s, 2] = maxCoords[2]
 
         return coords
 
