@@ -1818,7 +1818,8 @@ def add_fault(mesh, faults, verbose=False, cut=True, exclude=None,
     cut = Mesh(dm, simplex=mesh.dm.isSimplex(),
                coordinate_system_type=mesh.CoordinateSystem.coordinate_type,
                qdegree=mesh.qdegree,
-               boundaries=Enum("boundaries", members), verbose=False)
+               boundaries=Enum("boundaries", members), verbose=False,
+               _preserve_partition=True)        # the add-on partition's (UNFILED 44)
     cut.parent = mesh
     cut._relationship_kind = "refinement"
     cut._refine_dofs_coincide = False
@@ -1986,7 +1987,8 @@ def _add_fault_sheets(mesh, faults, verbose=False, partition=True,
                    else _carried_fault_records(cut_dm, tracked, [name]))
         child = Mesh(cut_dm, simplex=cut.dm.isSimplex(),
                      coordinate_system_type=cut.CoordinateSystem.coordinate_type,
-                     qdegree=cut.qdegree, boundaries=boundaries, verbose=False)
+                     qdegree=cut.qdegree, boundaries=boundaries, verbose=False,
+                     _preserve_partition=True)
         child.parent = cut
         child._relationship_kind = "refinement"
         child._refine_dofs_coincide = False
@@ -2746,6 +2748,10 @@ def split_fault(mesh, name, orientation=None, verbose=False,
         qdegree=mesh.qdegree,
         boundaries=boundaries,
         verbose=False,
+        # the split is rank-local on the partition it was made on: a DM with
+        # every cell on one rank reads as not distributed and would be
+        # distributed afresh (UNFILED 44)
+        _preserve_partition=True,
     )
     child.parent = mesh
     child._relationship_kind = "refinement"

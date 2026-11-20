@@ -9263,7 +9263,13 @@ class Mesh(Stateful, uw_object):
     @timing.routine_timer_decorator
     def _wrap_coarse_level(self, dm):
         """Wrap a (static) coarse-hierarchy DM as a UW Mesh carrying this mesh's
-        boundary labels — a coarse level for the custom-P geometric-MG hierarchy."""
+        boundary labels — a coarse level for the custom-P geometric-MG hierarchy.
+
+        The wrap keeps the partition the level has: it nests under the finer
+        level. A level whose cells all sit on one rank reads as not distributed
+        (``DMPlexIsDistributed``), and the constructor would distribute it
+        afresh, so that the add-on levels are no longer co-partitioned
+        (UNFILED 44)."""
         return Mesh(
             dm.clone(),
             simplex=self.dm.isSimplex(),
@@ -9271,6 +9277,7 @@ class Mesh(Stateful, uw_object):
             qdegree=self.qdegree,
             boundaries=self.boundaries,
             verbose=False,
+            _preserve_partition=True,
         )
 
     def _cached_finest_wrap_is_stale(self, wrap):
