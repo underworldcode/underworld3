@@ -115,3 +115,42 @@ def test_a_failure_after_a_helper_is_raised_on_every_rank(module, name, monkeypa
     message = f"After {name}"
     _after(module, name, message, monkeypatch)
     _raises_everywhere(lambda: _partition(child), message, monkeypatch)
+
+
+def test_a_failure_in_the_region_marks_callback_is_raised_on_every_rank(monkeypatch):
+    """The callback is collective, so it is an agreement point: a failure on
+    one rank after the first level's marks must not leave the others in the
+    next level's."""
+    child = adapted_2d(K)
+    inner = ap.mark_polylines([TRACE])
+    calls = []
+
+    def marks(dm):
+        out = inner(dm)
+        calls.append(1)
+        if len(calls) == 1:
+            _on_last_rank("In region_marks")
+        return out
+
+    _raises_everywhere(
+        lambda: ap.partition_addon(child, marks, layers=1, tolerance=0.1),
+        "In region_marks", monkeypatch)
+
+
+def test_a_failure_in_a_balance_sweep_is_raised_on_every_rank(monkeypatch):
+    """A failure on one rank after a sweep's gap reduction, just before the
+    sweep's count of moved units is reduced."""
+    child = adapted_2d(K)
+    original = ap._allreduce
+    seen = []
+
+    def failing(comm, values, op=ap.MPI.SUM):
+        out = original(comm, values, op=op)
+        if op is ap.MPI.MAX:            # only _peel_balance's gap reduction
+            seen.append(1)
+            _on_last_rank("In a balance sweep")
+        return out
+
+    monkeypatch.setattr(ap, "_allreduce", failing)
+    _raises_everywhere(lambda: _partition(child), "In a balance sweep", monkeypatch)
+    assert uw.mpi.comm.allreduce(len(seen), op=uw.MPI.MIN) > 0, "no balance sweep ran"

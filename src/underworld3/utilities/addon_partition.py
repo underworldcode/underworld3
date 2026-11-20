@@ -629,7 +629,7 @@ def _peel_balance(dm, unit_of_cell, assign_unit, weight, unit_region,
                 assign_unit[u] = s
                 budget -= w
                 moved += 1
-        if comm.allreduce(moved) == 0:
+        if int(_allreduce(comm, np.array([moved], dtype=np.int64))[0]) == 0:
             break
     return assign_unit, n_sweeps
 
@@ -862,7 +862,13 @@ def _partition_addon_body(mesh, region_marks, layers, tolerance, verbose, comm):
     # fault regions on every level, lifted to units: the faults asked for,
     # and every interior surface the levels already carry (placed or split
     # by an earlier call), so a second partition keeps those whole
-    marks = [np.asarray(region_marks(lev.dm), dtype=np.int32) for lev in levels]
+    # region_marks is the caller's, and collective (mark_polylines reconciles
+    # over the point star-forest), so it is an agreement point like the
+    # helpers: the collective-guard scan cannot see into it
+    marks = []
+    for lev in levels:
+        agree()
+        marks.append(np.asarray(region_marks(lev.dm), dtype=np.int32))
     n_asked = int(agreed_allreduce(
         comm, max((int(m.max()) for m in marks if m.size), default=0), op=MPI.MAX))
     glued = sorted(set().union(*agreed_allgather(
