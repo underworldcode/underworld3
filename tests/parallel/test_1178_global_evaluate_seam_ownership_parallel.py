@@ -161,3 +161,62 @@ def test_points_just_outside_keep_the_face_tolerance_answer_on_every_rank():
     assert worst < 4 * 3 * eps, f"worst error {worst:.2e} just outside the boundary"
     answers = uw.mpi.comm.allgather(values)
     assert all(np.array_equal(answers[0], a) for a in answers), "ranks disagree"
+
+
+TINY = 1.0e-6
+
+
+def _wavy(points):
+    """A field P1 does not represent exactly, on the tiny box's scale: an answer
+    from the wrong cell is off by order one, an answer from the containing cell
+    by |grad f| times the distance outside, a few times 1e-7 here."""
+    return np.sin(3.0 * points[:, 0] / TINY) * np.cos(2.0 * points[:, 1] / TINY)
+
+
+@pytest.mark.tier_b
+def test_points_just_outside_a_tiny_box_are_answered_by_the_cell_that_contains_them():
+    """On a quad box 1e-6 across, boundary vertices pushed 1.1e-14 and 3e-14
+    outside are contained, to rounding, by the cell beside them (the cell-wall
+    test, used for quads, hexes and 2-manifolds, accepts points a few times
+    1e-14 outside and rejects 1e-13), and take that cell's value:
+    within 1e-6 of the field at the vertex (field of order one). The rank boxes
+    are widened so that the rank holding that cell is asked about the point; a
+    widening of 1e-8 of the extent alone is 1e-14 here, below the cell-wall
+    test's rounding slab (a few times 1e-14 absolute), and the parallel review
+    desk measured answers up to 0.12 off on this box at np 2 to 4. Only the
+    pushed points some rank's cell contains are checked: the others are
+    contained by no cell and take the face-tolerance answer, which at this
+    scale is already about 0.1 off on development, and is not this test's."""
+    mesh = uw.meshing.StructuredQuadBox(elementRes=(12, 12), minCoords=(0.0, 0.0),
+                                        maxCoords=(TINY, TINY))
+    T = uw.discretisation.MeshVariable("TTinyQuad", mesh, 1, degree=1)
+    T.array[:, 0, 0] = _wavy(np.asarray(T.coords))
+
+    vertices = np.unique(np.concatenate(uw.mpi.comm.allgather(np.asarray(T.coords))), axis=0)
+    lo, hi = vertices.min(axis=0), vertices.max(axis=0)
+    pushed, nearest = [], []
+    for axis, side, sign in itertools.product(range(2), (lo, hi), (-1.0, 1.0)):
+        if (sign < 0) != (side is lo):
+            continue
+        on_wall = vertices[vertices[:, axis] == side[axis]]
+        other = 1 - axis
+        on_wall = on_wall[(on_wall[:, other] > lo[other]) & (on_wall[:, other] < hi[other])]
+        for distance in (1.1e-14, 3.0e-14):
+            points = on_wall.copy()
+            points[:, axis] += sign * distance
+            pushed.append(points)
+            nearest.append(on_wall)
+    pushed, nearest = np.concatenate(pushed), np.concatenate(nearest)
+    # The points some rank's cell contains to rounding: the ones the widened
+    # boxes must route to that rank. The others take the face-tolerance answer.
+    here = np.asarray(mesh._contained_in_local_cells(pushed), dtype=np.int32)
+    anywhere = np.zeros_like(here)
+    uw.mpi.comm.Allreduce(here, anywhere, op=MPI.MAX)
+    contained = anywhere.astype(bool)
+    assert contained.any(), "no pushed point is contained by any cell: the fixture misses"
+
+    values = np.asarray(uw.function.global_evaluate(T.sym, pushed)).reshape(-1)
+    worst = np.max(np.abs(values[contained] - _wavy(nearest[contained])))
+    assert worst < 1.0e-6, (
+        f"rank {uw.mpi.rank}: a point just outside the box is {worst:.3e} off the value "
+        f"of the cell beside it")
