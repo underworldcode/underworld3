@@ -10,6 +10,7 @@ import pytest
 import sympy
 
 import underworld3 as uw
+from _units_helpers import model_length
 
 pytestmark = [pytest.mark.level_1, pytest.mark.tier_b]
 
@@ -81,7 +82,7 @@ def test_the_mover_moves_nodes_and_remaps_in_a_units_model(units_model):
     T = uw.discretisation.MeshVariable("T0770m", mesh, 1, degree=1, units="K")
     start = _dm_coords(mesh)
     T.data[:, 0] = 0.3 + 0.2 * start[:, 0]
-    density = 1 + 24 * sympy.exp(-(((r - 0.9) / 0.06) ** 2))
+    density = 1 + 24 * sympy.exp(-(((r / model_length() - 0.9) / 0.06) ** 2))
     values = np.asarray(uw.function.evaluate(density, start))
     assert values.max() > 10.0      # the metric has a feature: a flat one moves nothing
     uw.meshing.node_redistribution(mesh, density, slip_surfaces=True, skip_threshold=None,

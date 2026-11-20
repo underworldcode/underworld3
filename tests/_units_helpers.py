@@ -18,3 +18,16 @@ def model_units(value, units):
         return value
     dimensionality = dict((1.0 * uw.units(units)).dimensionality)
     return uw.dimensionalise(value, target_dimensionality=dimensionality)
+
+
+def model_length():
+    """One model length, to divide a coordinate by inside a function argument.
+
+    In a model with reference quantities a coordinate carries length, so
+    ``sin(pi*x)`` is refused and is written ``sin(pi*x/L)`` (ruling, 2026-11-19);
+    with ``L = model_length()`` the argument has the value it had before. Without
+    reference quantities, 1.
+    """
+    if not uw.get_default_model().has_units():
+        return 1
+    return uw.expression(r"L_{\mathrm{model}}", model_units(1.0, "m"), "one model length")

@@ -137,6 +137,10 @@ def get_units(obj):
     return _get_units(obj)
 
 
+class MismatchedSumError(ValueError):
+    """A sum whose terms carry different dimensions (``T + W``, kelvin plus km)."""
+
+
 def compute_expression_units(expr):
     """
     Compute units for compound SymPy expressions using dimensional analysis.
@@ -357,13 +361,20 @@ def compute_expression_units(expr):
                 return None
 
         elif isinstance(expr, sympy.Add):
-            # Addition: all terms must have same units
-            # Return units of first non-dimensionless term
-            for arg in expr.args:
-                arg_units = compute_expression_units(arg)
-                if arg_units and not is_dimensionless_unit(arg_units):
-                    return arg_units
-            return None
+            return _common_units(expr.args, "sum")
+
+        # Functions that pass units through. Min, Max and Piecewise take the
+        # units their branches share (eta_min + Min(eta1, eta_max) is a
+        # viscosity); Abs and its kin keep their argument's units; sign and
+        # Heaviside are pure numbers (Heaviside(x - W)*eta is a viscosity).
+        elif type(expr).__name__ in ("Min", "Max"):
+            return _common_units(expr.args, type(expr).__name__)
+        elif isinstance(expr, sympy.Piecewise):
+            return _common_units([branch for branch, _condition in expr.args], "Piecewise")
+        elif type(expr).__name__ in ("Abs", "re", "im", "conjugate", "floor", "ceiling"):
+            return compute_expression_units(expr.args[0])
+        elif type(expr).__name__ in ("sign", "Heaviside"):
+            return uw.units.dimensionless
 
         elif hasattr(expr, "func"):
             # Function application (sin, cos, etc.) - usually dimensionless result
@@ -378,9 +389,113 @@ def compute_expression_units(expr):
 
         return None
 
+    except MismatchedSumError:
+        raise
     except Exception:
         # If anything fails, fall back to None
         return None
+
+
+
+def _common_units(terms, what):
+    """The units a sum's terms (or Min, Max or Piecewise's branches) share.
+
+    The terms share a dimension, and the whole has it. Terms that carry units
+    and reduce to dimensionless (T/T0 - 1, units cancelling) make it
+    dimensionless, and a term that carries no units at all (a plain named
+    parameter, a field without units) is a pure number beside them
+    (T/T0 + k). A sum of only terms that carry no units has none. A
+    dimensionless constant, in any form (a number, uw.quantity(0.5,
+    "dimensionless"), a non-dimensionalised value), may sit beside a
+    dimensional term and is read in model units. Two terms that depend on the
+    model (fields, coordinates) and carry different dimensions are refused,
+    naming them: T/T0 + T, eta0 + T.
+    """
+    import sympy
+    import underworld3 as uw
+    from underworld3.function.expressions import UWexpression
+
+    def is_dimensionless_unit(unit):
+        if unit is None:
+            return True
+        if hasattr(unit, "dimensionality"):
+            return len(unit.dimensionality) == 0
+        return str(unit) == "dimensionless"
+
+    def carries_units(term):
+        for atom in term.atoms(sympy.Symbol, sympy.Function):
+            if isinstance(atom, UWexpression) and atom.has_units:
+                return True
+            if getattr(atom, "_units", None) is not None or (
+                    getattr(type(atom), "units", None) is not None
+                    and not isinstance(atom, UWexpression)
+                    and getattr(atom, "units", None) is not None):
+                return True
+            owner = getattr(type(atom), "meshvar", None)
+            var = owner() if callable(owner) else owner
+            if var is not None and getattr(var, "units", None) is not None:
+                return True
+        return False
+
+    def constant(term):
+        # no coordinate and no field anywhere in it, named expressions included
+        from sympy.vector import BaseScalar
+        from underworld3.coordinates import UWCoordinate
+        seen, stack = set(), [term]
+        while stack:
+            e = stack.pop()
+            if isinstance(e, UWexpression):
+                if id(e) not in seen:
+                    seen.add(id(e))
+                    if isinstance(e.sym, sympy.Basic):
+                        stack.append(e.sym)
+                continue
+            if isinstance(e, (BaseScalar, UWCoordinate)) or hasattr(type(e), "meshvar"):
+                return False
+            if isinstance(e, sympy.Basic):
+                stack.extend(e.args)
+        return True
+
+    def named(term):
+        # a named expression prints its value: name it; a constant term
+        # prints as its number (not "--3.93")
+        if isinstance(term, UWexpression):
+            return str(term.name)
+        values = {}
+        for atom in term.atoms():
+            try:
+                values[atom] = sympy.Float(float(getattr(atom, "value")))
+            except (AttributeError, TypeError, ValueError):
+                continue            # not a constant with a numeric value
+        try:
+            return f"{float(term.xreplace(values)):.6g}"
+        except (TypeError, ValueError):
+            return str(term)
+
+    known = []
+    for term in terms:
+        units = compute_expression_units(term)
+        if units is None or (is_dimensionless_unit(units) and not term.is_Number
+                             and not carries_units(term)):
+            continue                # carries no units: a pure number beside the rest
+        known.append((term, units))
+    dimensional = [(a, u) for a, u in known if not is_dimensionless_unit(u)]
+    if not dimensional:
+        if not any(not a.is_Number for a, _ in known):
+            return None
+        return uw.units.dimensionless
+    first_term, first_units = dimensional[0]
+    first_dim = (1 * first_units).dimensionality
+    for term, units in known:
+        if is_dimensionless_unit(units) and constant(term):
+            continue                # a dimensionless constant: read in model units
+        if (1 * units).dimensionality != first_dim:
+            shown = units if not is_dimensionless_unit(units) else "no units (a pure number)"
+            raise MismatchedSumError(
+                f"a {what} of terms with different dimensions: {named(first_term)} is in "
+                f"{first_units} and {named(term)} is in {shown}. Every term needs the "
+                f"same dimension: give {named(term)} units of {first_units}.")
+    return first_units
 
 
 def get_mesh_coordinate_units(mesh_or_expr):

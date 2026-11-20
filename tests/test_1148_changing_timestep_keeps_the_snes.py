@@ -45,7 +45,7 @@ import pytest
 import sympy
 
 import underworld3 as uw
-from _units_helpers import model_units
+from _units_helpers import model_length, model_units
 
 pytestmark = [pytest.mark.level_2, pytest.mark.tier_b]
 
@@ -62,7 +62,7 @@ def _slcn(tag):
     x, y = mesh.X
     T = uw.discretisation.MeshVariable(f"T{tag}", mesh, 1, degree=2)
     V = uw.discretisation.MeshVariable(f"V{tag}", mesh, 2, degree=2)
-    T.array[:, 0, 0] = uw.function.evaluate(sympy.sin(sympy.pi * x) * sympy.sin(sympy.pi * y),
+    T.array[:, 0, 0] = uw.function.evaluate(sympy.sin(sympy.pi * x / model_length()) * sympy.sin(sympy.pi * y / model_length()),
                                             T.coords).reshape(-1)
     V.array[:, 0, :] = uw.function.evaluate(sympy.Matrix([[0.5 - y, x - 0.5]]),
                                             V.coords).reshape(-1, 2)
@@ -77,7 +77,7 @@ def _diffusion(tag):
     mesh = _box()
     x, y = mesh.X
     T = uw.discretisation.MeshVariable(f"T{tag}", mesh, 1, degree=2)
-    T.array[:, 0, 0] = uw.function.evaluate(sympy.sin(sympy.pi * x) * sympy.sin(sympy.pi * y),
+    T.array[:, 0, 0] = uw.function.evaluate(sympy.sin(sympy.pi * x / model_length()) * sympy.sin(sympy.pi * y / model_length()),
                                             T.coords).reshape(-1)
     s = uw.systems.Diffusion(mesh, u_Field=T, order=2, theta=1.0)
     s.constitutive_model = uw.constitutive_models.DiffusionModel
@@ -91,7 +91,7 @@ def _transient_darcy(tag):
     x, y = mesh.X
     h = uw.discretisation.MeshVariable(f"h{tag}", mesh, 1, degree=2)
     v = uw.discretisation.MeshVariable(f"v{tag}", mesh, 2, degree=1)
-    h.array[:, 0, 0] = uw.function.evaluate(sympy.sin(sympy.pi * x) * sympy.sin(sympy.pi * y),
+    h.array[:, 0, 0] = uw.function.evaluate(sympy.sin(sympy.pi * x / model_length()) * sympy.sin(sympy.pi * y / model_length()),
                                             h.coords).reshape(-1)
     s = uw.systems.TransientDarcy(mesh, h, v, order=1, theta=0.5)
     s.constitutive_model = uw.constitutive_models.DarcyFlowModel
@@ -218,7 +218,7 @@ def test_a_new_darcy_source_destroys_the_old_snes():
     s.constitutive_model = uw.constitutive_models.DarcyFlowModel
     s.constitutive_model.Parameters.permeability = model_units(1.0, "m**2")
     s.constitutive_model.Parameters.s = sympy.Matrix([0, 0]).T
-    s.f = sympy.sin(sympy.pi * x)
+    s.f = sympy.sin(sympy.pi * x / model_length())
     s.add_dirichlet_bc(0.0, "Bottom")
     s.add_dirichlet_bc(0.0, "Top")
     s.solve()

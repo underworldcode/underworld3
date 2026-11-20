@@ -217,19 +217,21 @@ where the density anomaly has a Gaussian spatial distribution.
 # Centered at lon=140°, lat=-34°, depth=200 km
 x, y, z = mesh.X
 
-# Convert center location to Cartesian
-# Use nondimensional depth (200 km / 1000 km = 0.2)
+# Convert center location to Cartesian. In a units model to_cartesian takes and
+# returns model lengths (200 km / 1000 km = 0.2), plain numbers; x, y and z are
+# lengths, so the centre is given its length: model lengths of L_0, the length
+# reference set above. (A dimensionless quantity beside a coordinate is refused
+# as ambiguous: model lengths, or metres?)
 depth_center = uw.quantity(200, "km")
-geo_center = geo.to_cartesian(140, -34, uw.non_dimensionalise(depth_center))
+L_0 = uw.expression(r"L_0", uw.quantity(1000, "km"), "the model's length reference")
+geo_center = [float(c) * L_0 for c in geo.to_cartesian(140, -34, uw.non_dimensionalise(depth_center))]
 
-# Distance from anomaly center (using nondimensional coords)
+# Squared distance from the anomaly centre, a length squared
 dist_sq = (x - geo_center[0])**2 + (y - geo_center[1])**2 + (z - geo_center[2])**2
 
-# Nondimensionalise the blob radius for the Gaussian
-blob_radius_nd = uw.non_dimensionalise(blob_radius)
-
-# Gaussian spatial variation (0 to 1)
-gaussian = sympy.exp(-dist_sq / (2 * blob_radius_nd**2))
+# Gaussian spatial variation (0 to 1): its argument is a length squared over a
+# length squared
+gaussian = sympy.exp(-dist_sq / (2 * blob_radius**2))
 
 # Body force = delta_rho * g * gaussian * unit_down
 # The expressions handle nondimensionalisation automatically
