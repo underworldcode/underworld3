@@ -1,3 +1,4 @@
+# WIP (#944): moved from docs/examples/utilities/intermediate/Convection-AdaptedMesh.py: needs an adapted-mesh checkpoint from the mmg remeshing examples.
 # %% [markdown]
 """
 # 🔬 Convection-AdaptedMesh

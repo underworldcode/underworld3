@@ -1,3 +1,4 @@
+# WIP (#944): moved from docs/examples/utilities/advanced/Ex_UsingCoordinates.py: native coordinate systems were removed in ee29df2a; the periodic native mesh fails its geometry check.
 # %% [markdown]
 """
 # 🎓 UsingCoordinates
