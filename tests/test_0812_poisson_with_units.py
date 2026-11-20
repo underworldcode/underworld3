@@ -139,16 +139,24 @@ def test_poisson_check_bc_values():
 
     mesh, T, _ = _setup_and_solve(L_x, L_y, T_bottom, T_top, gradient_variable=False)
 
+    # The extent of the whole mesh, and an evaluation every rank answers: under
+    # mpirun a rank's own nodes span only its part, and a rank-local evaluate
+    # does not answer a point another rank owns.
+    from mpi4py import MPI
     coords = np.asarray(mesh._coords)
-    x_mid = 0.5 * (coords[:, 0].min() + coords[:, 0].max())
-    y_min = coords[:, 1].min()
-    y_max = coords[:, 1].max()
+    local_lo = coords.min(axis=0) if len(coords) else np.full(2, np.inf)
+    local_hi = coords.max(axis=0) if len(coords) else np.full(2, -np.inf)
+    lo, hi = np.empty(2), np.empty(2)
+    uw.mpi.comm.Allreduce(np.ascontiguousarray(local_lo, dtype=float), lo, op=MPI.MIN)
+    uw.mpi.comm.Allreduce(np.ascontiguousarray(local_hi, dtype=float), hi, op=MPI.MAX)
+    x_mid = 0.5 * (lo[0] + hi[0])
+    y_min, y_max = lo[1], hi[1]
 
-    T_at_bottom = np.asarray(uw.function.evaluate(T.sym, np.array([[x_mid, y_min]])))
+    T_at_bottom = np.asarray(uw.function.global_evaluate(T.sym, np.array([[x_mid, y_min]])))
     # NOTE: a point exactly ON the top boundary is not claimed by
     # point-location (evaluate returns its 1e-18 sentinel), so probe one
     # part in 1e9 inside the domain.
-    T_at_top = np.asarray(uw.function.evaluate(T.sym, np.array([[x_mid, y_max * (1 - 1e-9)]])))
+    T_at_top = np.asarray(uw.function.global_evaluate(T.sym, np.array([[x_mid, y_max * (1 - 1e-9)]])))
 
     assert abs(T_at_bottom.ravel()[0] - 300.0) < 1.0, (
         f"Bottom BC not applied correctly: {T_at_bottom.ravel()[0]} != 300"
