@@ -170,7 +170,7 @@ TsVKT = build_analytic_fn_at_t(time=params.uw_dt)
 T = uw.discretisation.MeshVariable("T", mesh, 1, degree=params.uw_t_degree)
 
 # Velocity field (constant horizontal advection)
-v = sympy.Matrix([params.uw_velocity, 0])
+v = sympy.Matrix([[params.uw_velocity, 0]])  # a row, as mesh vectors are
 
 # Advection-diffusion solver
 adv_diff = uw.systems.AdvDiffusionSLCN(
@@ -192,7 +192,7 @@ adv_diff.add_dirichlet_bc(0.0, "Right")
 """
 
 # %%
-T.data[:, 0] = uw.function.evalf(Ts0, T.coords)
+T.array[:, 0, 0] = uw.function.evaluate(Ts0, T.coords)[:, 0, 0]
 
 # %% [markdown]
 """
@@ -201,7 +201,7 @@ T.data[:, 0] = uw.function.evalf(Ts0, T.coords)
 
 # %%
 # Estimate number of substeps
-dt_estimate = adv_diff.estimate_dt()[1]
+dt_estimate = adv_diff.estimate_dt()
 steps = int(params.uw_dt // (12 * dt_estimate))
 steps = max(steps, 1)
 

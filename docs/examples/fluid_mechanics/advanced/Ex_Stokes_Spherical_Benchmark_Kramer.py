@@ -293,9 +293,9 @@ if analytical:
 
 # %%
 norm_v = uw.discretisation.MeshVariable("N", mesh, mesh.dim, degree=pdegree, varsymbol=r"{\hat{n}}")
-norm_v.data[:, 0] = uw.function.evaluate(mesh.CoordinateSystem.unit_e_0[0], norm_v.coords)
-norm_v.data[:, 1] = uw.function.evaluate(mesh.CoordinateSystem.unit_e_0[1], norm_v.coords)
-norm_v.data[:, 2] = uw.function.evaluate(mesh.CoordinateSystem.unit_e_0[2], norm_v.coords)
+norm_v.array[:, 0, 0] = uw.function.evaluate(mesh.CoordinateSystem.unit_e_0[0], norm_v.coords)[:, 0, 0]
+norm_v.array[:, 0, 1] = uw.function.evaluate(mesh.CoordinateSystem.unit_e_0[1], norm_v.coords)[:, 0, 0]
+norm_v.array[:, 0, 2] = uw.function.evaluate(mesh.CoordinateSystem.unit_e_0[2], norm_v.coords)[:, 0, 0]
 
 # %% [markdown]
 """
@@ -323,7 +323,7 @@ if analytical:
     # TODO: Consider uw.synchronised_array_update() for multi-variable assignment
     def get_ana_soln(_var, _r_int, _soln_above, _soln_below):
         """Get analytical solution into mesh variables."""
-        r = uw.function.evalf(r_uw, _var.coords)
+        r = uw.function.evaluate(r_uw, _var.coords).squeeze()
         for i, coord in enumerate(_var.coords):
             if r[i] > _r_int:
                 _var.data[i] = _soln_above(coord)
@@ -537,7 +537,7 @@ if analytical:
     # TODO: Consider uw.synchronised_array_update() for multi-variable assignment
     def get_error(_var_err, _var_uw, _r_int, _soln_above, _soln_below):
         """Get error in numerical solution."""
-        r = uw.function.evalf(r_uw, _var_err.coords)
+        r = uw.function.evaluate(r_uw, _var_err.coords).squeeze()
         for i, coord in enumerate(_var_err.coords):
             if r[i] > _r_int:
                 _var_err.data[i] = _var_uw.data[i] - _soln_above(coord)

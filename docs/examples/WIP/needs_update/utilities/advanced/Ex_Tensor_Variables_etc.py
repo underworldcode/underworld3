@@ -1,3 +1,4 @@
+# WIP (#944): moved from docs/examples/utilities/advanced/Ex_Tensor_Variables_etc.py: uses t_soln without defining it, and the AdvDiffusionSwarm API.
 # %% [markdown]
 """
 # 🎓 Tensor Variables etc
@@ -133,13 +134,11 @@ import vtk
 
 pv.global_theme.background = "white"
 pv.global_theme.window_size = [750, 750]
-pv.global_theme.antialiasing = True
 pv.global_theme.jupyter_backend = "trame"
 pv.global_theme.smooth_shading = True
 
 
-meshbox.vtk("tmp_box.vtk")
-pvmesh = pv.read("tmp_box.vtk")
+pvmesh = uw.visualisation.mesh_to_pv_mesh(meshbox)
 
 points = np.zeros((swarm.data.shape[0], 3))
 points[:, 0] = swarm.data[:, 0]
@@ -250,7 +249,6 @@ if uw.mpi.size == 1 and ad.projection:
 
     pv.global_theme.background = "white"
     pv.global_theme.window_size = [750, 250]
-    pv.global_theme.antialiasing = True
     pv.global_theme.jupyter_backend = "trame"
     pv.global_theme.smooth_shading = True
 
@@ -308,7 +306,6 @@ def plot_T_mesh(filename):
 
         pv.global_theme.background = "white"
         pv.global_theme.window_size = [750, 750]
-        pv.global_theme.antialiasing = True
         pv.global_theme.jupyter_backend = "trame"
         pv.global_theme.smooth_shading = False
         pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
@@ -395,7 +392,7 @@ for step in range(0, 250):
 
     # update swarm / swarm variables
 
-    T1.data[:, 0] = uw.function.evaluate(t_soln.fn, swarm._particle_coordinates.data)
+    T1.array[:, 0, 0] = uw.function.evaluate(t_soln.fn, swarm._particle_coordinates.data)[:, 0, 0]
 
     # advect swarm
     swarm.advection(v_soln.fn, delta_t)
@@ -437,7 +434,6 @@ if uw.mpi.size == 1:
 
     pv.global_theme.background = "white"
     pv.global_theme.window_size = [750, 750]
-    pv.global_theme.antialiasing = True
     pv.global_theme.jupyter_backend = "trame"
     pv.global_theme.smooth_shading = True
 

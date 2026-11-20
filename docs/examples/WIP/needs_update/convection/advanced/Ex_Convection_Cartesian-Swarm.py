@@ -1,3 +1,4 @@
+# WIP (#944): moved from docs/examples/convection/advanced/Ex_Convection_Cartesian-Swarm.py: written for the AdvDiffusionSwarm projection API, which is gone.
 # %% [markdown]
 """
 # 🎓 Convection Cartesian-Swarm
@@ -96,7 +97,6 @@ swarm.populate(fill_param=5)
 # +
 ad = uw.systems.AdvDiffusionSLCN(meshbox, t_soln, T1.sym, order=3)
 
-ad._u_star_projector.smoothing = 0.0
 
 ad.add_dirichlet_bc(1.0, "Bottom")
 ad.add_dirichlet_bc(0.0, "Top")
@@ -118,8 +118,6 @@ stokes = Stokes(
                 meshbox,
                 velocityField=v_soln,
                 pressureField=p_soln,
-                u_degree=v_soln.degree,
-                p_degree=p_soln.degree,
                 verbose=False)
 
 # Set solve options here (or remove default values
@@ -127,8 +125,8 @@ stokes = Stokes(
 stokes.petsc_options.delValue("ksp_monitor")
 
 # Constant visc
-stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel(meshbox.dim)
-stokes.constitutive_model.Parameters.viscosity = 1
+stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
+stokes.constitutive_model.Parameters.shear_viscosity_0 = 1
 
 # Velocity boundary conditions
 stokes.add_dirichlet_bc((0.0), "Left", (0))
@@ -138,8 +136,8 @@ stokes.add_dirichlet_bc((None, 0.0), "Bottom")
 
 
 # +
-buoyancy_force = 1.0e6 * t_soln.fn
-stokes.bodyforce = meshbox.N.j * buoyancy_force
+buoyancy_force = 1.0e6 * t_soln.sym[0]
+stokes.bodyforce = sympy.Matrix([[0, buoyancy_force]])
 
 # check the stokes solve is set up and that it converges
 stokes.solve()
@@ -252,7 +250,7 @@ for step in range(0, 2): #250
 
     # update swarm / swarm variables
 
-    T1.data[:, 0] = uw.function.evaluate(t_soln.fn, swarm._particle_coordinates.data)
+    T1.array[:, 0, 0] = uw.function.evaluate(t_soln.fn, swarm._particle_coordinates.data)[:, 0, 0]
 
     # advect swarm
     swarm.advection(v_soln.fn, delta_t)

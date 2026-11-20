@@ -9829,6 +9829,20 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                     f"{pressureField.degree}, but degree={degree} asks for a pressure "
                     f"of degree {degree - 1} beside the velocity created here. "
                     f"{advice}, or pass both fields (#844).")
+        # A P1 velocity on simplices is refused, on either path (ruling,
+        # 2026-11-15): it pairs stably with no pressure offered here. Q1 on
+        # quads is not refused. The verdict is reduced, so every rank raises.
+        u_degree = velocityField.degree if velocityField is not None else degree
+        from mpi4py import MPI as _MPI
+        p1_on_simplices = bool(uw.mpi.comm.allreduce(
+            int(bool(self.mesh.isSimplex) and u_degree == 1), op=_MPI.MAX))
+        if p1_on_simplices:
+            raise ValueError(
+                f"{type(self).__name__}: a velocity of degree 1 on a simplex mesh is "
+                f"refused (ruling, 2026-11-15: degree=1 is an incomplete "
+                f"specification there). A P1 velocity on triangles or tetrahedra "
+                f"pairs stably with no pressure offered here. Use degree=2, the "
+                f"P2/P1 Taylor-Hood pair, or a quadrilateral mesh for Q1.")
         if velocityField is None or pressureField is None:
 
             # Note, ensure names are unique for each solver type

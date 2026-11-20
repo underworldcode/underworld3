@@ -1,3 +1,4 @@
+# WIP (#944): moved from docs/examples/solid_mechanics/advanced/Ex_Sheared_Layer_Visualisation.py: reads swarms with Swarm.load, which is gone.
 # %% [markdown]
 """
 # 🎓 Sheared Layer Visualisation
@@ -116,8 +117,7 @@ strain_rate_inv2_p.read_from_vertex_checkpoint(f"{basename}.eps_p.{step}.h5", "e
 strain_p.read_from_vertex_checkpoint(f"{basename}.proxy.Strain.{step}.h5", "proxy_Strain")
 
 # +
-mesh1.vtk("tmp_shear_inclusion.vtk")
-pvmesh = pv.read("tmp_shear_inclusion.vtk")
+pvmesh = uw.visualisation.mesh_to_pv_mesh(mesh1)
 
 pvpoints = pvmesh.points[:, 0:2]
 usol = v_soln.rbf_interpolate(pvpoints)

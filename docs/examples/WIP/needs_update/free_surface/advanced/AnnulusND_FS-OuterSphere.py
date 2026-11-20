@@ -1,3 +1,4 @@
+# WIP (#944): moved from docs/examples/free_surface/advanced/AnnulusND_FS-OuterSphere.py: uses FSSA with the factory boundary normals on a deformed mesh, which the library refuses.
 # %% [markdown]
 """
 # 🎓 AnnulusND FS-OuterSphere
@@ -69,11 +70,11 @@ layer_fn = sympy.Piecewise(
     (0, True)
 )
 
-M.data[:,0] = uw.function.evalf(layer_fn, M.coords)
+M.array[:, 0, 0] = uw.function.evaluate(layer_fn, M.coords)[:, 0, 0]
 
-R0.data[:,0] = uw.function.evalf(r, R0.coords)
+R0.array[:, 0, 0] = uw.function.evaluate(r, R0.coords)[:, 0, 0]
 
-R0c.data[:,0] = uw.function.evalf(r, R0c.coords)
+R0c.array[:, 0, 0] = uw.function.evaluate(r, R0c.coords)[:, 0, 0]
 
 
 
@@ -88,9 +89,9 @@ diffuser = uw.systems.Poisson(mesh, Vr)
 diffuser.constitutive_model = uw.constitutive_models.DiffusionModel
 diffuser.constitutive_model.Parameters.diffusivity = 1
 
-diffuser.add_essential_bc((0), mesh.boundaries.Upper.name)
-diffuser.add_essential_bc((deform_fn), mesh.boundaries.Internal.name)
-diffuser.add_essential_bc((0), mesh.boundaries.Lower.name)
+diffuser.add_essential_bc((0,), mesh.boundaries.Upper.name)
+diffuser.add_essential_bc((deform_fn,), mesh.boundaries.Internal.name)
+diffuser.add_essential_bc((0,), mesh.boundaries.Lower.name)
 
 diffuser.tolerance = 1.0e-3
 
@@ -99,8 +100,8 @@ diffuser.solve()
 # %%
 ## Now deform the mesh using this smooth field
 
-displacement = uw.function.evalf(Vr.sym * mesh.CoordinateSystem.unit_e_0 , mesh.X.coords)
-mesh._deform_mesh(mesh.X.coords + displacement)
+displacement = uw.function.evaluate(Vr.sym * mesh.CoordinateSystem.unit_e_0 , mesh.X.coords).squeeze()
+mesh.deform(mesh.X.coords + displacement)
 
 
 # %%
@@ -160,9 +161,9 @@ stokes.solve()
 # %%
 ## From now on, use V_r to drive deformation. Again, create a smooth, continuous field
 diffuser.reset.all()
-diffuser.add_essential_bc((0), mesh.boundaries.Upper.name)
+diffuser.add_essential_bc((0,), mesh.boundaries.Upper.name)
 diffuser.add_essential_bc(v.sym.dot(mesh.CoordinateSystem.unit_e_0), mesh.boundaries.Internal.name)
-diffuser.add_essential_bc((0), mesh.boundaries.Lower.name)
+diffuser.add_essential_bc((0,), mesh.boundaries.Lower.name)
 diffuser.solve()
 
 # %%
@@ -225,17 +226,17 @@ if uw.mpi.size == 1:
 for step in range(0,100):
         
     diffuser.reset.all()
-    diffuser.add_essential_bc((0), mesh.boundaries.Upper.name)
+    diffuser.add_essential_bc((0,), mesh.boundaries.Upper.name)
     diffuser.add_essential_bc(v.sym.dot(mesh.CoordinateSystem.unit_e_0), mesh.boundaries.Internal.name)
-    diffuser.add_essential_bc((0), mesh.boundaries.Lower.name)
+    diffuser.add_essential_bc((0,), mesh.boundaries.Lower.name)
     diffuser.solve(zero_init_guess=False)
     
     # delta_t.value = stokes.estimate_dt()
-    displacement = delta_t.value * uw.function.evalf(Vr.sym * mesh.CoordinateSystem.unit_e_0 , mesh.X.coords)
+    displacement = delta_t.value * uw.function.evaluate(Vr.sym * mesh.CoordinateSystem.unit_e_0 , mesh.X.coords).squeeze()
 
     print(f"Displacement - Amplitude: {np.abs(displacement).max()}")
 
-    mesh._deform_mesh(mesh.X.coords + displacement)
+    mesh.deform(mesh.X.coords + displacement)
     
     stokes.solve(zero_init_guess=False)
 
