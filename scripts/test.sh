@@ -421,6 +421,8 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   batch 3 tests/parallel/test_1154_stokes_active_region_refused_parallel.py
   # So is a constrained Stokes solve with a discontinuous pressure (#1167).
   batch 3 tests/parallel/test_1167_constrained_stokes_discontinuous_pressure_parallel.py
+  # So are a solver's scoped resets, the same on every rank (#1169).
+  batch 3 tests/parallel/test_1169_solver_reset_scopes_parallel.py
   # So is #1123's sheared mesh: every inside point owned at any rank count, exact serially.
   batch 3 tests/parallel/test_1123_exact_locator_parallel.py
   # So are the contained points the walk misses on that mesh, found by the exact fallback (#1183).

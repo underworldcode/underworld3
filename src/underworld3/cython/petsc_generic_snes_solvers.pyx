@@ -486,6 +486,80 @@ def _drop_solver_options(prefix, token):
         pass
 
 
+class SolverReset:
+    """Scoped resets of a solver (``solver.reset``).
+
+    Each scope clears exactly what it names, is idempotent, and changes only
+    Python state that is the same on every rank, so it is safe to call on every
+    rank (a rank without cells included) and takes no collective. The solver's
+    CONFIGURATION is never reset by any scope: its constitutive model and
+    parameters, tolerances, PETSc options, preconditioner choice and nullspace
+    settings stay. Fields keep their values.
+
+    Scopes (``scopes`` lists the ones this solver has):
+
+    ``conditions``
+        Every registered boundary condition: essential, natural (Nitsche
+        included), rotated free slip and, on the Stokes family, the constraint
+        conditions with their multipliers. The discretisation is rebuilt on the
+        next solve, since the conditions are compiled into it.
+    ``nullspace`` (Stokes family)
+        The nullspace objects built on the current discretisation's numbering;
+        they are rebuilt from the nullspace settings on the next solve.
+    ``discretisation``
+        The DM, its hierarchy and the SNES; rebuilt on the next solve. The
+        registered conditions are kept.
+    ``all``
+        All of the above: a new boundary-value problem on the same solver and
+        fields.
+    """
+
+    def __init__(self, solver):
+        self._solver = solver
+
+    @property
+    def scopes(self):
+        """The names of the scopes this solver has, ``all`` last."""
+        names = ["conditions", "discretisation"]
+        if hasattr(self._solver, "_reset_stokes_nullspace"):
+            names.insert(1, "nullspace")
+        return tuple(names + ["all"])
+
+    def conditions(self):
+        """Forget every registered boundary condition (see the class docstring)."""
+        s = self._solver
+        s.essential_bcs = []
+        s.natural_bcs = []
+        if getattr(s, "_rotated_freeslip_bcs", None):
+            s._rotated_freeslip_bcs = []
+        if getattr(s, "_block_constraint_bcs", None):
+            for h in s._multipliers:
+                s.fields.pop(getattr(h, "_solver_field_name", None), None)
+            s._multipliers = []
+            s._multiplier_screening = []
+            s._block_constraint_bcs = []
+            s._needs_function_rewire = True
+        # the conditions are compiled into the discretisation
+        s._reset_discretisation()
+
+    def nullspace(self):
+        """Forget the built nullspace objects (Stokes family; no-op elsewhere)."""
+        s = self._solver
+        if hasattr(s, "_reset_stokes_nullspace"):
+            s._reset_stokes_nullspace()
+            s.is_setup = False
+
+    def discretisation(self):
+        """Drop the DM, its hierarchy and the SNES; keep the conditions."""
+        self._solver._reset_discretisation()
+
+    def all(self):
+        """A new boundary-value problem: conditions, nullspace and discretisation."""
+        self.conditions()
+        self.nullspace()
+        self.discretisation()
+
+
 class SolverBaseClass(uw_object):
     r"""
     The Generic `Solver` is used to build the `SNES Solvers`
@@ -3565,11 +3639,31 @@ class SolverBaseClass(uw_object):
             from underworld3.utilities.rotated_bc import _destroy_rotated_linear_cache
             _destroy_rotated_linear_cache(cache)
 
-    def _reset(self):
+    @property
+    def reset(self):
+        """Scoped resets of this solver: ``solver.reset.conditions()``,
+        ``.nullspace()`` (Stokes family), ``.discretisation()`` and ``.all()``.
+        ``solver.reset.scopes`` lists them. See :class:`SolverReset`."""
+        return SolverReset(self)
 
+    def _reset(self):
+        """Deprecated: use ``solver.reset.all()`` (or a narrower scope).
+
+        Kept as an alias of ``reset.all()``: what its callers mean, a new
+        boundary-value problem on the same solver and fields. It used to clear
+        only the essential and natural conditions and the discretisation, and
+        kept the rotated and constraint conditions and the Stokes nullspace
+        objects of the problem it tore down (#1169)."""
+        import warnings
+        warnings.warn(
+            "solver._reset() is deprecated: use solver.reset.all() to pose a new "
+            "problem, or a narrower scope (solver.reset.scopes lists them)",
+            FutureWarning, stacklevel=2)
+        self.reset.all()
+
+    def _reset_discretisation(self):
+        """Drop the DM, its hierarchy and the SNES; the next solve rebuilds them."""
         self._reset_rotated_solver_cache()
-        self.natural_bcs = []
-        self.essential_bcs = []
         # A teardown means the next solve is a different discrete problem: a resume
         # anchor from the old problem's ||F0|| must not survive into it.
         self._resume_abs_target = None
@@ -3583,15 +3677,28 @@ class SolverBaseClass(uw_object):
             self.snes = None
 
         if self.dm is not None:
+            # The field split's index sets and sub-DMs are the old DM's.
+            for is_set, subdm in (getattr(self, "_subdict", None) or {}).values():
+                is_set.destroy()
+                subdm.destroy()
+            self._subdict = {}
+
             for coarse_dm in self.dm_hierarchy:
                 coarse_dm.destroy()
 
             self.dm = None
             self.dm_hierarchy = [None]
 
-        self.is_setup = False
+        # The nullspace objects are numbered on the DM just dropped. _build forgets
+        # them only when it finds a DM to tear down, which after this it does not,
+        # so a solve through conditions() or discretisation() used them on the new
+        # numbering: #1169 again (reason -6, PETSc error 75, a hang at np 3).
+        if hasattr(self, "_reset_stokes_nullspace"):
+            self._reset_stokes_nullspace()
+        if hasattr(self, "_constant_nullspace_obj"):
+            self._constant_nullspace_obj = None
 
-        return
+        self.is_setup = False
 
     @property
     def solve_report(self):
