@@ -598,6 +598,58 @@ if [ $PARALLEL_RANKS -gt 0 ] && shard_owns 4; then
         "${PARALLEL_FILES[@]:i:PARALLEL_BATCH}" || status=1
     done
 
+    # The always-on runs at three and four ranks are shard 6's (below): on a
+    # two-core runner they are oversubscribed and took 20 of shard 4's 68
+    # minutes, which put it at its time limit.
+
+    # Further passes at three and four ranks, because two is a special case:
+    # the failure this suite exists to catch is a collective entered by some
+    # ranks and not others, and with two ranks the mismatched pair often still
+    # meets. Both #609's conditional collective and #611 passed at np=2 and
+    # hung at np=4. Three adds an odd, uneven split: #1087 passed at np 2 and
+    # 4 and failed at np 3.
+    #
+    # Opt-in via --full-parallel. A CI runner has two cores, so these are
+    # oversubscribed there; they belong in a nightly or a separate job (#573).
+    if [ $FULL_PARALLEL -eq 1 ]; then
+      for ranks in "${FULL_PARALLEL_RANKS[@]}"; do
+        [ "$ranks" -eq "$PARALLEL_RANKS" ] && continue
+        echo "Testing the same set at $ranks ranks..."
+        for ((i = 0; i < ${#PARALLEL_FILES[@]}; i += PARALLEL_BATCH)); do
+          $SUPERVISE mpirun -n $ranks python -m pytest --with-mpi \
+            "${PARALLEL_FILES[@]:i:PARALLEL_BATCH}" || status=1
+        done
+      done
+    fi
+
+    echo "Parallel tests complete"
+    echo "=========================================="
+  else
+    echo "⚠️  Warning: --p $PARALLEL_RANKS specified but mpirun not available"
+    echo "⚠️  Skipping parallel tests"
+  fi
+elif [ $PARALLEL_RANKS -gt 0 ]; then
+  # --p N was given, but this shard does not own the mpirun phase. Say which
+  # one does, so a reader of one shard's log does not conclude the parallel
+  # tests were skipped for the whole run.
+  echo ""
+  echo "Parallel tests belong to shard 4 (and the always-on np 3 and np 4 runs to shard 6); this is shard $SHARD."
+else
+  echo ""
+  echo "⚠️  Skipping parallel tests (use --p N to enable)"
+fi
+
+# The always-on runs at three and four ranks: the files whose case needs a rank
+# with no cells, an odd split or a rank holding none of a boundary's faces, so
+# they run at that rank count on every run. They belong to shard 6, which had
+# 4 minutes of work, so that shard 4 (the np 2 parallel batches and most serial
+# batches) stays clear of its time limit.
+if [ $PARALLEL_RANKS -gt 0 ] && shard_owns 6 && command -v mpirun &> /dev/null; then
+    echo ""
+    echo "=========================================="
+    echo "Running the always-on parallel runs at 3 and 4 ranks"
+    echo "=========================================="
+    SUPERVISE="python $(dirname "$0")/mpi_supervisor.py --silence ${PARALLEL_SILENCE:-300} --"
     # Three ranks exercise a process owning no prescribed-wall groups. The np 3
     # pass below is opt-in (--full-parallel), so this one file runs at np 3 always.
     # (The variable lets Open MPI start three ranks on a two-slot host; MPICH ignores it.)
@@ -666,41 +718,6 @@ if [ $PARALLEL_RANKS -gt 0 ] && shard_owns 4; then
     OMPI_MCA_rmaps_base_oversubscribe=1 $SUPERVISE mpirun -n 4 python -m pytest --with-mpi \
       tests/parallel/test_1097_outcropping_ribbon_partitioned_parallel.py || status=1
 
-    # Further passes at three and four ranks, because two is a special case:
-    # the failure this suite exists to catch is a collective entered by some
-    # ranks and not others, and with two ranks the mismatched pair often still
-    # meets. Both #609's conditional collective and #611 passed at np=2 and
-    # hung at np=4. Three adds an odd, uneven split: #1087 passed at np 2 and
-    # 4 and failed at np 3.
-    #
-    # Opt-in via --full-parallel. A CI runner has two cores, so these are
-    # oversubscribed there; they belong in a nightly or a separate job (#573).
-    if [ $FULL_PARALLEL -eq 1 ]; then
-      for ranks in "${FULL_PARALLEL_RANKS[@]}"; do
-        [ "$ranks" -eq "$PARALLEL_RANKS" ] && continue
-        echo "Testing the same set at $ranks ranks..."
-        for ((i = 0; i < ${#PARALLEL_FILES[@]}; i += PARALLEL_BATCH)); do
-          $SUPERVISE mpirun -n $ranks python -m pytest --with-mpi \
-            "${PARALLEL_FILES[@]:i:PARALLEL_BATCH}" || status=1
-        done
-      done
-    fi
-
-    echo "Parallel tests complete"
-    echo "=========================================="
-  else
-    echo "⚠️  Warning: --p $PARALLEL_RANKS specified but mpirun not available"
-    echo "⚠️  Skipping parallel tests"
-  fi
-elif [ $PARALLEL_RANKS -gt 0 ]; then
-  # --p N was given, but this shard does not own the mpirun phase. Say which
-  # one does, so a reader of one shard's log does not conclude the parallel
-  # tests were skipped for the whole run.
-  echo ""
-  echo "Parallel tests belong to shard 4; this is shard $SHARD."
-else
-  echo ""
-  echo "⚠️  Skipping parallel tests (use --p N to enable)"
 fi
 
 #
