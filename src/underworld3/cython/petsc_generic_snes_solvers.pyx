@@ -12395,10 +12395,10 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         Note (scatter-back): PetscSection constraints remove DOFs from the GLOBAL
         section only; the LOCAL section still allocates them. The multiplier IS is
-        built with ``unconstrained=False`` and (for a scalar ``h``, 1 dof/point)
-        appends the local offset of every h-bearing point regardless of
-        constraint, so the copy back into the full-domain ``h`` MeshVariable is
-        size-correct without change.
+        built with ``unconstrained=False`` and takes every dof of every h-bearing
+        point (two on each edge for a P3 ``h``), constrained or not, so the copy
+        back into the full-domain ``h`` MeshVariable is size-correct without
+        change.
 
         Why this is lossless (and why disabling it is NOT a "more accurate"
         reference). The interior ``h`` rows are the screening block alone,
