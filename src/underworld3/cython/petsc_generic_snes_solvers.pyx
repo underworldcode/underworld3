@@ -6635,6 +6635,12 @@ class SolverBaseClass(uw_object):
         cdef DM _time_dm
         if not (self._rotated_freeslip_bcs or self._fault_contact_faults):
             return False
+        # every solver's rotated path passes here (a vector projection with a
+        # law included); the check reads registrations only, the same on every
+        # rank (#940)
+        from underworld3.utilities.fault_contact import (
+            refuse_essential_conditions_on_law_faults)
+        refuse_essential_conditions_on_law_faults(self)
         # Rotated strong free-slip: delegate to the rotated_bc module (per-node DOF
         # rotation + strong v_n=0 + reaction=sigma_nn). Handles the whole assemble/
         # solve/rotate-back/gauge-removal; stashes info for boundary_normal_traction.
@@ -13879,7 +13885,10 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         self._reject_mixed_constraint_mechanisms("solve")
         # a split fault this solver neither ties nor constrains is an open
         # crack: said, not refused (#1099)
-        from underworld3.utilities.fault_contact import warn_unpaired_split_faults
+        from underworld3.utilities.fault_contact import (
+            refuse_essential_conditions_on_law_faults, warn_unpaired_split_faults)
+        # a law and an essential condition on one fault: refused (#940)
+        refuse_essential_conditions_on_law_faults(self)
         warn_unpaired_split_faults(self)
 
         _check_homotopy_value(homotopy)
