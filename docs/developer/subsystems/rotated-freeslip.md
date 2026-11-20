@@ -108,6 +108,47 @@ surface rather than the mesh — a coarse spherical shell where faceting, not th
 gauge, is the dominant error — and be aware that the pressure gauge is then only
 as good as the numbers above.
 
+**A curved given normal on a closed domain adds a constraint (#1168).** When the
+normal velocity is fixed on the whole boundary (every exterior wall is a rotated
+free-slip wall, or has an essential condition on every velocity component), the
+continuity row tested with a constant pressure is a sum, over the boundary, of the
+facet-weighted normal flux. With the default normal that sum is exactly the
+constraint already imposed, and nothing is added. With a given normal that varies
+along a faceted wall, each wall node's given normal differs slightly from its
+facet-weighted one, so the same row holds a weighted sum of the wall *slip* fixed,
+with the mean pressure as its multiplier. The continuous problem has no such
+constraint. The weights shrink like $h^2$, but their pattern along the wall
+does not, so any slip that lines up with that pattern is removed at every
+resolution. At a wall node of a circle the weight is
+$(|f_1|^2 - |f_2|^2)/12R$, for the lengths of the two facets that meet there, so
+it vanishes where the facets are equal: `Annulus` and `SphericalShell` walls as
+built are unaffected, which is why the shell and annulus cases above are. Once
+the wall nodes slide along the wall (a mesh mover with slip, adaptation, a free
+surface) the facets are unequal and the circle is affected too (below). On a
+wall that is not a circle it can be ruinous. A manufactured Stokes solution on an elliptical
+annulus (outer semi-axes 1.5 and 1, inner circle 0.5; free slip exact on both
+walls, slip odd in x and y), relative L2 velocity error:
+
+| condition | cell 0.1 | cell 0.05 | cell 0.025 |
+|---|---:|---:|---:|
+| exact velocity imposed (control) | 3.1e-3 | 4.3e-4 | 5.6e-5 (rate 2.9) |
+| rotated, default normal | 5.7e-3 | 1.25e-3 | 3.0e-4 (rate 2.1) |
+| rotated, `normal=` the exact ellipse normal | 63 % | 66 % | 67 % |
+
+With the given normal the mean pressure grows like $1/h^2$ (−2.6e4, −1.1e5,
+−4.5e5). The same on an annulus, radii 0.5 and 1, with free slip exact on both
+walls and a slip like $\sin 2\theta$:
+
+| mesh | condition | cell 0.1 | cell 0.05 | cell 0.025 |
+|---|---|---:|---:|---:|
+| as built | default normal, or `normal=` $\mathbf{x}/|\mathbf{x}|$ (identical) | 1.45e-2 | 2.48e-3 | 3.82e-4 |
+| wall nodes slid along the circles | default normal | 1.44e-2 | 2.61e-3 | 5.31e-4 |
+| wall nodes slid along the circles | `normal=` $\mathbf{x}/|\mathbf{x}|$ | 32 % | 34 % | 34 % |
+ The solve reports this case with a warning naming the extra constraint;
+it does not change it. Until the given normal is separated from the constraint
+direction, use `normal=None` on a closed domain unless the given normal is needed
+for an exact rigid-rotation null mode (the shell gauge above).
+
 In parallel both normals constrain the same wall nodes. Each boundary facet is
 labelled on one rank, so a rank can own a wall node whose facets all sit on
 neighbours. The geometric path finds it by summing the facet normals over the
@@ -463,7 +504,14 @@ faceting is the only reason it could fail it (`_declared_mode_flags`):
 A deformed wall fails the last check, a free surface after its first step for
 example, or a cut that puts chord vertices on a wall. The modes then take the
 constraint test like undeclared ones, and the solve warns once, naming the wall
-and the spread of its vertices. The verdict, the same for every mode, is in the
+and the spread of its vertices. The warning also says that the answer may carry a
+rigid rotation. A mesh moved rigidly (translated by `mesh.deform`) still declares
+its rotation about the old centre. The rotation it then carries is not a round-off
+effect: an annulus shifted by 1e-3 carried 0.60 of its v_rms as a rigid rotation
+about the new centre under the custom FMG, and 0.030 under GAMG, with the solve
+reporting converged (serial, #969). The warning tells the user to declare it about
+the new one through `mesh.nullspace_rotations`. The library does not fit a centre
+to the moved walls (#969, ruled 2026-11-12). The verdict, the same for every mode, is in the
 solve's `declared_modes_exempt` entry; which modes were admitted is in
 `rotation_gauge`. Past the 1e-9 threshold the answer changes sharply: a rotation
 that is only near-null is not removed, and the answer carries a poorly

@@ -100,16 +100,16 @@ diffuser = uw.systems.Poisson(mesh, M)
 diffuser.constitutive_model = uw.constitutive_models.DiffusionModel
 diffuser.constitutive_model.Parameters.diffusivity = 100
 
-diffuser.add_essential_bc((deform_fn), mesh.boundaries.Upper.name)
-diffuser.add_essential_bc((0), mesh.boundaries.Lower.name)
+diffuser.add_essential_bc((deform_fn,), mesh.boundaries.Upper.name)
+diffuser.add_essential_bc((0,), mesh.boundaries.Lower.name)
 diffuser.solve()
 
 # %%
 ## Now deform the mesh using this smooth field
 
-displacement = uw.function.evalf(M.sym * mesh.CoordinateSystem.unit_e_0, mesh.X.coords)
-# mesh._deform_mesh(mesh.X.coords + displacement)
-mesh.X.coords = mesh.X.coords + displacement
+displacement = uw.function.evaluate(M.sym * mesh.CoordinateSystem.unit_e_0, mesh.X.coords).squeeze()
+# mesh.deform(mesh.X.coords + displacement)
+mesh.deform(mesh.X.coords + displacement)
 
 
 # %%
@@ -161,9 +161,9 @@ stokes.solve()
 ## From now on, use V_r to drive deformation. Again, create a smooth, continuous field
 diffuser.reset.all()
 diffuser.add_essential_bc(
-    (v.sym.dot(mesh.CoordinateSystem.unit_e_0)), mesh.boundaries.Upper.name
+    (v.sym.dot(mesh.CoordinateSystem.unit_e_0),), mesh.boundaries.Upper.name
 )
-diffuser.add_essential_bc((0), mesh.boundaries.Lower.name)
+diffuser.add_essential_bc((0,), mesh.boundaries.Lower.name)
 diffuser.solve()
 
 # %%
@@ -228,18 +228,18 @@ for step in range(0, 100):
 
     diffuser.reset.all()
     diffuser.add_essential_bc(
-        (v.sym.dot(mesh.CoordinateSystem.unit_e_0)), mesh.boundaries.Upper.name
+        (v.sym.dot(mesh.CoordinateSystem.unit_e_0),), mesh.boundaries.Upper.name
     )
-    diffuser.add_essential_bc((0), mesh.boundaries.Lower.name)
+    diffuser.add_essential_bc((0,), mesh.boundaries.Lower.name)
     diffuser.solve(zero_init_guess=False)
     # delta_t.value = stokes.estimate_dt()
-    displacement = delta_t.value * uw.function.evalf(
+    displacement = delta_t.value * uw.function.evaluate(
         M.sym * mesh.CoordinateSystem.unit_e_0, mesh.X.coords
-    )
+    ).squeeze()
 
     print(f"Displacement - Amplitude: {np.abs(displacement).max()}")
 
-    mesh._deform_mesh(mesh.X.coords + displacement)
+    mesh.deform(mesh.X.coords + displacement)
 
     stokes.solve(zero_init_guess=False)
 

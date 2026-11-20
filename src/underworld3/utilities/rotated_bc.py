@@ -383,87 +383,51 @@ def _sum_node_vectors_across_ranks(solver, contribs):
 
     Each boundary facet is labelled on exactly one rank, and on the rank that owns it
     (measured: no facet is labelled twice and none is labelled away from its owner), so
-    a plain ADD is exact and needs no de-duplication. The velocity field already has
-    ``dim`` DOFs at exactly these points, so the sum rides the DM's own local↔global
-    scatter: ADD into the global vector accumulates the ghost copies onto the owner,
-    and scattering back gives every rank the identical total.
+    a plain ADD is exact and needs no de-duplication.
+
+    The sum rides the DM's point star forest, ``dim`` doubles per point: each rank's
+    contributions are reduced onto the point's owner and the total is broadcast back
+    to every copy. It used to ride the velocity field's local-to-global scatter, which
+    carries no DOF an essential condition constrains: at a node where a rotated wall
+    meets a wall pinning one component, that component kept each rank's own
+    contribution, zero on a rank holding none of the node's facets. The normal there
+    then depended on the partition (#941), and so did the traction read at the node
+    and, since #939, the value the corner's reduced constraint takes from the pinned
+    part of the normal. Every component is summed now.
 
     COLLECTIVE — a rank owning no facet of this boundary still takes part.
     """
+    from mpi4py import MPI
+
     dm = solver.dm
     dim = solver.mesh.cdim
     if dm.comm.getSize() == 1:
         return contribs
 
-    lsec = dm.getLocalSection()
-    lvec = dm.getLocalVec()
-    gvec = dm.getGlobalVec()
+    pStart, pEnd = dm.getChart()
+    local = np.zeros((pEnd - pStart, dim))
+    for q, v in contribs.items():
+        local[q - pStart] = v
+    total = local.copy()
+    sf = dm.getPointSF()
+    unit = MPI.DOUBLE.Create_contiguous(dim)
+    unit.Commit()
     try:
-        lvec.set(0.0)
-        larr = lvec.getArray()
-        for q, v in contribs.items():
-            lo = lsec.getFieldOffset(q, _VELOCITY_FIELD)
-            larr[lo:lo + dim] = v
-        gvec.set(0.0)
-        dm.localToGlobal(lvec, gvec, addv=PETSc.InsertMode.ADD_VALUES)
-        dm.globalToLocal(gvec, lvec)
-        summed = lvec.getArray()
-        out = {}
-        for q in _local_boundary_candidates(dm, lsec) | set(contribs):
-            lo = lsec.getFieldOffset(q, _VELOCITY_FIELD)
-            w = np.array(summed[lo:lo + dim], dtype=float)
-            # LOAD-BEARING: the candidate set over-collects (see
-            # _local_boundary_candidates); a point off this boundary contributes
-            # nothing anywhere, so its summed normal is exactly zero and it is
-            # dropped here. This is what makes the over-collection safe.
-            if w.any():
-                out[q] = w
-            elif q in contribs:
-                # Velocity DOFs constrained out of the global vector (an essential
-                # BC meeting this boundary) are not written back: they keep this
-                # rank's own contribution, which the first branch already takes, so
-                # this one is reached only by a node whose sum is zero in every
-                # component. build_rotation builds a reduced frame on a node's free
-                # components and skips a fully constrained node; the traction
-                # readers read zero at a constrained component, so an essential
-                # wall's components contribute nothing to σ_nn (#936). The nodes are
-                # the corners where a rotated wall meets an essential one (measured:
-                # 2 of 75 on the test_1070 configuration). A marker (the analytic
-                # path) loses only the constrained components, so where one component
-                # is free such a node is kept on every rank that holds it.
-                out[q] = contribs[q]
-        return out
+        # leaves (copies this rank does not own) add onto their owner's row; the
+        # owner's own contribution is already in its row of `total`
+        sf.reduceBegin(unit, local, total, MPI.SUM)
+        sf.reduceEnd(unit, local, total, MPI.SUM)
+        # and every copy takes the owner's total (separate buffers: the owner's
+        # rows are the roots, the copies' rows the leaves)
+        summed = total.copy()
+        sf.bcastBegin(unit, total, summed, MPI.REPLACE)
+        sf.bcastEnd(unit, total, summed, MPI.REPLACE)
     finally:
-        dm.restoreLocalVec(lvec)
-        dm.restoreGlobalVec(gvec)
-
-
-def _local_boundary_candidates(dm, lsec):
-    """Velocity points on a support-1 facet of this rank's LOCAL mesh — a SUPERSET of
-    its boundary nodes, deliberately.
-
-    The labelled facet list is not enough to enumerate a rank's boundary nodes: a rank
-    can OWN a node every one of whose labelled facets lives on a neighbour (the label
-    goes to one rank per facet, so a seam node's facets are split between them), and
-    such a node would otherwise never get a constraint row.
-
-    Support 1 does NOT mean "on the domain boundary": the facets on the outer fringe of
-    the overlap layer also have support 1 locally while being interior globally, and
-    measured they are 13-27% of what this returns. The caller is what makes the result
-    correct — those points receive no contribution from any labelled facet, so their
-    summed normal is exactly zero and the ``w.any()`` test in
-    :func:`_sum_node_vectors_across_ranks` drops them. That test is load-bearing, not
-    an aside; do not remove it while over-collecting here.
-    """
-    fS, fE = dm.getHeightStratum(1)
-    out = set()
-    for f in range(fS, fE):
-        if dm.getSupportSize(f) != 1:
-            continue
-        for q in (int(c) for c in dm.getTransitiveClosure(f)[0]):
-            if lsec.getFieldDof(q, _VELOCITY_FIELD) > 0:
-                out.add(q)
-    return out
+        unit.Free()
+    # LOAD-BEARING: a point off this boundary contributes nothing anywhere, so its
+    # total is exactly zero and it is dropped here
+    rows = np.flatnonzero(np.any(summed != 0.0, axis=1))
+    return {int(r) + pStart: summed[r].copy() for r in rows}
 
 
 def _eval_datum(dspec, coords, solver):
@@ -1479,12 +1443,13 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
         * ``"nonlinear_iterations"``, ``"converged"`` — outer-loop count (the number
           of Newton increments solved, ``== len(ksp_its)``) and status;
         * ``"rnorm"``, ``"rnorm0"`` — the final rotated residual norm ‖F̂‖ and the
-          one the reference is set from: the first residual measured, or, on a
-          cold start whose only forcing is a prescribed datum (zero residual at
-          ``u = 0``), the residual of the lifted iterate (feed the solve report);
-        * ``"ref"`` — the scale the relative tolerance is measured against:
-          ``rnorm0``, or ``max(rnorm0, fnorm_rest)`` where the rest-state
-          residual was measured;
+          first one measured, at the initial guess (zero on a cold start whose only
+          forcing is a prescribed datum; the solve report then gives no reduction);
+        * ``"ref"`` — the scale the relative tolerance is measured against: the
+          largest of ``rnorm0``, ``fnorm_rest`` where the rest-state residual was
+          measured, and, on a cold start that lifts a datum, the norm of the
+          lifted right-hand side on the free rows (the forcing the datum exerts
+          on the interior, #883);
         * ``"fnorm_rest"`` — the rest-state residual ‖F̂(0)‖, measured only for a
           warm start of a stationary equation; ``None`` otherwise;
         * ``"rnorm_history"`` — the residual norm at each pass of the loop, the
@@ -1544,6 +1509,7 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
     # announced this solver to the step transcript. This push is for THIS
     # function's own assembly; recording it again reports one operator as two.
     solver._update_constants(record=False)
+    _report_given_normal_extra_constraint(solver, boundaries)
     if rtol is None:
         rtol = float(solver.tolerance)
     # A negative cap carries PETSc's meaning. PETSC_UNLIMITED lifts the cap;
@@ -1784,6 +1750,9 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
     Atot = None
     ctx = cache["ctx"] if cache is not None else None
     Mp = ctx["Mp"] if ctx is not None else None
+    if ctx is not None and "sub_capped" in ctx:
+        # the counts are this solve's, not the cached context's lifetime
+        ctx["sub_capped"].update(velocity=0, pressure=0)
     if ctx is not None:
         # the cached null space is this solve's, even when it exits at its first
         # residual check, and so is the verdict on the declared modes it was built with
@@ -1943,10 +1912,7 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
         Fhat = rotated_residual(u, keep_cartesian=True)
         rnorm = Fhat.norm()
         rnorm_history.append(float(rnorm))
-        if r0 is None or (lift_datum and iters == 1 and r0 == 0.0):
-            # A cold start whose only forcing is the prescribed datum (a sheet
-            # breathing with the tide, say) has a zero residual at u = 0, before
-            # the lift; the reference scale is then the lifted iterate's.
+        if r0 is None:
             r0 = rnorm
             ref = max(r0, fnorm_rest) if fnorm_rest is not None else r0
         if verbose:
@@ -1970,7 +1936,8 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
         # Measured against the convergence reference, not r0: a warm start is already
         # in the basin, and against its own residual it had to shrink that a
         # hundredfold under Picard first (12 of 13 iterations on the power-law box).
-        if continuation and phase == "picard" and rnorm <= switch_rtol * ref and iters >= picard:
+        if (continuation and phase == "picard" and rnorm <= switch_rtol * ref
+                and iters >= picard and not (lift_datum and iters == 0)):
             solver._set_newton_alpha(1.0)
             phase = "newton"
             switch_iteration = iters
@@ -2031,6 +1998,26 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
                 Mp = _pressure_mass_schur_pmat(solver) if has_pressure else None
                 nsp = _rotated_nullspace(solver, Q, normal_rows)   # J assembled above
                 _collect_rotation_modes(nsp)
+                if rot_modes and iters == 0:
+                    # The modes exist only from here on an uncached solve (#884):
+                    # iteration 0's residual, r0 and the rest-state residual were
+                    # measured with the component the solve cannot reduce, which
+                    # every later residual, and a cached re-solve's, leave out. They
+                    # are measured in the same quotient space now, before the line
+                    # search starts from rnorm. Every rank holds the same modes.
+                    for m in rot_modes:
+                        Fhat.axpy(-Fhat.dot(m), m)
+                    rnorm = Fhat.norm()
+                    rnorm_history[-1] = float(rnorm)
+                    r0 = rnorm
+                    if fnorm_rest is not None:
+                        z = dm.getGlobalVec()
+                        z.set(0.0)
+                        Fz = rotated_residual(z)
+                        fnorm_rest = Fz.norm()
+                        Fz.destroy()
+                        dm.restoreGlobalVec(z)
+                    ref = max(r0, fnorm_rest) if fnorm_rest is not None else r0
             else:
                 # a cached workspace keeps its null space, and the verdict on the
                 # declared modes it was built with
@@ -2049,6 +2036,17 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
             Aop.zeroRowsColumns(normal_rows, diag=diag_scale, x=xhat, b=bhat)
             xhat.destroy()
             xhat = None
+            # The datum's own scale joins the reference (#883): the lifted
+            # right-hand side on the free rows, the forcing the datum exerts on the
+            # interior. At u = 0 the residual ignores the datum, so a cold start
+            # forced by the datum alone has r0 = 0, and one with a weak body force
+            # beside it has r0 at the body force's scale; either way the
+            # increment that carries the datum is measured against a reference
+            # that does not see it. The norm is collective, on every rank.
+            lifted = bhat.copy()
+            _zero_rows_local(lifted, normal_rows)
+            ref = max(ref, lifted.norm())
+            lifted.destroy()
         elif assemble:
             Aop.zeroRowsColumns(normal_rows, diag=diag_scale)
         # else: the cached Aop already carries the eliminated constraint
@@ -2307,6 +2305,10 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
             "fnorm_rest": fnorm_rest, "ref": ref,
             "rnorm_history": rnorm_history, "line_search_alpha": line_search_alpha,
             "vel_its_last": vel_its_last, "pres_its_last": pres_its_last,
+            # applications of each sub-solve that stopped at its cap, over the
+            # whole solve (#625); None without sub-KSPs (direct LU, the sheet)
+            "sub_capped": (None if use_lu or "sub_capped" not in (ctx or {})
+                           else dict(ctx["sub_capped"])),
             # keyed on use_lu, NOT on `ctx is None`: the iterative path also exits
             # with ctx unset when a warm start is already converged at increment 0.
             "velocity_pc": "direct-LU" if use_lu else (ctx or {}).get("velocity_pc"),
@@ -3226,7 +3228,24 @@ def _solve_rotated_iterative(solver, Ahat, bhat, Q, Qt, normal_rows, verbose=Fal
             # database stays clean (and bounded under time-stepping), on the
             # error path too.
             _drop_options_under(pfx)
+        # Every application of a sub-solve that stopped at its cap, counted over
+        # the solve (#625). The velocity KSP is applied once per Schur MatMult and
+        # the pressure KSP once per outer application, so the last-application
+        # counts below miss a cap hit on any earlier one. PETSc does not treat
+        # DIVERGED_MAX_IT on a sub-KSP as a failure. The reason is global to the
+        # KSP, so every rank counts alike.
+        sub_capped = {"velocity": 0, "pressure": 0}
+
+        def _counting(block):
+            def post_solve(sub_ksp, _rhs, _x):
+                if sub_ksp.getConvergedReason() == PETSc.KSP.ConvergedReason.DIVERGED_MAX_IT:
+                    sub_capped[block] += 1
+            return post_solve
+
+        for _sub, _block in zip(pc.getFieldSplitSubKSP(), ("velocity", "pressure")):
+            _sub.setPostSolve(_counting(_block))
         ctx = {"ksp": ksp, "pc": pc, "Mp": Mp, "nsp": nsp, "cns": cns,
+               "sub_capped": sub_capped,
                "schur_roundoff": schur_roundoff,
                "declared_exempt": getattr(solver, "_rotated_declared_modes_exempt", None),
                "custom_Pl": custom_Pl, "pfx": pfx,
@@ -4017,8 +4036,107 @@ def _declared_mode_flags(solver):
                 f"{np.round(centre, 12).tolist()}: its vertices' distances from it "
                 f"spread over {rel:.2g} of the radius, against "
                 f"{_WALL_INVARIANCE_TOL:g}. The declared rotation modes therefore take "
-                f"the constraint test")
+                f"the constraint test, and where they fail it the answer may carry a "
+                f"rigid rotation that the solve does not remove and still reports "
+                f"converged. If the walls were moved rigidly (a translation by "
+                f"mesh.deform, for example), declare the rotation about their new "
+                f"centre: set mesh.nullspace_rotations (#969)")
     return [True] * n_modes, None
+
+
+def _normal_varies(solver, normal):
+    """Whether a given normal ``normal`` varies over the mesh: a sympy normal
+    with a mesh coordinate among its free symbols (after unwrapping). A
+    constant array, or a sympy normal of numbers, does not."""
+    if not isinstance(normal, sympy.MatrixBase):
+        return False
+    from underworld3.function.expressions import unwrap
+    names = {str(xk) for xk in solver.mesh.X}
+    for component in normal:
+        expr = sympy.sympify(unwrap(sympy.sympify(component), keep_constants=False,
+                                    return_self=False))
+        if any(str(symbol) in names for symbol in expr.free_symbols):
+            return True
+    return False
+
+
+def _boundary_flux_is_fixed(solver, rotated_walls):
+    """Whether every exterior boundary facet of the mesh has its normal velocity
+    fixed: it lies on a rotated free-slip wall in ``rotated_walls``, or on an
+    essential condition that fixes every velocity component. Exterior facets are
+    the ``All_Boundaries`` label's (marked before distribution, so a partition
+    face is never among them). Collective: every rank reaches the one reduction,
+    including a rank whose DM holds no ``All_Boundaries`` label (it contributes
+    no facets), and every rank gets the same answer. False when no rank carries
+    the label, or the pressure has an essential condition (the constant-pressure
+    row is then not the sum of the continuity rows)."""
+    dm = solver.mesh.dm
+    if any(bc.f_id == _PRESSURE_FIELD for bc in solver.essential_bcs):
+        return False
+    dim = solver.mesh.dim
+    fixing = set(rotated_walls)
+    for bc in solver.essential_bcs:
+        if bc.f_id == _VELOCITY_FIELD and all(
+                _essential_value(bc, c, dim) is not None for c in range(dim)):
+            fixing.add(bc.boundary)
+    f0, f1 = dm.getDepthStratum(dim - 1)
+
+    def facets(name):
+        label = dm.getLabel(name)
+        points = [label.getStratumIS(int(value)).getIndices()
+                  for value in label.getValueIS().getIndices()]
+        points = np.concatenate(points) if points else np.empty(0, dtype=np.int64)
+        return points[(points >= f0) & (points < f1)]
+
+    labelled_here = dm.hasLabel("All_Boundaries")
+    exterior = facets("All_Boundaries") if labelled_here else np.empty(0, dtype=np.int64)
+    covered = [facets(name) for name in sorted(fixing) if dm.hasLabel(name)]
+    covered = np.concatenate(covered) if covered else np.empty(0, dtype=np.int64)
+    free_here = int(np.count_nonzero(~np.isin(exterior, covered)))
+    totals = np.zeros(2, dtype=np.int64)
+    mpi.comm.Allreduce(np.array([free_here, int(labelled_here)], dtype=np.int64), totals)
+    free, labelled = totals
+    return bool(labelled) and free == 0
+
+
+def _report_given_normal_extra_constraint(solver, boundaries):
+    """Warn, once per solver, when a rotated wall takes a given normal that varies
+    along it and the whole boundary's normal flux is fixed (#1168).
+
+    The continuity row tested with a constant pressure is then a sum over the
+    boundary of the facet-weighted normal flux. The given normal differs from
+    the facet-weighted normal at each node of a faceted curved wall, so that row
+    holds a weighted sum of the wall slip fixed, with the mean pressure as its
+    multiplier: one constraint the continuous problem does not have. Nothing
+    is changed; the verdict is recorded on the solver as
+    ``_given_normal_extra_constraint``, the same on every rank."""
+    specs = [_boundary_spec(spec) for spec in boundaries]
+    varying = sorted(name for name, normal in specs
+                     if name != SHEET_TANGENCY and normal is not None
+                     and _normal_varies(solver, normal))
+    if not varying:
+        solver._given_normal_extra_constraint = False
+        return
+    walls = [name for name, _normal in specs if name != SHEET_TANGENCY]
+    flagged = _boundary_flux_is_fixed(solver, walls)
+    solver._given_normal_extra_constraint = flagged
+    if flagged and not getattr(solver, "_given_normal_extra_constraint_reported", False):
+        solver._given_normal_extra_constraint_reported = True
+        mpi.pprint(
+            f"[rotated_bc] WARNING: rotated free slip on {varying} takes a given normal "
+            f"that varies along the wall, and the normal velocity is fixed on the whole "
+            f"boundary. The constant-pressure continuity row then holds a weighted sum of "
+            f"the wall slip fixed (the weights are where the given normal differs from "
+            f"the facet-weighted normal; the mean pressure is its multiplier), a "
+            f"constraint the continuous problem does not have. Where the wall facets "
+            f"are unequal it can stop the velocity converging, on manufactured free-slip "
+            f"solutions (#1168): 63 to 67 % error on an elliptical annulus, and 32 to 34 "
+            f"% on an annulus whose wall nodes have slid along the circles, neither "
+            f"falling with refinement. Annulus and SphericalShell walls as built have "
+            f"equal facets and are not affected; the error appears once wall nodes "
+            f"slide along the wall (a mesh mover with slip, adaptation, a free "
+            f"surface). Use normal=None (the default, facet-weighted normal) unless the "
+            f"given normal is needed for an exact rigid-rotation null mode.")
 
 
 def _given_normal_walls(solver):

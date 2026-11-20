@@ -113,7 +113,7 @@ uw.utilities.h5_scan("test_checkpointing_np1.P.0.h5")
 uw.utilities.h5_scan("test_checkpointing_np1.U.0.h5")
 
 # %%
-if not uw.is_notebook:
+if not uw.is_notebook():
     exit()
 else:
     0/0
