@@ -68,7 +68,44 @@ def test_a_p3_velocity_held_by_the_constraint_is_the_essential_solution(simplex,
     scale = _max(essential)
     # The gap was 26%. A P3 multiplier holds the P3 trace as the essential condition
     # does (1e-7 of the scale, as P2 against P2). The default P2 multiplier holds
-    # it only weakly (the wall normal velocity is 7e-6), and gives 2e-6.
+    # it only weakly (the wall normal velocity is 2e-7 of the scale), and gives 2e-6.
     tolerance = 1.0e-6 if multiplier_degree == 3 else 1.0e-5
     assert _max(constrained - essential) < tolerance * scale, (
+        f"max |v| constrained {_max(constrained):.8f}, essential {scale:.8f}")
+
+
+def _solve_3d(constrained):
+    _count[0] += 1
+    mesh = uw.meshing.StructuredQuadBox(elementRes=(2, 2, 2), minCoords=(0, 0, 0),
+                                        maxCoords=(1, 1, 1), qdegree=4)
+    v = uw.discretisation.MeshVariable(f"V1200p3_{_count[0]}", mesh, 3, degree=3)
+    p = uw.discretisation.MeshVariable(f"P1200p3_{_count[0]}", mesh, 1, degree=2)
+    solver = (uw.systems.Stokes_Constrained if constrained else uw.systems.Stokes)(
+        mesh, velocityField=v, pressureField=p)
+    solver.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    solver.constitutive_model.Parameters.shear_viscosity_0 = 1.0
+    x, y, z = mesh.X
+    solver.bodyforce = sympy.Matrix(
+        [[0.0, 0.0, sympy.cos(sympy.pi * x) * sympy.cos(sympy.pi * y) * (1 + z)]])
+    solver.tolerance = 1.0e-10
+    solver.petsc_options.delValue("ksp_monitor")
+    solver.add_essential_bc((0.0, 0.0, 0.0), "Bottom")
+    for wall, nx in (("Left", -1.0), ("Right", 1.0)):
+        if constrained:
+            solver.add_constraint_bc(0.0, wall, normal=sympy.Matrix([[nx, 0.0, 0.0]]),
+                                     degree=3)
+        else:
+            solver.add_essential_bc((0.0, None, None), wall)
+    solver.solve()
+    assert solver.snes.getConvergedReason() > 0
+    return np.asarray(v.array)[:, 0, :].copy()
+
+
+def test_in_3d_the_faces_are_oriented_too():
+    """A P3 hex has four dofs on each face and two on each edge; the symmetries
+    orient both. 2 x 2 x 2 hexes, P3 multiplier (about 25 s)."""
+    essential = _solve_3d(constrained=False)
+    constrained = _solve_3d(constrained=True)
+    scale = _max(essential)
+    assert _max(constrained - essential) < 1.0e-6 * scale, (
         f"max |v| constrained {_max(constrained):.8f}, essential {scale:.8f}")
