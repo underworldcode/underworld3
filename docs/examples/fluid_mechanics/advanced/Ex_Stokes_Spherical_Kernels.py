@@ -155,8 +155,8 @@ stokes.petsc_options.setValue("snes_monitor", None)
 
 # Similar (equivalent horizontal pattern) but in a body force
 with meshball.access(t_init):
-    t_init.data[:,0] = uw.function.evaluate(
-            sympy.cos(3*ph) * sympy.sin(5*th) * sympy.exp(-50.0 * ((r - r_int) ** 2)), t_init.coords) 
+    t_init.array[:, 0, 0] = uw.function.evaluate(
+            sympy.cos(3*ph) * sympy.sin(5*th) * sympy.exp(-50.0 * ((r - r_int) ** 2)), t_init.coords)[:, 0, 0] 
 
 
 
@@ -210,12 +210,9 @@ for orientation in ((1,0,0), (0,1,0), (0,0,1)):
 
     # print(norm/vnorm, vnorm)
 
-    with meshball.access(v_soln):
-        dv = uw.function.evaluate(norm * v_theta_fn_xy, v_soln.coords) / vnorm
-        v_soln.data[...] -= dv 
+    dv = uw.function.evaluate(norm * v_theta_fn_xy.T, v_soln.coords) / vnorm
 
-
-
+    v_soln.array[...] -= dv
 # +
 # If we choose a discontinuous pressure, we need to create a continuous 
 # equivalent for analysis / plotting
@@ -242,7 +239,7 @@ meshball.write_timestep(
 
 
 
-if not uw.is_notebook:
+if not uw.is_notebook():
     exit()
 
 # +
