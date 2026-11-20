@@ -491,6 +491,19 @@ def _agreed_on_every_rank(call):
     return result
 
 
+def _local_cell_box(mesh):
+    """The bounding box of this rank's cells, from their vertex coordinates, as
+    ``(lo, hi)``; an empty rank's box is inverted (``lo > hi``) and holds
+    nothing. Mesh coordinates are of degree 1 (#978), so a cell lies inside the
+    box of its vertices. Rank-local."""
+    cdim = mesh.cdim
+    cStart, cEnd = mesh.dm.getHeightStratum(0)
+    if cEnd == cStart:
+        return np.full(cdim, np.inf), np.full(cdim, -np.inf)
+    vertices = np.asarray(mesh.dm.getCoordinatesLocal().array).reshape(-1, cdim)
+    return vertices.min(axis=0), vertices.max(axis=0)
+
+
 def _hand_points_to_containing_rank(evaluation_swarm, mesh):
     """Move each evaluation point to a rank whose cell contains it (#1178).
 
@@ -498,34 +511,70 @@ def _hand_points_to_containing_rank(evaluation_swarm, mesh):
     contains but that lies within the evaluation face tolerance of one of
     them. Near a partition seam the neighbour rank's cell contains that point,
     and evaluating it in the keeping rank's cell is off by about |grad f| times
-    its distance from that cell. Here the points each rank holds without
-    containing them are gathered, every rank tests them for exact containment
-    (:meth:`Mesh._contained_in_local_cells`), and each goes to the lowest rank
-    that contains it. A point no rank contains (on or just outside the domain
-    boundary) stays where the migration put it, under the face tolerance.
+    its distance from that cell. Here each point a rank holds without
+    containing it is sent to the ranks whose cells' bounding box holds it, each
+    of those tests it for exact containment
+    (:meth:`Mesh._contained_in_local_cells`), and the point goes to the lowest
+    rank that contains it. A point no rank contains (on or just outside the
+    domain boundary) stays where the migration put it, under the face
+    tolerance.
 
-    Collective: every rank reaches every gather, reduction and the migration,
-    which are guarded only by reduced counts.
+    Only the ranks whose box holds a point are asked about it, so the work per
+    rank follows the points near its own cells, not the global count. That is
+    exact: a rank whose cell contains a point has the point inside that cell's
+    box, so inside the rank's box. The boxes are widened by a small fraction of
+    the domain's extent, more than the containment test's rounding allowance,
+    so a point a cell accepts to rounding is asked about too; the widening only
+    adds ranks to ask, and the answer is still each rank's own exact test.
+
+    Collective: every rank reaches the box gather, the two all-to-all
+    exchanges, the reductions and the migration, which are guarded only by
+    reduced counts.
     """
     from mpi4py import MPI
 
     comm = uw.mpi.comm
     if comm.size == 1:
         return
-    coords = np.array(evaluation_swarm.dm.getField("DMSwarmPIC_coor")).reshape(-1, mesh.cdim)
+    cdim = mesh.cdim
+    coords = np.array(evaluation_swarm.dm.getField("DMSwarmPIC_coor")).reshape(-1, cdim)
     evaluation_swarm.dm.restoreField("DMSwarmPIC_coor")
     uncontained = np.flatnonzero(~mesh._contained_in_local_cells(coords))
-    counts = np.array(comm.allgather(int(uncontained.shape[0])), dtype=int)
-    total = int(counts.sum())
-    if total == 0:
+    if comm.allreduce(int(uncontained.shape[0]), op=MPI.SUM) == 0:
         return
-    candidates = np.concatenate(comm.allgather(coords[uncontained]), axis=0).reshape(total, -1)
-    claim = np.where(mesh._contained_in_local_cells(candidates), comm.rank, comm.size)
-    claim = np.ascontiguousarray(claim, dtype=np.int32)
-    owner = np.empty_like(claim)
-    comm.Allreduce([claim, MPI.INT], [owner, MPI.INT], op=MPI.MIN)
-    offset = int(counts[:comm.rank].sum())
-    destination = owner[offset:offset + uncontained.shape[0]]
+
+    lo, hi = _local_cell_box(mesh)
+    boxes = np.empty((comm.size, 2, cdim))
+    comm.Allgather(np.ascontiguousarray(np.stack([lo, hi])), boxes)
+    held = np.isfinite(boxes[:, 0, 0])
+    extent = (boxes[held, 1].max(axis=0) - boxes[held, 0].min(axis=0)).max()
+    widen = 1.0e-8 * extent
+    lo_all, hi_all = boxes[:, 0] - widen, boxes[:, 1] + widen
+
+    # The ranks each point is sent to: those whose box holds it, other than
+    # this one (its own test already said no).
+    points = coords[uncontained]
+    inside = np.all((points[:, None, :] >= lo_all[None]) & (points[:, None, :] <= hi_all[None]),
+                    axis=2)
+    inside[:, comm.rank] = False
+    rank_of, point_of = np.nonzero(inside.T)  # pairs ordered by destination rank
+    send_counts = np.bincount(rank_of, minlength=comm.size).astype(np.int64)
+    recv_counts = np.empty_like(send_counts)
+    comm.Alltoall(send_counts, recv_counts)
+
+    send = np.ascontiguousarray(points[point_of], dtype=np.float64)
+    received = np.empty((int(recv_counts.sum()), cdim), dtype=np.float64)
+    comm.Alltoallv([send, (send_counts * cdim, None), MPI.DOUBLE],
+                   [received, (recv_counts * cdim, None), MPI.DOUBLE])
+    claims = np.ascontiguousarray(mesh._contained_in_local_cells(received), dtype=np.int32)
+    answers = np.empty(rank_of.shape[0], dtype=np.int32)
+    comm.Alltoallv([claims, (recv_counts, None), MPI.INT],
+                   [answers, (send_counts, None), MPI.INT])
+
+    # The lowest rank that contains each point; comm.size where none does.
+    destination = np.full(points.shape[0], comm.size, dtype=np.int64)
+    claimed = answers.astype(bool)
+    np.minimum.at(destination, point_of[claimed], rank_of[claimed])
     moving = destination < comm.size
     if comm.allreduce(int(moving.sum()), op=MPI.SUM) == 0:
         return
