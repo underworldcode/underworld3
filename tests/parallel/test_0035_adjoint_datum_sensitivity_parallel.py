@@ -56,7 +56,7 @@ def test_a_lid_datum_gradient_matches_central_differences(references, datum):
     stokes.tolerance = 1.0e-11
     stokes.solve()
     u = stokes.Unknowns.u
-    misfit = u.sym[1] * sympy.sin(sympy.pi * x / L) + u.sym[0] * y
+    misfit = u.sym[1] * sympy.sin(sympy.pi * x / L) + u.sym[0] * y / L   # both terms a velocity
 
     adjoint = stokes.gradient(misfit, parameters=[alpha])["parameters"][alpha]
 

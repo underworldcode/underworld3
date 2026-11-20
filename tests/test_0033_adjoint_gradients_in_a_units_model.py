@@ -64,7 +64,7 @@ def _box(case, references):
     stokes.tolerance = 1.0e-11
     stokes.solve()
     u = stokes.Unknowns.u
-    misfit = u.sym[1] * sympy.sin(sympy.pi * x / model_length()) + u.sym[0] * y
+    misfit = u.sym[1] * sympy.sin(sympy.pi * x / model_length()) + u.sym[0] * y / model_length()   # both terms a velocity
     if case == "explicit":
         misfit = alpha * misfit
     return stokes, misfit, alpha
