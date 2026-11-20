@@ -1,4 +1,4 @@
-"""A strand drawn past the domain wall is refused by mesher="network" (#1177).
+"""mesher="network" refuses a strand that reaches the domain wall (#1177).
 
 The network mesher embeds each strand's spine, the polyline itself, as points
 and edges of the ribbon face, and the face is clipped to the domain. A strand
@@ -13,8 +13,11 @@ return. Measured on development (one rank, gmsh 4.15.2):
 * the same strand 0.22 lower: "the ribbon assembly meshed to no triangles"
   after 6.6 s.
 
-The assembly now checks every spine point before gmsh is called and refuses,
-naming the count and the first point outside.
+* the same strand ended exactly on the right wall: "meshed to no triangles".
+
+The network path does not build an outcrop. The assembly now refuses, before
+gmsh meshes, a ribbon the domain clips (the domain removed part of its area),
+and names the meshers that build an outcrop: the default and "ladder".
 """
 import numpy as np
 import pytest
@@ -44,13 +47,24 @@ CASES = {
 }
 
 
+def _ended_on_the_right_wall():
+    P = _straight((SECOND_X, 0.75))
+    cut = int(np.argmax(P[:, 0] > 1.0))
+    a, b = P[cut - 1], P[cut]
+    return np.vstack([P[:cut], a + (1.0 - a[0]) / (b[0] - a[0]) * (b - a)])
+
+
+CASES["one strand ended on the right wall"] = [("f1", _ended_on_the_right_wall())]
+
+
 @pytest.mark.parametrize("case", list(CASES))
-def test_a_strand_past_the_wall_is_refused_before_meshing(case):
+def test_a_strand_reaching_the_wall_is_refused_before_meshing(case):
     base = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0),
                                              cellSize=H, qdegree=2)
-    with pytest.raises(RuntimeError, match="lie outside the ribbon faces"):
+    with pytest.raises(RuntimeError, match="does not build an outcrop") as refusal:
         place_surface.place_fault_ribbon_2d(base, CASES[case], W, margin_rings=1,
                                             clearance=0.7, split=False, mesher="network")
+    assert "mesher='ladder'" in str(refusal.value) and "mesher=None" in str(refusal.value)
 
 
 def test_a_strand_inside_the_domain_still_builds():
