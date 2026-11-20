@@ -3949,13 +3949,12 @@ def _boundary_flux_is_fixed(solver, rotated_walls):
     fixed: it lies on a rotated free-slip wall in ``rotated_walls``, or on an
     essential condition that fixes every velocity component. Exterior facets are
     the ``All_Boundaries`` label's (marked before distribution, so a partition
-    face is never among them). Collective; the same answer on every rank. False
-    when the mesh carries no ``All_Boundaries`` label, or the pressure has an
-    essential condition (the constant-pressure row is then not the sum of the
-    continuity rows)."""
+    face is never among them). Collective: every rank reaches the one reduction,
+    including a rank whose DM holds no ``All_Boundaries`` label (it contributes
+    no facets), and every rank gets the same answer. False when no rank carries
+    the label, or the pressure has an essential condition (the constant-pressure
+    row is then not the sum of the continuity rows)."""
     dm = solver.mesh.dm
-    if not dm.hasLabel("All_Boundaries"):
-        return False
     if any(bc.f_id == _PRESSURE_FIELD for bc in solver.essential_bcs):
         return False
     dim = solver.mesh.dim
@@ -3973,11 +3972,15 @@ def _boundary_flux_is_fixed(solver, rotated_walls):
         points = np.concatenate(points) if points else np.empty(0, dtype=np.int64)
         return points[(points >= f0) & (points < f1)]
 
-    exterior = facets("All_Boundaries")
+    labelled_here = dm.hasLabel("All_Boundaries")
+    exterior = facets("All_Boundaries") if labelled_here else np.empty(0, dtype=np.int64)
     covered = [facets(name) for name in sorted(fixing) if dm.hasLabel(name)]
     covered = np.concatenate(covered) if covered else np.empty(0, dtype=np.int64)
     free_here = int(np.count_nonzero(~np.isin(exterior, covered)))
-    return mpi.comm.allreduce(free_here) == 0
+    totals = np.zeros(2, dtype=np.int64)
+    mpi.comm.Allreduce(np.array([free_here, int(labelled_here)], dtype=np.int64), totals)
+    free, labelled = totals
+    return bool(labelled) and free == 0
 
 
 def _report_given_normal_extra_constraint(solver, boundaries):
