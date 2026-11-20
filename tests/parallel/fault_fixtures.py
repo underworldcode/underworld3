@@ -99,12 +99,14 @@ def base_3d():
         cellSize=0.2, regular=False, qdegree=2, refinement=1)
 
 
-def parents_contain_centroids(below, lev, centroids=None):
+def parents_contain_centroids(below, lev, centroids=None, as_built=False):
     """Fetch each cell's parent on ``below`` by the CURRENT address that ``lev``
     records (``lev._addon_parent``), and test that the cell's centroid lies inside
     it. Returns the global count of cells NOT inside their parent. ``centroids``
     replaces the centroids of ``lev`` as it stands: those of the geometry it was
-    made in, for a level that has moved since (#1091)."""
+    made in, for a level that has moved since (#1091). ``as_built`` reads the
+    parents where they were made too, when ``below`` moved with the finest
+    level (``fault_mg._cell_vertex_table``, #1244)."""
     from mpi4py import MPI
     from petsc4py import PETSc
 
@@ -112,7 +114,7 @@ def parents_contain_centroids(below, lev, centroids=None):
     from underworld3.utilities.fault_mg import _barycentric, _cell_vertex_table
 
     par = lev._addon_parent
-    vxy_b, cv_b = _cell_vertex_table(below)
+    vxy_b, cv_b = _cell_vertex_table(below, as_built=as_built)
     nb = cv_b.shape[0]
     verts = np.ascontiguousarray(vxy_b[cv_b].reshape(nb, -1))
     sf = PETSc.SF().create(comm=PETSc.COMM_WORLD)

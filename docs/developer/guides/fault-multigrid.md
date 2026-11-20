@@ -182,7 +182,8 @@ one campaign and is the error to recognise.
 - A move of the mesh kills the patch (ruling, 2026-11-08, #1017): `mesh.deform`
   and every mover that commits through `remesh_with_field_transfer` (the
   smoothing and MMPDE movers), on the standard routes and under `add_fault_bc`.
-  The registered coarse levels do not move with the fine mesh, so the hierarchy
+  The registered coarse levels of a faulted mesh do not move with it (only the
+  levels of a refined mesh's own hierarchy do, at the next solve), so the hierarchy
   is installed again without the patch, `pc_fallbacks["custom_mg.fac_patch"]`
   says so, and a warning says the fault is absent from the preconditioner. The
   patch is rebuilt as one step of the fault-move cycle: move the fault, re-refine

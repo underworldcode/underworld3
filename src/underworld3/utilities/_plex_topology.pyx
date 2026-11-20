@@ -7,12 +7,14 @@ face — and asked them one point at a time through petsc4py, a Python call per
 point. These functions answer them for a whole stratum in one C loop and return
 numpy tables, so the logic above them can be written as array operations.
 
-All of them are rank-local: they read this rank's chart and call no collective.
+All of them but ``inherited_vertices`` are rank-local: they read this rank's
+chart and call no collective. ``inherited_vertices`` creates a refinement
+transform on the DM's communicator, so every rank of it must call it.
 """
 import numpy as np
 cimport numpy as cnp
 
-from petsc4py.PETSc cimport DM, PetscDM, Section, PetscSection
+from petsc4py.PETSc cimport DM, PetscDM, Section, PetscSection, PetscObject, MPI_Comm
 
 cnp.import_array()
 
@@ -34,6 +36,19 @@ cdef extern from "petsc.h":
     PetscErrorCode PetscSectionSetDof(PetscSection, PetscInt, PetscInt)
     PetscErrorCode PetscSectionSetUp(PetscSection)
     PetscErrorCode PetscSectionGetOffset(PetscSection, PetscInt, PetscInt *)
+    ctypedef struct _p_DMPlexTransform
+    ctypedef _p_DMPlexTransform *PetscDMPlexTransform "DMPlexTransform"
+    ctypedef enum DMPolytopeType:
+        DM_POLYTOPE_POINT
+    const char *DMPLEXREFINEREGULAR
+    PetscErrorCode PetscObjectGetComm(PetscObject, MPI_Comm *)
+    PetscErrorCode DMPlexTransformCreate(MPI_Comm, PetscDMPlexTransform *)
+    PetscErrorCode DMPlexTransformSetType(PetscDMPlexTransform, const char *)
+    PetscErrorCode DMPlexTransformSetDM(PetscDMPlexTransform, PetscDM)
+    PetscErrorCode DMPlexTransformSetUp(PetscDMPlexTransform)
+    PetscErrorCode DMPlexTransformGetTargetPoint(PetscDMPlexTransform, DMPolytopeType,
+                                                 DMPolytopeType, PetscInt, PetscInt, PetscInt *)
+    PetscErrorCode DMPlexTransformDestroy(PetscDMPlexTransform *)
 
 
 cdef inline void _check(PetscErrorCode ierr, str what) except *:
@@ -181,4 +196,40 @@ def closure_dof_rows(DM dm, Section section, points, int block):
                     j += 1
         _check(DMPlexRestoreTransitiveClosure(dm.dm, p, PETSC_TRUE, &size, &closure),
                "DMPlexRestoreTransitiveClosure")
+    return out
+
+
+
+def inherited_vertices(DM coarse):
+    """The vertex of ``coarse.refine()`` that each vertex of ``coarse`` becomes,
+    under PETSc's regular refinement: an int64 array over the coarse vertex
+    stratum, of fine DM points. The map is local to each rank: a refined DM
+    keeps its parent's partition, so a coarse vertex and its fine vertex are on
+    the same rank. The call is COLLECTIVE on the DM's communicator, since it
+    creates and sets up a ``DMPlexTransform`` there.
+
+    The map is the refinement transform's own (``DMPlexTransformGetTargetPoint``),
+    so it is exact and topological. It does not depend on where the inherited
+    vertices fall in the fine numbering: first on triangles and tetrahedra, after
+    the new cell-centre vertices on quadrilaterals and hexahedra (measured).
+    """
+    cdef PetscDMPlexTransform tr = NULL
+    cdef MPI_Comm comm
+    cdef PetscInt vS = 0, vE = 0, v, target
+    _check(PetscObjectGetComm(<PetscObject> coarse.dm, &comm), "PetscObjectGetComm")
+    _check(DMPlexGetDepthStratum(coarse.dm, 0, &vS, &vE), "DMPlexGetDepthStratum")
+    out = np.empty(vE - vS, dtype=np.int64)
+    cdef cnp.int64_t[::1] o = out
+    _check(DMPlexTransformCreate(comm, &tr), "DMPlexTransformCreate")
+    try:
+        _check(DMPlexTransformSetType(tr, DMPLEXREFINEREGULAR), "DMPlexTransformSetType")
+        _check(DMPlexTransformSetDM(tr, coarse.dm), "DMPlexTransformSetDM")
+        _check(DMPlexTransformSetUp(tr), "DMPlexTransformSetUp")
+        for v in range(vS, vE):
+            _check(DMPlexTransformGetTargetPoint(tr, DM_POLYTOPE_POINT, DM_POLYTOPE_POINT,
+                                                 v, 0, &target),
+                   "DMPlexTransformGetTargetPoint")
+            o[v - vS] = target
+    finally:
+        DMPlexTransformDestroy(&tr)
     return out

@@ -82,13 +82,20 @@ def test_a_solve_after_a_move_uses_the_moved_geometry(refinement, mg, when):
     assert _integral(moved, Tm) == pytest.approx(expected, rel=1e-3)
 
 
-def test_the_coarse_levels_keep_their_geometry_and_the_finest_level_moves():
+def test_the_finest_level_moves_and_the_coarse_levels_follow_it_when_read():
     mesh = _stretched_box(2)
     coarse_before = mesh.dm_hierarchy[0].getCoordinates().getArray().copy()
     _stretch(mesh)
     finest = mesh.dm_hierarchy[-1].getCoordinatesLocal().array
     assert np.array_equal(finest, mesh.dm.getCoordinatesLocal().array)
-    assert np.array_equal(mesh.dm_hierarchy[0].getCoordinates().getArray(), coarse_before)
+    # The coarse levels move with the finest at the next read of the hierarchy
+    # (#1244): each coarse vertex takes its finest vertex's displacement, and
+    # the stretch is x -> 1.5 x, so a coarse vertex goes to 1.5 x as well, to
+    # round-off (x + (1.5 x - x) against 1.5 x).
+    mesh.clone_dm_hierarchy()
+    expected = coarse_before.reshape(-1, 2) * np.array([1.5, 1.0])
+    after = mesh.dm_hierarchy[0].getCoordinates().getArray().reshape(-1, 2)
+    assert np.abs(after - expected).max(initial=0.0) < 1e-14
 
 
 def test_a_solve_after_relax_on_a_refined_annulus_uses_the_relaxed_geometry():
