@@ -1937,6 +1937,26 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
                 Mp = _pressure_mass_schur_pmat(solver) if has_pressure else None
                 nsp = _rotated_nullspace(solver, Q, normal_rows)   # J assembled above
                 _collect_rotation_modes(nsp)
+                if rot_modes and iters == 0:
+                    # The modes exist only from here on an uncached solve (#884):
+                    # iteration 0's residual, r0 and the rest-state residual were
+                    # measured with the component the solve cannot reduce, which
+                    # every later residual, and a cached re-solve's, leave out. They
+                    # are measured in the same quotient space now, before the line
+                    # search starts from rnorm. Every rank holds the same modes.
+                    for m in rot_modes:
+                        Fhat.axpy(-Fhat.dot(m), m)
+                    rnorm = Fhat.norm()
+                    rnorm_history[-1] = float(rnorm)
+                    r0 = rnorm
+                    if fnorm_rest is not None:
+                        z = dm.getGlobalVec()
+                        z.set(0.0)
+                        Fz = rotated_residual(z)
+                        fnorm_rest = Fz.norm()
+                        Fz.destroy()
+                        dm.restoreGlobalVec(z)
+                    ref = max(r0, fnorm_rest) if fnorm_rest is not None else r0
             else:
                 # a cached workspace keeps its null space, and the verdict on the
                 # declared modes it was built with
