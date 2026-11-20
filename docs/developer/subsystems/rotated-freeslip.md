@@ -463,7 +463,11 @@ faceting is the only reason it could fail it (`_declared_mode_flags`):
 A deformed wall fails the last check, a free surface after its first step for
 example, or a cut that puts chord vertices on a wall. The modes then take the
 constraint test like undeclared ones, and the solve warns once, naming the wall
-and the spread of its vertices. The verdict, the same for every mode, is in the
+and the spread of its vertices. The warning also says that the answer may carry a
+rigid rotation. A mesh moved rigidly (translated by `mesh.deform`) still declares
+its rotation about the old centre; the warning tells the user to declare it about
+the new one through `mesh.nullspace_rotations`. The library does not fit a centre
+to the moved walls (#969, ruled 2026-11-12). The verdict, the same for every mode, is in the
 solve's `declared_modes_exempt` entry; which modes were admitted is in
 `rotation_gauge`. Past the 1e-9 threshold the answer changes sharply: a rotation
 that is only near-null is not removed, and the answer carries a poorly
