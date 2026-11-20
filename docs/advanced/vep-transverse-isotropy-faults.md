@@ -27,7 +27,7 @@ $$
 \dot\varepsilon_{ij}^{\text{total}} = \frac{\sigma_{ij}}{2\eta} + \frac{c_0 \sigma_{ij} + c_1 \sigma_{ij}^{*} + c_2 \sigma_{ij}^{**} + \cdots}{2\mu\Delta t}
 $$
 
-where $\sigma^{*}$ and $\sigma^{**}$ are the stress at the previous and second-previous timesteps, advected to the current particle positions (the Lagrangian stress history). Solving for the current stress:
+where $\sigma^{*}$ and $\sigma^{**}$ are the stress at the previous and second-previous timesteps, carried to the current positions by the solver's stress history (`stress_transport`: by default a semi-Lagrangian trace-back; particles with `"lagrangian"`; on a mesh with a split-node fault, the grid history). Solving for the current stress:
 
 $$
 \sigma_{ij} = 2\eta_{\text{ve}}\,\dot\varepsilon_{ij}^{\text{eff}}
