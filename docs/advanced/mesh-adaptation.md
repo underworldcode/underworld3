@@ -528,8 +528,8 @@ For the mathematically inclined, see the [Developer Design Document](../develope
 The re-meshing examples need a PETSc built with mmg:
 
 - `docs/examples/fluid_mechanics/intermediate/shear_box_2d_fault_adaptive.py`
-- `docs/examples/utilities/advanced/MeshRefine-AdaptiveMetric-Static.py`
-- `docs/examples/utilities/advanced/MeshRefine-AdaptiveMetric-Dynamic.py`
+- `docs/examples/WIP/needs_update/utilities/advanced/MeshRefine-AdaptiveMetric-Static.py`
+- `docs/examples/WIP/needs_update/utilities/advanced/MeshRefine-AdaptiveMetric-Dynamic.py`
 
 These demonstrate fault-based refinement, dynamic adaptation during time-stepping
 and image-based mesh density control.

@@ -171,6 +171,13 @@ ACCEPTED = {
         "`fault_split.collect_point_pairs` sets `out[name]` everywhere), "
         "`structural_on` (the FAC kill flags are allreduced) and `keyed`; and "
         "it returns None only on the cover gate's allreduced counts.",
+    ("discretisation/discretisation_mesh.py", "_build_refined_hierarchy",
+     "callable(refinement_callback)"):
+        "`refinement_callback` is a parameter, passed by the mesh constructor "
+        "that every rank runs with the same arguments; the scan treats a call "
+        "on a parameter as rank-local, but `callable()` of one object is the "
+        "same everywhere. The allgather under it collects each rank's walls for "
+        "the #949 warning, before the `held` branch.",
     ("utilities/rotated_bc.py", "solve_rotated_freeslip"):
         "the cache is created and destroyed on all ranks together, so "
         "`cache is not None` is uniform; the allgather inside exists "

@@ -1850,7 +1850,11 @@ class Mesh(Stateful, uw_object):
                 if count:
                     left_off_surface |= _labels_holding_vertices(dm, put_back, boundary_names)
             self._refinement_left_off_surface = frozenset(left_off_surface)
+            # the walls are each rank's own, gathered for the message (#949);
+            # gathered before the branch, so every rank with a callback is here
+            walls = sorted(set().union(*uw.mpi.comm.allgather(left_off_surface)))
             if held:
+                remedy = getattr(refinement_callback, "remedy", None)
                 with uw.selective_ranks(0) as selected:
                     if selected:
                         import warnings
@@ -1859,7 +1863,11 @@ class Mesh(Stateful, uw_object):
                             f"The refinement callback would have turned cells inside "
                             f"out. {held} vertices it moved, over the hierarchy's "
                             f"{len(self.dm_hierarchy)} levels, stay where refinement "
-                            f"placed them instead (#946).",
+                            f"placed them instead"
+                            + (f", off the walls {walls}: a condition or a surface "
+                               f"placed on those walls sees them off the wall"
+                               if walls else "")
+                            + " (#946)." + (f" {remedy}" if remedy else ""),
                             UserWarning,
                         )
 
@@ -5684,10 +5692,11 @@ class Mesh(Stateful, uw_object):
         Laplacian smoother do, at more than one rank), so that call is too
         late to read the built grid (#1091). The record costs one copy of the
         vertex coordinates per mesh. A mesh built over a DM that had already
-        moved (the add-on partition's copy of a level, a cut) records the
-        coordinates it was given, and reaches the level below through
-        ``_addon_reference``. A periodic mesh holds its coordinates cell by
-        cell and keeps no record."""
+        moved records the coordinates it was given: a cut reaches the level
+        below through ``_addon_reference``. The add-on partition's copy of a
+        moved level is the same mesh redistributed, and is given that level's
+        own record afterwards (``addon_partition.partition_addon``). A periodic
+        mesh holds its coordinates cell by cell and keeps no record."""
         self._record_transfer_geometry()
         self._as_built_vertices = self._transfer_vertices
         self._moved_since_built = False
@@ -11680,14 +11689,11 @@ class Mesh(Stateful, uw_object):
                                 rg.setValue(c, region.value)
                 rgLabel_name = "_CellRegions_"
 
-        # TODO(BUG): after metricCreateIsotropic on a rank with no cells, the next
-        # dm.distribute hangs, with cells [8, 8, 0] and not with cells on every rank.
-        # A clone, createGlobalVector, a norm, a barrier and a new variable all pass.
-        # No PETSc we build adapts on more than one rank yet, so nothing reaches
-        # it. See issue #975.
-        # Create the metric from the field
+        # Create the metric from the field, on every rank in step: a rank with
+        # no cells otherwise falls a tag behind and the next distribute hangs
+        # (#975)
         hvec = metric_field._lvec
-        metric_vec = self.dm.metricCreateIsotropic(hvec, metric_field.field_id)
+        metric_vec = adaptivity._isotropic_metric(self.dm, hvec, metric_field.field_id)
 
         if verbose:
             n_nodes_old = self.dm.getChart()[1] - self.dm.getChart()[0]
