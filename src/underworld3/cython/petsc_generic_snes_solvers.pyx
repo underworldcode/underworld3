@@ -7427,9 +7427,14 @@ class SNES_Scalar(SolverBaseClass):
                 
                 bd_F0  = sympy.Array(bc.fn_f)
                 bc.fns["u_f0"] = sympy.ImmutableDenseMatrix(bd_F0)
-                
-                G0 = derive_by_array_wrt_field(bd_F0, U)
-                G1 = derive_by_array_wrt_field(bd_F0, L)
+
+                # The tangent is taken of the unwrapped term, as for the volume flux: a
+                # named expression in fn_f (the viscosity in a Nitsche penalty) was a
+                # constant to the derivative, and the tangent missed its dependence on
+                # the unknowns (#1162). The residual stays exact.
+                bd_F0_jac = self._jacobian_source(bd_F0)
+                G0 = derive_by_array_wrt_field(bd_F0_jac, U)
+                G1 = derive_by_array_wrt_field(bd_F0_jac, L)
 
                 bc.fns["uu_G0"] = sympy.ImmutableMatrix(G0.reshape(1, 1)) 
                 bc.fns["uu_G1"] = sympy.ImmutableMatrix(G1.reshape(dim, 1))
@@ -8478,11 +8483,16 @@ class SNES_Vector(SolverBaseClass):
                 # BC G1[fc*Nc + gc, df]       = ∂bd_f0[fc]/∂L[gc, df]
                 bd_G0 = sympy.zeros(Nc, Nc)
                 bd_G1 = sympy.zeros(Nc * Nc, cdim)
+                # The tangent is taken of the unwrapped term, as for the volume flux: a
+                # named expression in fn_f (the viscosity in a Nitsche penalty) was a
+                # constant to the derivative, and the tangent missed its dependence on
+                # the unknowns (#1162). The residual stays exact.
+                bd_f0_jac = list(self._jacobian_source(sympy.Array(bd_f0_list)))
                 for fc in range(Nc):
                     for gc in range(Nc):
-                        bd_G0[fc, gc] = diff_wrt_field(bd_f0_list[fc], U_list[gc])
+                        bd_G0[fc, gc] = diff_wrt_field(bd_f0_jac[fc], U_list[gc])
                         for df in range(cdim):
-                            bd_G1[fc * Nc + gc, df] = diff_wrt_field(bd_f0_list[fc], L[gc, df])
+                            bd_G1[fc * Nc + gc, df] = diff_wrt_field(bd_f0_jac[fc], L[gc, df])
 
                 bc.fns["uu_G0"] = sympy.ImmutableMatrix(bd_G0)
                 bc.fns["uu_G1"] = sympy.ImmutableMatrix(bd_G1)
@@ -9265,11 +9275,16 @@ class SNES_MultiComponent(SolverBaseClass):
 
                 bd_G0 = sympy.zeros(Nc, Nc)
                 bd_G1 = sympy.zeros(Nc * Nc, cdim)
+                # The tangent is taken of the unwrapped term, as for the volume flux: a
+                # named expression in fn_f (the viscosity in a Nitsche penalty) was a
+                # constant to the derivative, and the tangent missed its dependence on
+                # the unknowns (#1162). The residual stays exact.
+                bd_f0_jac = list(self._jacobian_source(sympy.Array(bd_f0_list)))
                 for fc in range(Nc):
                     for gc in range(Nc):
-                        bd_G0[fc, gc] = diff_wrt_field(bd_f0_list[fc], U_list[gc])
+                        bd_G0[fc, gc] = diff_wrt_field(bd_f0_jac[fc], U_list[gc])
                         for df in range(cdim):
-                            bd_G1[fc * Nc + gc, df] = diff_wrt_field(bd_f0_list[fc], L[gc, df])
+                            bd_G1[fc * Nc + gc, df] = diff_wrt_field(bd_f0_jac[fc], L[gc, df])
 
                 bc.fns["uu_G0"] = sympy.ImmutableMatrix(bd_G0)
                 bc.fns["uu_G1"] = sympy.ImmutableMatrix(bd_G1)
@@ -11887,7 +11902,11 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                 # explicit-index loops (the old permutedims form transposed
                 # fc/gc here too; harmless only while every natural-BC
                 # tangent happened to be symmetric).
-                bd_f0_list = list(sympy.Array(bc.fn_f).reshape(dim))
+                # The tangent is taken of the unwrapped term, as for the volume flux: a
+                # named expression in fn_f (the viscosity in a Nitsche penalty) was a
+                # constant to the derivative, and the tangent missed its dependence on
+                # the unknowns (#1162). The residual stays exact.
+                bd_f0_list = list(self._jacobian_source(sympy.Array(bc.fn_f).reshape(dim)))
 
                 # uu_G0[fc, gc]         = d bd_F0[fc] / dU[gc]
                 G0 = sympy.zeros(dim, dim)
