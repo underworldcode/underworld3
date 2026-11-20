@@ -134,3 +134,38 @@ def test_custom_plot(monkeypatch, viz):
                                    rtol=1e-12, atol=1e-12)
     else:
         assert received == {}
+
+
+def _points_only_on(viz_rank):
+    """POINTS on the plotting rank, None elsewhere: the other ranks' points are
+    not read."""
+    return POINTS if uw.mpi.rank == viz_rank else None
+
+
+@pytest.mark.tier_b
+@pytest.mark.parametrize("viz", [0, -1])
+def test_only_the_plotting_rank_needs_the_points(monkeypatch, viz):
+    """The other ranks pass None for the sample points; every helper completes
+    with the plotting rank's values exact (before: they raised on None and the
+    plotting rank waited in global_evaluate)."""
+    mesh, T = _linear_field()
+    viz_rank = _viz_ranks()[viz]
+    points = _points_only_on(viz_rank)
+    calls = _recording(monkeypatch)
+    vp.parallel_line_plot(T, points, viz_rank=viz_rank)
+    vp.parallel_scatter_plot(T, sympy.Integer(2) * T.sym[0], points, viz_rank=viz_rank)
+    vp.parallel_profile_comparison([T.sym[0]], points, viz_rank=viz_rank)
+    vp.parallel_custom_plot(lambda **data: None, [(T, points, "t")], viz_rank=viz_rank)
+    plt.close("all")
+    _check(calls, viz_rank, [1.0, 1.0, 2.0, 1.0, 1.0])
+
+
+@pytest.mark.tier_b
+@pytest.mark.parametrize("viz", [0, -1])
+def test_unusable_points_on_the_plotting_rank_are_refused_on_every_rank(viz):
+    """None on the plotting rank is refused with the same message on every rank,
+    before global_evaluate, instead of a hang."""
+    mesh, T = _linear_field()
+    viz_rank = _viz_ranks()[viz]
+    with pytest.raises(ValueError, match=r"sample points on the plotting rank"):
+        vp.parallel_line_plot(T, None, viz_rank=viz_rank)
