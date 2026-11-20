@@ -369,13 +369,15 @@ def _raise_the_top_wall(mesh):
     mesh.deform(c)
 
 
-@pytest.mark.parametrize("raised,iterations", [(False, 2), (True, 4)], ids=["at-rest", "wall-raised"])
+@pytest.mark.parametrize("raised,iterations", [(False, 2), (True, 2)], ids=["at-rest", "wall-raised"])
 def test_a_base_moved_before_an_adapt_goes_into_the_child_where_it_stands(raised, iterations):
     """An adapt is a change of topology: the child's hierarchy is made from the
     base as it stands, and the base's finest level goes into it as a new mesh
-    on the moved coordinates. The pair under that level is built from them: 4
-    iterations with the top wall raised three times before the adapt, 2 with
-    the box at rest."""
+    on the moved coordinates. The base's coarse levels move with it (Louis,
+    2026-11-19), so the pair under that level stands on one geometry: 2
+    iterations with the top wall raised three times before the adapt, as with
+    the box at rest. With the coarse levels left where they were made it took
+    4 (development 246d6cef)."""
     base = uw.meshing.UnstructuredSimplexBox(
         minCoords=(0, 0), maxCoords=(1, 1), cellSize=1 / 4, regular=False,
         qdegree=2, refinement=2)
@@ -389,7 +391,10 @@ def test_a_base_moved_before_an_adapt_goes_into_the_child_where_it_stands(raised
 
     child = base.adapt(metric, max_levels=2)
     tail = list(child._custom_mg_coarse_meshes)
-    assert not any(level._moved_since_built for level in tail)
+    # The base's coarse levels moved with it (Louis, 2026-11-19), so the child
+    # is made on a hierarchy that stands where the base does.
+    assert all(getattr(level, "_moves_with_the_finest", False) == raised
+               for level in tail[:-1])
     s = _box_poisson(child)
     custom_mg.set_custom_fmg(s, tail)
     s.solve()
