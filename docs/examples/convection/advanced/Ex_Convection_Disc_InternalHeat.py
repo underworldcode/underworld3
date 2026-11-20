@@ -284,7 +284,7 @@ init_t = (
 adv_diff.add_dirichlet_bc(0.0, "Upper")
 
 with meshball.access(t_0, t_soln):
-    t_0.data[...] = uw.function.evalf(init_t, t_0.coords).reshape(-1, 1)
+    t_0.data[...] = uw.function.evaluate(init_t, t_0.coords).squeeze().reshape(-1, 1)
     t_soln.data[...] = t_0.data[...]
 
 # %% [markdown]
@@ -300,8 +300,7 @@ if params.uw_restart_step != 0:
     )
 
 # %%
-with meshball.access(r_mesh):
-    r_mesh.X.coords[:, 0] = uw.function.evalf(r, meshball.data)
+r_mesh.array[:, 0, 0] = uw.function.evaluate(r, r_mesh.coords)[:, 0, 0]
 
 # %% [markdown]
 """
@@ -415,14 +414,14 @@ for step in range(0, int(params.uw_max_steps)):
     calculate_diffusivity.solve()
 
     if step % 10 == 0:
-        delta_t = adv_diff.estimate_dt(v_factor=2.0, diffusivity=kappa.sym[0])
+        delta_t = adv_diff.estimate_dt()
 
     adv_diff.solve(timestep=delta_t, zero_init_guess=False)
 
     # Statistics
     tstats = t_soln.stats()
     Tgrad_stats = kappa.stats()
-    dt_estimate = adv_diff.estimate_dt(v_factor=2.0, diffusivity=kappa.sym[0])
+    dt_estimate = adv_diff.estimate_dt()
 
     uw.pprint(f"Timestep {ts}, dt {delta_t:.2e} ({dt_estimate:.2e})", flush=True)
 

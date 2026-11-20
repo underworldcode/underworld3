@@ -1,3 +1,4 @@
+# WIP (#944): moved from docs/examples/utilities/intermediate/Convection-AdaptedMesh.py: needs an adapted-mesh checkpoint from the mmg remeshing examples.
 # %% [markdown]
 """
 # 🔬 Convection-AdaptedMesh
@@ -137,8 +138,8 @@ adv_diff1.add_dirichlet_bc(0.0, "Upper")
 t_init = 1-cell_properties.sym[0]
 
 with batmesh.access(t_soln, t_soln1):
-    t_soln.data[:,0] = uw.function.evalf(t_init, t_soln.coords)
-    t_soln1.data[:,0] = uw.function.evalf(t_init, t_soln1.coords)
+    t_soln.array[:, 0, 0] = uw.function.evaluate(t_init, t_soln.coords)[:, 0, 0]
+    t_soln1.array[:, 0, 0] = uw.function.evaluate(t_init, t_soln1.coords)[:, 0, 0]
 
 
 

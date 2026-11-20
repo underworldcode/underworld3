@@ -1,6 +1,7 @@
+# WIP (#944): moved from docs/examples/utilities/advanced/Manifold_S2.5.py: uses SegmentedSphere and native coordinates, removed in ee29df2a.
 # %% [markdown]
 """
-# 🎓 Manifold S2.5-SphCoords
+# 🎓 Manifold S2.5
 
 **PHYSICS:** utilities  
 **DIFFICULTY:** advanced  
@@ -41,17 +42,19 @@ import os
 
 os.environ["SYMPY_USE_CACHE"] = "no"
 
+
 # -
 
 
 bubblemesh = uw.meshing.SegmentedSphere(
     radiusOuter=1.0,
-    radiusInner=0.5,
+    radiusInner=0.98,
     cellSize=0.1,
     numSegments=6, 
     qdegree=3, 
     filename="tmpWedge.msh",
-    coordinatesNative=True)
+    coordinatesNative=False)
+
 
 bubblemesh.dm.view()
 
@@ -65,27 +68,22 @@ bubblemesh.dm.view()
 V = uw.discretisation.MeshVariable("U", bubblemesh, 3, degree=2)
 P = uw.discretisation.MeshVariable("P", bubblemesh, 1, degree=1, continuous=False)
 Pc = uw.discretisation.MeshVariable("Pc",bubblemesh, 1, degree=2)
-T  = uw.discretisation.MeshVariable("T", bubblemesh, 1, degree=2)
+T  = uw.discretisation.MeshVariable("T", bubblemesh, 1, degree=3)
 Tnode = uw.discretisation.MeshVariable("Tn", bubblemesh, 1, degree=1)
 Tdiff  = uw.discretisation.MeshVariable("dT", bubblemesh, 1, degree=1, continuous=False)
-Tdiffc  = uw.discretisation.MeshVariable("dTc", bubblemesh, 1, degree=1, continuous=True)
+Tdiffc  = uw.discretisation.MeshVariable("dTc", bubblemesh, 1, degree=2, continuous=True)
 
 r, lon,lat = bubblemesh.CoordinateSystem.R
 
 # +
-
 t_init = sympy.sympify(sympy.sin(6 * lon) * sympy.cos(5 * lat) * sympy.cos(lat))
 
-with bubblemesh.access(T, Tnode):
-    T.data[:,0] = uw.function.evaluate(t_init, T.coords, bubblemesh.N)    
+with bubblemesh.access(T):
+    T.array[:, 0, 0] = uw.function.evaluate(t_init, T.coords, bubblemesh.N)[:, 0, 0]
 # -
-
-T.gradient()
 
 slope = sympy.sqrt(T.gradient().dot(T.gradient()))
 slope
-
-T.gradient()
 
 # ### SNES example
 #
@@ -94,15 +92,7 @@ T.gradient()
 # +
 projector = uw.systems.Projection(bubblemesh, Tnode)
 projector.uw_function = T.sym[0]
-projector.smoothing = 1.0e-6
-
-# Test if bc's work
-projector.add_dirichlet_bc(10.0, "PoleAxisN", 0)
-projector.add_dirichlet_bc(10.0, "PolePtNo", 0)
-projector.add_dirichlet_bc(10.0, "PolePtNi", 0)
-projector.add_dirichlet_bc(-10.0, "PoleAxisS", 0)
-projector.add_dirichlet_bc(-10.0, "PolePtSo", 0)
-projector.add_dirichlet_bc(-10.0, "PolePtSi", 0)
+projector.smoothing = 1.0e-3
 
 options = projector.petsc_options
 options.setValue("snes_rtol",1.0e-4)
@@ -130,7 +120,7 @@ options.setValue("snes_rtol",1.0e-4)
 projector.solve()
 # +
 projector = uw.systems.Projection(bubblemesh, Tdiffc)
-projector.uw_function = Tdiff.sym[0] # sympy.diff(T.sym[0], lon)        
+projector.uw_function = slope # sympy.diff(T.sym[0], lon)        
 projector.smoothing = 1.0e-6
 
 projector.add_dirichlet_bc(0.0, "PoleAxisN", 0)
@@ -143,6 +133,7 @@ projector.add_dirichlet_bc(0.0, "PolePtSi", 0)
 options = projector.petsc_options
 options.setValue("snes_rtol",1.0e-4)
 
+
 projector.solve()
 # -
 
@@ -152,24 +143,27 @@ if uw.mpi.size == 1:
     import pyvista as pv
     import underworld3.visualisation as vis
  
-    # pvmesh = vis.mesh_to_pv_mesh(bubblemesh)
-    pvmesh = pv.read("tmpWedge.msh")
+    pvmesh = vis.mesh_to_pv_mesh(bubblemesh)
     pvmesh.point_data["nT"] = vis.scalar_fn_to_pv_points(pvmesh, Tnode.sym)
     pvmesh.point_data["dT"] = vis.scalar_fn_to_pv_points(pvmesh, Tdiff.sym)
     pvmesh.point_data["dTc"] = vis.scalar_fn_to_pv_points(pvmesh, Tdiffc.sym)
 
-pl = pv.Plotter(window_size=(750, 750))  
-clipped = pvmesh.clip(normal='x', crinkle=True)
-pl.add_mesh(
-            clipped,
-            show_edges=True,
-            scalars="dT",
-            cmap="RdYlBu",
-            opacity=1.0,  
-            # clim=[-6,6]
-        )
-pl.add_axes(labels_off=False)
-pl.show(cpos="xy")
+    pl = pv.Plotter(window_size=(750, 750))
+  
+    pl.add_mesh(
+        pvmesh,
+        show_edges=True,
+        scalars="dT",
+        cmap="RdYlBu",
+        opacity=1.0,  
+        # clim=[0,1]
+    )
+
+    
+    pl.add_axes(labels_off=False)
+
+
+    pl.show(cpos="xy")
 
 # +
 ## Below is some useful stuff for dmplex that we should put somewhere

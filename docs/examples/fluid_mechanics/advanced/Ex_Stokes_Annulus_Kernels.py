@@ -188,9 +188,8 @@ vnorm = I0.evaluate()
 
 # print(norm/vnorm, vnorm)
 
-with meshball.access(v_soln):
-    dv = uw.function.evaluate(norm * v_theta_fn_xy, v_soln.coords) / vnorm
-    v_soln.data[...] -= dv 
+dv = uw.function.evaluate(norm * v_theta_fn_xy.T, v_soln.coords) / vnorm
+v_soln.array[...] -= dv
 
 with meshball.access(v_soln1):
     v_soln1.data[...] = v_soln.data[...]
@@ -238,10 +237,8 @@ stokes.solve(zero_init_guess=True)
 I0 = uw.maths.Integral(meshball, v_theta_fn_xy.dot(v_soln.sym))
 norm = I0.evaluate()
 
-with meshball.access(v_soln):
-    dv = uw.function.evaluate(norm * v_theta_fn_xy, v_soln.coords) / vnorm
-    v_soln.data[...] -= dv 
-
+dv = uw.function.evaluate(norm * v_theta_fn_xy.T, v_soln.coords) / vnorm
+v_soln.array[...] -= dv
 # print(norm/vnorm, vnorm)
 # -9.662093930530614e-09 0.024291704747453444
 

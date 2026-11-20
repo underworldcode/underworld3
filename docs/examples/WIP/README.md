@@ -7,6 +7,28 @@ This directory contains examples that are either:
 
 ## Organization
 
+### [needs_update/](needs_update/)
+Examples that do not run on the current library, moved here by #944 with the reason on each file's first line. Their paths below `needs_update/` are where they were.
+- `fluid_mechanics/advanced/Ex_Navier_Stokes_Benchmarks_NS_DFG_2d.py`: particle recycling (Swarm recycle_rate > 1) is not implemented.
+- `porous_flow/advanced/Ex_viscousFingering.py`: particle recycling (Swarm recycle_rate > 1) is not implemented.
+- `fluid_mechanics/advanced/Ex_Navier_Stokes_Disk_Coriolis.py`: NavierStokes no longer takes velocityStar_fn.
+- `fluid_mechanics/advanced/Ex_Navier_Stokes_Disk_FreeSlipBCs-Coriolis.py`: written for SwarmVariable.fn and the old Navier-Stokes history API.
+- `fluid_mechanics/advanced/Ex_Navier_Stokes_Disk_NoSlipBCs-Coriolis_ss.py`: written for SwarmVariable.fn and the old Navier-Stokes history API.
+- `fluid_mechanics/advanced/Ex_NS_Couette_PostProc.py`: post-processes another user's local output files, which are not in the repository.
+- `fluid_mechanics/intermediate/Ex_NS_PipeFlow_PostProc.py`: post-processes another user's local output files, which are not in the repository.
+- `fluid_mechanics/intermediate/Ex_Stokes_Disk_CylCoords_DEPRECATED_NATIVE.py`: native coordinate systems were removed in ee29df2a.
+- `utilities/advanced/Ex_UsingCoordinates.py`: native coordinate systems were removed in ee29df2a; the periodic native mesh fails its geometry check.
+- `utilities/advanced/Manifold_S2.5.py`: uses SegmentedSphere and native coordinates, removed in ee29df2a.
+- `utilities/advanced/Manifold_S2.5-SphCoords.py`: uses SegmentedSphere and native coordinates, removed in ee29df2a.
+- `utilities/advanced/MeshRefine-AdaptiveMetric-Dynamic.py`: needs a PETSc built with mmg (metric remeshing), which the standard environment does not have.
+- `utilities/advanced/MeshRefine-AdaptiveMetric-Static.py`: needs a PETSc built with mmg (metric remeshing), which the standard environment does not have.
+- `utilities/intermediate/Convection-AdaptedMesh.py`: needs an adapted-mesh checkpoint from the mmg remeshing examples.
+- `free_surface/advanced/AnnulusND_FS-OuterSphere.py`: uses FSSA with the factory boundary normals on a deformed mesh, which the library refuses.
+- `convection/advanced/Ex_Convection_Cartesian-Swarm.py`: written for the AdvDiffusionSwarm projection API, which is gone.
+- `free_surface/advanced/AnnulusFS.py`: written for the old evaluate shapes and mesh-mover API, updated only in part.
+- `utilities/advanced/Ex_Tensor_Variables_etc.py`: uses t_soln without defining it, and the AdvDiffusionSwarm API.
+- `solid_mechanics/advanced/Ex_Sheared_Layer_Visualisation.py`: reads swarms with Swarm.load, which is gone.
+
 ### 📁 [porous_flow/](porous_flow/)
 Advanced porous flow examples that complete the porous flow physics domain.
 - Ex_Explicit_Flow_Grains.ipynb - Explicit grain-scale flow modeling
