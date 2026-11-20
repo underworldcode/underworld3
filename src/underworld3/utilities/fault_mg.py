@@ -130,6 +130,79 @@ def reference_vertices(mesh, below):
     return mesh._as_built_vertices if mesh._moved_since_built else None
 
 
+# The containment rule for a coarse vertex read in the cells of the level above
+# it (the coarse levels move with the fine, stage 2; H5's review). A vertex
+# outside every candidate cell is clamped into the best one; a clamp whose
+# smallest barycentric weight before clipping is below _CLAMP_WARN is reported,
+# and one below _CLAMP_REFUSE refused. Measured by H5 on the #1120 fixture: coarse
+# cut vertices up to 0.027 outside every candidate, barycentric weights up to 2.0
+# at the tips. 1e-2 is about one per cent of the cell's height outside it, past
+# round-off and a curved wall's chord error; half a cell outside can only mean
+# the recorded parents are wrong.
+_CLAMP_WARN = -1.0e-2
+_CLAMP_REFUSE = -0.5
+
+
+def _interpolate_in_candidates(points, owner, cells, vxy, cv, values):
+    """``values`` (per vertex of the level above) interpolated at ``points`` in
+    the candidate ``cells``: ``owner[k]`` is the point that candidate ``k`` is
+    for, so a point may have several. Each point is read in the candidate that
+    holds it best (the largest smallest barycentric weight). A point inside
+    none is clamped: its weights are clipped to ``[0, 1]`` and renormalised.
+
+    Returns ``(out, n_clamped, worst)``: the interpolated values (NaN for a
+    point with no candidate), the number of points clamped, and the smallest
+    barycentric weight among them before clipping (0.0 when none was).
+    Rank-local; :func:`_containment_verdict` turns the counts into the
+    collective report."""
+    points = np.asarray(points, dtype=float)
+    owner = np.asarray(owner, dtype=np.int64)
+    cells = np.asarray(cells, dtype=np.int64)
+    values = np.asarray(values, dtype=float)
+    n = len(points)
+    out = np.full((n,) + values.shape[1:], np.nan)
+    if not cells.size:
+        return out, 0, 0.0
+    lam = _barycentric(points[owner], vxy[cv[cells]])
+    score = lam.min(axis=1)
+    order = np.lexsort((score, owner))
+    last = np.r_[owner[order][1:] != owner[order][:-1], True]
+    best = order[last]                           # one candidate per point
+    pts, lam_best, score_best = owner[best], lam[best], score[best]
+    clamped = score_best < -_INSIDE_TOL
+    w = np.clip(lam_best, 0.0, 1.0)
+    w = w / w.sum(axis=1, keepdims=True)
+    out[pts] = np.einsum("nv,nv...->n...", w, values[cv[cells[best]]])
+    worst = float(score_best[clamped].min()) if clamped.any() else 0.0
+    return out, int(clamped.sum()), worst
+
+
+def _containment_verdict(n_clamped, worst, comm, what="a coarse level"):
+    """The collective report of :func:`_interpolate_in_candidates`' clamps:
+    ``(count, worst)`` summed and minimised over the ranks, for the build notes.
+    Warns once when the worst weight is below ``_CLAMP_WARN``; refuses on every
+    rank, as a ``CollectiveBuildError``, below ``_CLAMP_REFUSE``. COLLECTIVE."""
+    from underworld3.utilities.custom_mg import CollectiveBuildError
+    m4 = comm.tompi4py() if hasattr(comm, "tompi4py") else comm
+    count = int(m4.allreduce(int(n_clamped)))
+    low = float(m4.allreduce(float(worst), op=MPI.MIN))
+    if low < _CLAMP_REFUSE:
+        raise CollectiveBuildError(
+            f"{what}: {count} vertex(es) lie outside every candidate cell of the "
+            f"level above, the worst with a barycentric weight of {low:.3g} (below "
+            f"{_CLAMP_REFUSE}): half a cell or more outside, so the recorded "
+            f"parents do not describe this level.")
+    if low < _CLAMP_WARN:
+        import warnings
+        with uw.selective_ranks(0) as selected:
+            if selected:
+                warnings.warn(
+                    f"{what}: {count} vertex(es) lie outside every candidate cell "
+                    f"of the level above and were clamped into the nearest; the "
+                    f"worst barycentric weight was {low:.3g}.", UserWarning)
+    return {"clamped": count, "worst_weight": low}
+
+
 def _barycentric(P, V):
     """Barycentric coordinates of points ``P (n, cdim)`` in the simplices
     ``V (n, dim + 1, cdim)``. For an embedded surface (``cdim > dim``) the point is
