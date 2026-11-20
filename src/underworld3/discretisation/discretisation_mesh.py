@@ -2608,12 +2608,25 @@ class Mesh(Stateful, uw_object):
         finest (:meth:`_move_coarse_levels_with_the_finest`). Collective.
         """
 
+        from underworld3.cython.petsc_maths import dm_force_coordinate_field
+
         self._move_coarse_levels_with_the_finest()
         dm_hierarchy = self.dm_hierarchy
 
+        # A clone does not carry the coordinate field (DMClone copies the
+        # coordinates, not the DMField over them), so PETSc creates it lazily
+        # the first time an assembly needs a cell's geometry -- and a rank
+        # holding no cells never does in the residual. Creating a PETSc object
+        # on the mesh's communicator takes a tag from that communicator, so the
+        # ranks' tag counters drift apart, and a later two-sided exchange on it
+        # (the next mesh load's label read) waits on messages under a tag the
+        # other ranks never use. The field is created here, where every rank
+        # clones.
         new_dm_hierarchy = []
         for dm in dm_hierarchy:
-            new_dm_hierarchy.append(dm.clone())
+            clone = dm.clone()
+            dm_force_coordinate_field(clone)
+            new_dm_hierarchy.append(clone)
 
         for i, dm in enumerate(new_dm_hierarchy[:-1]):
             new_dm_hierarchy[i + 1].setCoarseDM(new_dm_hierarchy[i])
@@ -7948,6 +7961,11 @@ class Mesh(Stateful, uw_object):
         skeletonization array to decide inside from outside, and check the
         points close to the boundary against the cells.
 
+        The claim is not exclusive: a point on a partition seam lies in the
+        cells of every rank on that seam, and each of them claims it. To give
+        each point to one rank, use :meth:`_points_owned_here`, as
+        :meth:`Swarm.add_particles_with_coordinates` does.
+
         Parameters
         ----------
         points : array-like
@@ -7960,6 +7978,62 @@ class Mesh(Stateful, uw_object):
 
         """
         return self._classify_points_in_domain(points, strict_validation)[0]
+
+    def _points_owned_here(self, points, strict_validation=True):
+        """Which of ``points`` this rank owns, when every rank is given the
+        same points: each point :meth:`points_in_domain` claims goes to the
+        lowest rank that claims it, so exactly one rank owns it.
+
+        Only a point in a cell on a partition seam can be claimed by more than
+        one rank (the cells of different ranks meet only there), so only those
+        are compared. Each rank gathers the claimed points in its seam cells,
+        and a point is the same point on two ranks when its coordinates are
+        identical: the ranks were given the same array. A rank given a point
+        no other rank was given keeps it, so pre-partitioned input is kept as
+        it was. A point no rank claims is owned by none, as before.
+
+        Collective: every rank reaches the seam-point reduction and the gather,
+        an empty rank included.
+        """
+        claimed, cells = self._classify_points_in_domain(points, strict_validation)
+        claimed = numpy.asarray(claimed, dtype=bool)
+        if self.dm.getComm().getSize() == 1:
+            return claimed
+
+        from underworld3.utilities._plex_topology import closure_points
+
+        shared = self._seam_points()                             # collective
+        v0, v1 = self.dm.getDepthStratum(0)
+        seam_vertices = numpy.array(sorted(p for p in shared if v0 <= p < v1),
+                                    dtype=numpy.int64)
+        cells = numpy.asarray(cells, dtype=numpy.int64)
+        # A claimed point whose cell this rank did not locate (the sign test of a
+        # mesh that is not straight-sided simplices) is compared too.
+        compared = claimed & (cells < 0)
+        located = numpy.flatnonzero(claimed & (cells >= 0))
+        if located.shape[0] > 0 and seam_vertices.shape[0] > 0:
+            owning, where = numpy.unique(cells[located], return_inverse=True)
+            vertices = closure_points(self.dm, owning, 0)
+            on_seam = numpy.isin(vertices, seam_vertices).any(axis=1)
+            compared[located[on_seam[where]]] = True
+
+        # Shaped by the mesh, not the input: a rank given no points has an
+        # empty array, and must still reach the gather below.
+        mine = numpy.asarray(points, dtype=float).reshape(-1, self.cdim)[compared]
+        counts = numpy.array(uw.mpi.comm.allgather(int(mine.shape[0])), dtype=int)
+        if counts.sum() == 0:
+            return claimed
+        every = numpy.concatenate(uw.mpi.comm.allgather(mine), axis=0)
+        rank_of = numpy.repeat(numpy.arange(counts.shape[0]), counts)
+        _, group = numpy.unique(every, axis=0, return_inverse=True)
+        group = group.reshape(-1)
+        owner = numpy.full(group.max() + 1, counts.shape[0], dtype=int)
+        numpy.minimum.at(owner, group, rank_of)
+        offset = int(counts[:uw.mpi.rank].sum())
+        here = group[offset:offset + mine.shape[0]]
+        owned = claimed.copy()
+        owned[numpy.flatnonzero(compared)] = owner[here] == uw.mpi.rank
+        return owned
 
     def _classify_points_in_domain(self, points, strict_validation=True, exact_location=False):
         """In/out classification, keeping the owning cells it had to locate.
@@ -8510,8 +8584,11 @@ class Mesh(Stateful, uw_object):
     # ownership unique: a point within the slab of a partition seam is claimed
     # by the ranks on both sides (measured by H1 on #1175: 30 to 2,690 points
     # per run claimed twice), and the rank that does not contain it evaluates
-    # it in a cell that does not (up to 2.8e-4 off, 1e-5 typical). Claiming by
-    # exact containment first is the follow-up named on #1175.
+    # it in a cell that does not (up to 2.8e-4 off, 1e-5 typical).
+    # global_evaluate therefore hands each point it holds without containing it
+    # to a rank that contains it, after its migration (#1178,
+    # _hand_points_to_containing_rank in function/_function.pyx); the face
+    # tolerance decides only for points no rank contains.
     _EVAL_FACE_TOL = 1.0e-2
     # Containment to rounding, relative like _EVAL_FACE_TOL. A point some local
     # cell contains to this tolerance is evaluated in that cell (#1115).
@@ -8611,6 +8688,22 @@ class Mesh(Stateful, uw_object):
                 dtype=numpy.int64,
             )
         return cells
+
+    def _contained_in_local_cells(self, coords):
+        """Whether a local cell contains each point (coords in model units),
+        with no face tolerance: the exact walk on a simplex mesh
+        (:meth:`_walk_to_owning_cells`), containment to rounding
+        (``_EVAL_CONTAIN_TOL``) on other meshes. Rank-local."""
+        coords = numpy.asarray(coords)
+        cStart, cEnd = self.dm.getHeightStratum(0)
+        if coords.shape[0] == 0 or cEnd == cStart:
+            return numpy.zeros(coords.shape[0], dtype=bool)
+        locator = self._simplex_locator()
+        if locator is not None:
+            cells, _, _ = self._walk_to_owning_cells(locator, coords)
+        else:
+            cells = self._get_closest_local_cells_internal(coords, tol=self._EVAL_CONTAIN_TOL)
+        return numpy.asarray(cells) >= 0
 
     def _simplex_locator(self):
         """The exact barycentric locator for this mesh's local cells, or None
