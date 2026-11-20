@@ -285,7 +285,7 @@ sigma_projector.solve()
 timing.reset()
 timing.start()
 
-stokes.solve(zero_init_guess=False, evalf=False)
+stokes.solve(zero_init_guess=False)
 timing.print_table(display_fraction=1)
 print(f"Max velocity: {stokes.Unknowns.u.max()}, Max pressure: {stokes.Unknowns.p.max()}")
 
@@ -295,7 +295,7 @@ print(f"Max velocity: {stokes.Unknowns.u.max()}, Max pressure: {stokes.Unknowns.
 """
 
 # %%
-stokes.solve(zero_init_guess=False, verbose=False, evalf=False)
+stokes.solve(zero_init_guess=False, verbose=False)
 timing.print_table(display_fraction=1)
 print(f"Max velocity: {stokes.Unknowns.u.max()}, Max pressure: {stokes.Unknowns.p.max()}")
 
@@ -367,7 +367,7 @@ maxsteps = int(params.uw_max_steps)
 expt_name = f"shear_band_ve_{params.uw_mu}"
 
 for step in range(0, maxsteps):
-    stokes.solve(zero_init_guess=False, evalf=False)
+    stokes.solve(zero_init_guess=False)
 
     nodal_strain_rate_inv2.uw_function = stokes.Unknowns.Einv2
     nodal_strain_rate_inv2.solve()
