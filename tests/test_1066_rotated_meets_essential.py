@@ -12,6 +12,10 @@ at those nodes. The lid leaked at its own end points (max|u_y| = 4.0e-3 against
 component-Dirichlet one by 2e-3 globally, with an exact linear solve on both
 sides. Issue #616; the corner reaction of #608 is the same node.
 
+Serial only. The corner tests read the velocity at the lid's ends with a
+rank-local ``evaluate``, so under ``mpirun`` a rank that does not hold an end
+fails them (H7's review of #1263); the serial batch is where they run.
+
 Run: pixi run python -m pytest tests/test_1066_rotated_meets_essential.py -v
 """
 
@@ -84,13 +88,15 @@ def test_rotated_lid_reproduces_the_component_condition():
 
 def _lid_against_a_pinned_wall(left, capsys, lid_normal=(sympy.Rational(3, 5), sympy.Rational(4, 5)),
                                right=None, clock=None, deprecated_component=None,
-                               rotated_floor=False, lid_datum=0, corners=False, solves=None):
+                               rotated_floor=False, lid_datum=0, corners=False, solves=None,
+                               reused=None):
     """Rotated free slip on Top with the given normal, meeting an essential
     condition ``left`` on Left (and ``right`` on Right, else rotated free slip);
     no slip on Bottom, so the only shared nodes are the lid's two ends.
     Returns the warnings about a pinned value that the solve printed, and with
     ``corners`` the velocity at the lid's two ends, Top-Left first. ``solves``,
-    a list of clock values, solves once at each and returns the corners of each."""
+    a list of clock values, solves once at each and returns the corners of each;
+    ``reused``, a list, collects whether each solve reused the cached rotation."""
     mesh = uw.meshing.UnstructuredSimplexBox(
         minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=0.25, qdegree=3)
     x, z = mesh.X
@@ -123,6 +129,8 @@ def _lid_against_a_pinned_wall(left, capsys, lid_normal=(sympy.Rational(3, 5), s
         if t is not None:
             uw.get_default_model().tracker.time = t
         s.solve()
+        if reused is not None:
+            reused.append(bool(s._rotated_freeslip_info["rotation_reused"]))
         at_each.append(np.asarray(uw.function.evaluate(v.sym, ends)).reshape(2, 2))
     out = capsys.readouterr().out
     # the report is printed by rank 0 alone: every rank asserts on what it printed
@@ -210,6 +218,20 @@ def test_a_pinned_value_that_follows_the_clock_is_read_at_every_solve(capsys):
     for t, ends in zip((0.0, 2.0, 1.0), at_each):
         assert abs(ends[0][1] - t / 20) < 1.0e-9, (t, ends[0])
         assert abs(0.6 * ends[0][0] + 0.8 * ends[0][1]) < 1.0e-9, (t, ends[0])
+
+
+def test_a_fixed_pinned_value_keeps_the_cached_rotation(capsys):
+    """u_z = 1/20 on Left, a number, solved three times on one solver: the second
+    and third solves reuse the cached rotation, and the corner keeps the pin
+    (u_x = -1/15) in each. The rotation was rebuilt at every solve for any nonzero
+    pin, 0.04 to 0.11 s a solve (H7's review of #1263); only a pin that can change
+    between solves (the clock, a named expression, a field) needs that."""
+    reused = []
+    warnings, at_each = _lid_against_a_pinned_wall((None, 0.05), capsys,
+                                                   solves=[0.0, 0.0, 0.0], reused=reused)
+    assert reused == [False, True, True], reused
+    for ends in at_each:
+        assert np.allclose(ends[0], (-1.0 / 15.0, 0.05), atol=1.0e-9), ends[0]
 
 
 @pytest.mark.tier_b

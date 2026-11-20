@@ -6692,6 +6692,8 @@ class SolverBaseClass(uw_object):
             # symbolic datum (field read, expression) is correctly kept.
             if sympy.sympify(conds).is_zero is not True:
                 self._rotated_freeslip_datum[boundary] = conds
+        from underworld3.utilities.rotated_bc import _refuse_a_field_normal
+        _refuse_a_field_normal(normal, boundary)
         self._rotated_freeslip_bcs.append((boundary, normal))
         self.is_setup = False
         return
