@@ -491,6 +491,11 @@ def _agreed_on_every_rank(call):
     return result
 
 
+# Absolute floor on the rank-box widening in _hand_points_to_containing_rank:
+# above the cell-wall containment test's rounding slab (a few times 1e-14).
+_CELL_WALL_SLAB_FLOOR = 1.0e-12
+
+
 def _local_cell_box(mesh):
     """The bounding box of this rank's cells, from their vertex coordinates, as
     ``(lo, hi)``; an empty rank's box is inverted (``lo > hi``) and holds
@@ -522,10 +527,13 @@ def _hand_points_to_containing_rank(evaluation_swarm, mesh):
     Only the ranks whose box holds a point are asked about it, so the work per
     rank follows the points near its own cells, not the global count. That is
     exact: a rank whose cell contains a point has the point inside that cell's
-    box, so inside the rank's box. The boxes are widened by a small fraction of
-    the domain's extent, more than the containment test's rounding allowance,
-    so a point a cell accepts to rounding is asked about too; the widening only
-    adds ranks to ask, and the answer is still each rank's own exact test.
+    box, so inside the rank's box (its own cells; on a 2-manifold, whose
+    containment test also takes the navigation overlap, the owning rank's
+    box). The boxes are widened by a small fraction of the domain's extent,
+    with an absolute floor, so by more than the containment test's rounding
+    allowance at every scale, and a point a cell accepts to rounding is asked
+    about too; the widening only adds ranks to ask, and the answer is still
+    each rank's own exact test.
 
     Collective: every rank reaches the box gather, the two all-to-all
     exchanges, the reductions and the migration, which are guarded only by
@@ -548,7 +556,15 @@ def _hand_points_to_containing_rank(evaluation_swarm, mesh):
     comm.Allgather(np.ascontiguousarray(np.stack([lo, hi])), boxes)
     held = np.isfinite(boxes[:, 0, 0])
     extent = (boxes[held, 1].max(axis=0) - boxes[held, 0].min(axis=0)).max()
-    widen = 1.0e-8 * extent
+    # The widening must exceed the containment test's rounding allowance at
+    # every scale. On simplices that allowance is relative to the cell, well
+    # inside 1e-8 of the extent. The cell-wall test (quads, hexes,
+    # 2-manifolds) accepts points a few times 1e-14 outside in absolute
+    # terms (3e-14 accepted, 1e-13 rejected, measured), which 1e-8 of the
+    # extent falls below on a domain under about 5e-6 across; the floor of
+    # 1e-12 is ten times the largest distance it accepts. Widening only adds
+    # ranks to ask.
+    widen = max(1.0e-8 * extent, _CELL_WALL_SLAB_FLOOR)
     lo_all, hi_all = boxes[:, 0] - widen, boxes[:, 1] + widen
 
     # The ranks each point is sent to: those whose box holds it, other than
