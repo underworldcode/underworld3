@@ -296,6 +296,12 @@ def _owned_dof_rows(var):
     return owned
 
 
+#: Relative tolerance the metric's gradient projection is solved to. The
+#: front-following density ranks |grad field|; at the default tolerance the
+#: ranking of near-equal gradients followed the partition (#1166).
+_GRADIENT_PROJECTION_RTOL = 1.0e-12
+
+
 def metric_density_from_gradient(
     mesh,
     field,
@@ -543,6 +549,18 @@ def metric_density_from_gradient(
         gp.smoothing_length = gradient_smoothing_length
     else:
         gp.smoothing = 0.0
+    # The front-following density ranks |grad field|, and a rank is decided by
+    # differences far below anything physical wherever many nodes have nearly
+    # equal gradients. At the projection's default tolerance the projected
+    # gradient differs between partitions by about 1e-3 relative, and the
+    # ranking of the flat region followed that: the density differed from np 1
+    # by up to 0.41 at 200 of 303 nodes, and the interpolation error of a mover
+    # step by 40% at np 4 (#1166). Converged to _GRADIENT_PROJECTION_RTOL, the
+    # density is the same at every rank count and partition; the mass-matrix
+    # solve converges fast, so it costs nothing measurable.
+    gp.tolerance = _GRADIENT_PROJECTION_RTOL
+    gp.petsc_options["ksp_rtol"] = _GRADIENT_PROJECTION_RTOL
+    gp.petsc_options["ksp_atol"] = 1.0e-30
     gp.solve()
     gmag = np.linalg.norm(np.asarray(uw.function.evaluate(
         g.sym, rho0.coords)).reshape(-1, cdim), axis=1)
