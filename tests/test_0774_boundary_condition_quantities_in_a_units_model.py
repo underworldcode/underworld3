@@ -115,3 +115,20 @@ def test_a_dimension_without_a_reference_is_in_si():
         assert _recorded(poisson.essential_bcs[-1]) == pytest.approx([300.0])
     finally:
         uw.reset_default_model()
+
+
+def test_a_quantity_of_the_wrong_dimension_is_refused_on_a_field_with_units(units_model):
+    """1 MPa on a velocity wall: refused, naming both dimensions, rather than
+    converted to a believable number in the wrong units."""
+    st = _stokes()
+    with pytest.raises(ValueError, match=r"\[mass\].*\[length\] / \[time\]"):
+        st.add_essential_bc((uw.quantity(1, "MPa"), None), "Left")
+    st.add_essential_bc((uw.quantity(1, "m/s"), None), "Left")      # the field's dimension
+
+
+def test_a_pure_number_on_a_field_without_units_is_accepted(units_model):
+    mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0),
+                                             cellSize=0.25)
+    poisson = uw.systems.Poisson(mesh)
+    poisson.add_dirichlet_bc(0.5, "Left")
+    assert _recorded(poisson.essential_bcs[-1]) == pytest.approx([0.5])

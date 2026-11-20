@@ -5437,6 +5437,22 @@ class SolverBaseClass(uw_object):
             if isinstance(q, pint.Quantity):
                 q = uw.quantity(q.magnitude, str(q.units))
             si = q._pint_qty.to_base_units()
+            if c_type == 'dirichlet':
+                # The value of an essential condition is a value of the field: on
+                # a field with units its dimension must be the field's. 1 MPa on
+                # a velocity wall is refused, not converted to a believable
+                # number (0.0316) in the wrong units.
+                field = (self.Unknowns.u if f_id == 0
+                         else getattr(self.Unknowns, "p", None) if f_id == 1 else None)
+                field_units = getattr(field, "units", None)
+                if field_units is not None:
+                    field_dim = (1 * uw.units(str(field_units))).dimensionality
+                    if si.dimensionality != field_dim:
+                        raise ValueError(
+                            f"add_dirichlet_bc on '{label}': the value {q} has the "
+                            f"dimension {si.dimensionality}, and the field "
+                            f"'{getattr(field, 'name', field)}' is in {field_units}, "
+                            f"{field_dim}. Give the value in the field's units.")
             if not units_model:
                 return si.magnitude
             try:
