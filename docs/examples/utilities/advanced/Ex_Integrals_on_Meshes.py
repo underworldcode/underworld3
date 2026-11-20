@@ -189,7 +189,7 @@ stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
 stokes.add_dirichlet_bc((0.0, 0.0, 0.0), "Upper", (0, 1, 2))
 
 stokes.viscosity = 1.0
-stokes.bodyforce = mesh.rvec * sympy.sin(th)
+stokes.bodyforce = mesh.X * sympy.sin(th)
 
 
 stokes.solve()
@@ -221,7 +221,7 @@ print(I.evaluate())  # should be zero
 I.fn = x + y + z
 print(I.evaluate())  # should be zero
 
-meshvar.data[:, 0] = uw.function.evaluate(x + y + z, meshvar.coords)
+meshvar.array[:, 0, 0] = uw.function.evaluate(x + y + z, meshvar.coords)[:, 0, 0]
 
 I.fn = meshvar.fn
 print(I.evaluate())  # should be zero

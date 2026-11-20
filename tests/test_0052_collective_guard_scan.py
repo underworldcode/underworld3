@@ -122,7 +122,10 @@ def is_collective(call, aliases=frozenset()):
 
 # Quantities every rank agrees on by construction.
 UNIFORM_TOKENS = (
-    "mpi.size", "comm.size", "mpi.rank", "comm.rank",
+    # the communicator's SIZE is the same on every rank; its RANK is the one
+    # quantity guaranteed not to be (a collective under `if comm.rank == 0:`
+    # is the classic hang), so it is not here (#874, C1 on #1225)
+    "mpi.size", "comm.size",
     ".dim", ".cdim", "dimension", ".degree", ".simplex", ".order",
     "isinstance", "hasattr", "__debug__",
 )
@@ -168,6 +171,13 @@ ACCEPTED = {
         "`fault_split.collect_point_pairs` sets `out[name]` everywhere), "
         "`structural_on` (the FAC kill flags are allreduced) and `keyed`; and "
         "it returns None only on the cover gate's allreduced counts.",
+    ("discretisation/discretisation_mesh.py", "_build_refined_hierarchy",
+     "callable(refinement_callback)"):
+        "`refinement_callback` is a parameter, passed by the mesh constructor "
+        "that every rank runs with the same arguments; the scan treats a call "
+        "on a parameter as rank-local, but `callable()` of one object is the "
+        "same everywhere. The allgather under it collects each rank's walls for "
+        "the #949 warning, before the `held` branch.",
     ("utilities/rotated_bc.py", "solve_rotated_freeslip"):
         "the cache is created and destroyed on all ranks together, so "
         "`cache is not None` is uniform; the allgather inside exists "
@@ -216,10 +226,22 @@ def reduced_names(node):
     return assigned
 
 
+#: The rank: the one quantity guaranteed to differ between ranks. A guard on it
+#: around a collective is the classic hang, and is always reported (#874).
+RANK_TOKENS = ("mpi.rank", "comm.rank", ".rank", "getRank()", "Get_rank()")
+
+
 def classify(test, params, reduced=frozenset()):
     """Classify a guard predicate as uniform across ranks, or rank-local."""
     source = ast.unparse(test)
     squashed = source.replace(" ", "")
+
+    # before the uniform tokens (``hasattr``, ``mpi.size``) and before the
+    # argument rule: a guard that reads the rank is rank-local whatever else it
+    # says and wherever the communicator came from (H1's review of #1225)
+    if any(token in squashed for token in RANK_TOKENS) or "rank" in {
+            n.id for n in ast.walk(test) if isinstance(n, ast.Name)}:
+        return "rank"
 
     if any(token in squashed for token in REDUCED_TOKENS):
         return "reduced"
@@ -313,7 +335,7 @@ class Scan(ast.NodeVisitor):
     visit_AsyncFor = _visit_loop
 
     def _visit_exit(self, node):
-        divergent = [g for g in self.guards if g[0] == "local-data"]
+        divergent = [g for g in self.guards if g[0] in ("local-data", "rank")]
         if self.loop is not None and divergent:
             self.loop["exits"].append((node.lineno, divergent[0][1]))
         self.generic_visit(node)
@@ -326,7 +348,7 @@ class Scan(ast.NodeVisitor):
         if call is not None:
             if self.loop is not None:
                 self.loop["collectives"].append((node.lineno, call))
-            divergent = [g for g in self.guards if g[0] == "local-data"]
+            divergent = [g for g in self.guards if g[0] in ("local-data", "rank")]
             if divergent:
                 self.findings.append(
                     (node.lineno, self.function, call, divergent[0][1])
@@ -673,3 +695,47 @@ def test_every_collective_in_an_agreed_build_has_an_agreement_point():
         for line, fn, call in agreed_build_findings(text, str(path)):
             findings.append(f"{path.relative_to(SRC).as_posix()}:{line} {fn}: {call}")
     assert not findings, "collectives with no agreement point in front:\n" + "\n".join(findings)
+
+
+#: H1's plants (review of #1225): guards that read the rank, each reported
+#: under an agreement point.
+RANK_PLANTS = [
+    "comm.rank == 1", "comm.rank", "uw.mpi.rank == last", "mpi.rank < 2",
+    "comm.rank == comm.size - 1", "comm.getRank() == 0", "comm.Get_rank() == 0",
+    "rank == 0", "hasattr(comm, 'rank') and comm.rank == 0",
+    "uw.mpi.size > 1 and comm.rank == 0",
+]
+
+
+@pytest.mark.parametrize("guard", RANK_PLANTS)
+def test_a_rank_guard_is_never_taken_for_uniform(guard):
+    """The rank is the one quantity guaranteed to differ between ranks: an
+    agreement point (or a collective) under a guard that reads it is reported,
+    whatever else the guard says, and also when the communicator is a
+    parameter (#874, H1 and C1 on #1225)."""
+    planted = (
+        "def f(comm, last):\n"
+        "    rank = comm.rank\n"
+        f"    if {guard}:\n"
+        "        agree()\n")
+    scan = Scan()
+    scan.visit(ast.parse(planted))
+    assert [g for _line, _fn, _call, g in scan.findings] == [guard], scan.findings
+
+
+def test_a_rank_guard_in_the_build_body_is_flagged_beside_the_accepted_ones():
+    """In _build_body, whose two accepted guards are keyed by their text, a
+    planted rank guard around an agreement point is flagged."""
+    planted = (
+        "def _build_body(self, a, b, comm):\n"
+        "    pre = provenance_source(a, b)\n"
+        "    if pre is not None:\n"
+        "        agree()\n"
+        "    if comm.rank == comm.size - 1:\n"
+        "        agree()\n")
+    scan = Scan()
+    scan.visit(ast.parse(planted))
+    findings = [("utilities/custom_mg.py", line, function, call, guard)
+                for line, function, call, guard in scan.findings]
+    flagged = _unexpected(findings, set(ACCEPTED))
+    assert [f[4] for f in flagged] == ["comm.rank == comm.size - 1"], flagged

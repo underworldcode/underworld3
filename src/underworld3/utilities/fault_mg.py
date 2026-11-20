@@ -64,14 +64,22 @@ def is_split_level(mesh):
     return bool(getattr(mesh, "_fault_point_pairs", None))
 
 
-def _cell_vertex_table(mesh):
+def _cell_vertex_table(mesh, as_built=False):
     """Vertex coordinates ``(n_v, cdim)`` and the ``(n_cells, dim + 1)`` table of
     vertex rows per cell.
 
     Read straight from the DM: the vertex coordinates through the coordinate
     section and each cell's vertices from its closure, with no interpolation
     built. A periodic mesh carries its coordinates cell by cell, so there the
-    P1 node table of the mesh is used, which handles them."""
+    P1 node table of the mesh is used, which handles them.
+
+    ``as_built``: a coarse level that moved with the finest
+    (``Mesh._move_coarse_levels_with_the_finest``) is read where it was made, for
+    a caller that reads the level above it there too (``reference_vertices``, a
+    fine level read as built): the parents and weights of that level are those
+    of the geometry it was made in, as when the coarse levels stood still. The
+    caller then reads the coarse nodes as built as well, so the cells and the
+    nodes are one geometry."""
     from underworld3.discretisation.discretisation_mesh import _holds_cell_coordinates
     from underworld3.utilities._plex_topology import closure_points, section_offsets
     dm = mesh.dm
@@ -84,6 +92,9 @@ def _cell_vertex_table(mesh):
     X = np.asarray(dm.getCoordinatesLocal().array).reshape(-1, cdim)
     rows = section_offsets(dm.getCoordinateSection(), np.arange(vS, vE)) // cdim
     vxy = X[rows]
+    if (as_built and getattr(mesh, "_moves_with_the_finest", False)
+            and mesh._transfer_vertices is not None):
+        vxy = np.asarray(mesh._transfer_vertices)
     cv = (closure_points(dm, np.arange(cS, cE), 0) - vS).reshape(
         cE - cS, dm.getDimension() + 1)
     return vxy, cv
@@ -95,7 +106,10 @@ def reference_vertices(mesh, below):
     or ``None`` when the current coordinates are that geometry.
 
     A move (``mesh.deform``, a mover) changes the coordinates of the mesh it
-    is applied to and of no level below it. The parent of a cell on the level
+    is applied to. The levels below it move too only for a refined hierarchy
+    (``Mesh._move_coarse_levels_with_the_finest``), and the callers of this
+    record then read such a level where it was made (``_cell_vertex_table``
+    with ``as_built``). The parent of a cell on the level
     below, and the weights of a node there, are still those of the geometry
     the mesh was made in, so they are read on that geometry and not on the
     moved one (#1091). Two records hold it. ``_as_built_vertices`` is the
@@ -299,6 +313,9 @@ _WEAK_COPY = 0.1
 # parallel transfer): weak copy columns found, rows taken from the recorded
 # parent, and fine nodes whose star held no same-side candidate.
 last_parent_rows = None
+# cells of the last recorded-parent pair, both levels, that touch both copies of
+# one fault (rank-local; summed over the ranks in ``last_parent_rows``)
+last_side_conflicts = 0
 
 
 def _split_record(mesh):
@@ -332,21 +349,33 @@ def _built_cell_table(mesh, moved=None):
 
 
 def _cell_fault_sides(mesh):
-    """``(n_cells, n_faults)``: +1 for a cell touching the Plus copy of a point of
-    that fault, -1 the Minus copy, 0 neither (topological, from
-    ``_fault_point_pairs``: keys Minus, values Plus)."""
+    """``(side, names, conflicts)``. ``side`` is ``(n_cells, n_faults)``: +1 for a
+    cell touching the Plus copy of a point of that fault, -1 the Minus copy, 0
+    neither (topological, from ``_fault_point_pairs``: keys Minus, values Plus).
+
+    A cell touching both copies of one fault has no side: it is given 0, so the
+    side filter excludes nothing for it, and is counted in ``conflicts`` (summed
+    over the faults). No such cell has been seen; one could arise at a tip or a
+    junction, where the order the copies were visited in decided its side.
+    Rank-local."""
     dm = mesh.dm
     cS, cE = dm.getHeightStratum(0)
     pairs = getattr(mesh, "_fault_point_pairs", None) or {}
     names = sorted(pairs)
     side = np.zeros((cE - cS, len(names)), dtype=np.int64)
+    conflicts = 0
     for j, name in enumerate(names):
+        touches = {-1: np.zeros(cE - cS, dtype=bool), 1: np.zeros(cE - cS, dtype=bool)}
         for q_minus, q_plus in pairs[name].items():
             for q, sign in ((q_minus, -1), (q_plus, 1)):
                 star = np.asarray(dm.getTransitiveClosure(int(q), useCone=False)[0])
-                cells = star[(star >= cS) & (star < cE)] - cS
-                side[cells, j] = sign
-    return side, names
+                touches[sign][star[(star >= cS) & (star < cE)] - cS] = True
+        both = touches[-1] & touches[1]
+        side[touches[1], j] = 1
+        side[touches[-1], j] = -1
+        side[both, j] = 0
+        conflicts += int(both.sum())
+    return side, names, conflicts
 
 
 def _fault_copy_nodes(mesh, degree, continuous):
@@ -404,8 +433,10 @@ def _recorded_parent_cells(coarse, fine, Xf, fn, vxy_c, cv_c, vxy_f, cv_f,
     # the cut pieces of each coarse host cell
     order = np.argsort(pc, kind="stable")
     sorted_pc = pc[order]
-    side_f, names_f = _cell_fault_sides(fine)
-    side_c, names_c = _cell_fault_sides(coarse)
+    global last_side_conflicts
+    side_f, names_f, conflicts_f = _cell_fault_sides(fine)
+    side_c, names_c, conflicts_c = _cell_fault_sides(coarse)
+    last_side_conflicts = conflicts_f + conflicts_c
     common = [n for n in names_f if n in names_c]
     sf = side_f[:, [names_f.index(n) for n in common]]
     sc = side_c[:, [names_c.index(n) for n in common]]
@@ -512,7 +543,7 @@ def cell_located_prolongation(coarse, fine, degree, continuous=True,
           else np.asarray(coarse._get_coords_for_basis(degree, continuous)))
     Xf = (np.asarray(fine_coords) if fine_coords is not None
           else np.asarray(fine._get_coords_for_basis(degree, continuous)))
-    vxy_c, cv_c = _cell_vertex_table(coarse)
+    vxy_c, cv_c = _cell_vertex_table(coarse, as_built=fine_vertices is not None)
     vxy_f, cv_f = _cell_vertex_table(fine)
     if fine_vertices is not None:
         vxy_f = fine_vertices
@@ -582,7 +613,8 @@ def _recorded_rows_where_weak(coarse, fine, degree, continuous, Xf, Xc, cn, fn,
     bar = _WEAK_COPY * float(np.median(norms[copies]))
     remaining = int((after[weak] < bar).sum())
     last_parent_rows = dict(weak_copies=int(weak.size), rows=int(rows.size),
-                            stranded_cells=int(stranded), remaining=remaining)
+                            stranded_cells=int(stranded), remaining=remaining,
+                            side_conflicts=int(last_side_conflicts))
     _warn_unrepaired(remaining, int(weak.size))
     return cells, W
 
@@ -621,7 +653,7 @@ def cell_located_transfer_parallel(coarse, fine, degree, continuous,
     try:
         Xc = np.asarray(coarse_coords)
         Xf = np.asarray(fine_coords)
-        vxy_c, cv_c = _cell_vertex_table(coarse)
+        vxy_c, cv_c = _cell_vertex_table(coarse, as_built=fine_vertices is not None)
         vxy_f, cv_f = _cell_vertex_table(fine)
         if fine_vertices is not None:
             vxy_f = fine_vertices
@@ -845,6 +877,7 @@ def _recorded_rows_where_weak_parallel(coarse, fine, degree, continuous, Xf, Xc,
     n_weak = int(weak_cols.size)
     rows_taken = 0
     stranded = None
+    side_conflicts = 0
     # the hosts' built geometry is read collectively, on every rank, before
     # anything rank-local can fail: the record is on every rank or on none
     tables = None
@@ -871,6 +904,7 @@ def _recorded_rows_where_weak_parallel(coarse, fine, degree, continuous, Xf, Xc,
                                          host_tables=tables)
             if rec is not None:
                 pcells, stranded = rec
+                side_conflicts = last_side_conflicts
                 pc_nodes = pcells[nodes]
                 have = np.flatnonzero(pc_nodes >= 0)
                 if have.size:
@@ -911,7 +945,8 @@ def _recorded_rows_where_weak_parallel(coarse, fine, degree, continuous, Xf, Xc,
         weak_copies=n_weak,
         rows=int(m4.allreduce(rows_taken)),
         stranded_cells=int(m4.allreduce(int(stranded or 0))),
-        remaining=remaining)
+        remaining=remaining,
+        side_conflicts=int(m4.allreduce(int(side_conflicts))))
     _warn_unrepaired(remaining, n_weak)
     return Wall, Call
 
@@ -1000,11 +1035,30 @@ def provenance_transfer_parallel(coarse, fine, pre, degree, continuous,
     # transfer opens with is rank-local and read under one guard.
     cn = np.asarray(coarse._cell_node_indices(degree, continuous))
     fn = np.asarray(fine._cell_node_indices(degree, continuous))
+    # The fine nodes are taken back to the geometry of ``coarse`` they were made
+    # in when ``pre`` holds a reference (below). A coarse level that moved with
+    # the finest is then read where it was made, its nodes and its cells, so the
+    # pair stands on one geometry. The reference is read rank-locally under a
+    # guard, and the move check (as_built_nodes, collective) is entered by
+    # every rank when any rank's coarse side follows the finest.
+    reference, follows, problem = None, False, None
+    try:
+        reference = reference_vertices(pre, coarse)
+        follows = (reference is not None
+                   and getattr(coarse, "_moves_with_the_finest", False))
+    except Exception as err:   # sanctioned: raised on every rank just below
+        problem = (f"fault_mg: the provenance transfer failed to read the "
+                   f"reference vertices: {type(err).__name__}: {err}")
+    _collective_raise(problem, error=CollectiveBuildError)
+    if m4.allreduce(bool(follows), op=MPI.LOR):
+        built = as_built_nodes(coarse, degree, continuous)
+        if follows and built is not None:
+            coarse_coords = built
     problem = None
     try:
         Xc = np.asarray(coarse_coords)
         Xf = np.asarray(fine_coords)
-        vxy_c, cv_c = _cell_vertex_table(coarse)
+        vxy_c, cv_c = _cell_vertex_table(coarse, as_built=reference is not None)
         vxy_f, cv_f = _cell_vertex_table(fine)
         vxy_p, cv_p = _cell_vertex_table(pre)
         l2g_c = np.asarray(coarse_layout.l2g, dtype=np.int64).reshape(-1, ncomp)
@@ -1120,7 +1174,6 @@ def provenance_transfer_parallel(coarse, fine, pre, degree, continuous,
         cn_u = np.arange(nu * nb).reshape(nu, nb)
         cv_u = np.arange(nu * nv).reshape(nu, nv)
         Xw = Xf[mine]
-        reference = reference_vertices(pre, coarse)
         if mine.size:
             if reference is not None:
                 at = _barycentric(Xw, vxy_p[cv_p[pcell]])
@@ -1226,8 +1279,10 @@ def split_tail_levels(levels, fault_specs, verbose=False):
         try:
             # the level arrives partitioned with the finest (the add-on
             # partition ran once, for every level): no second partition
+            # the fine trace is sampled finer than this level: control points
+            # sharing a vertex are expected, recorded on the level, not warned
             split = add_fault(level, entries, verbose=verbose, partition=False,
-                              **kwargs)
+                              on_shared="note", **kwargs)
         except Exception as exc:   # sanctioned: agreed below, the level stays welded
             problem = f"{type(exc).__name__}: {exc}"
         # the split's refusals are collective; a failure on one rank after its

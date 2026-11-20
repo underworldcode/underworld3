@@ -1014,10 +1014,7 @@ class _DDtBase(uw_object):
     # ----- velocity-expression snapshots (mid-time trace-back) -----
     def _V_matrix(self):
         """``V_fn`` as a sympy row matrix (a mesh variable contributes its symbol)."""
-        V = self.V_fn
-        if hasattr(V, "sym") and not isinstance(V, sympy.Basic):
-            return sympy.Matrix(V.sym)
-        return sympy.Matrix(V)
+        return _velocity_row(self.V_fn, self.mesh.cdim)
 
     def _velocity_degree(self):
         """Degree of the nodal velocity cache: the highest degree among the
@@ -1097,11 +1094,11 @@ class _DDtBase(uw_object):
             indep = self._psi_star_indep_indices
             row = sympy.Matrix([[source_fn[i, j] for (i, j) in indep]])
             if self._psi_snapshot_enabled and self._psi_snapshot is not None:
-                # TODO(BUG): .subs does not reach psi_star[0] held inside a
-                # UWexpression (at yield the viscosity reads E_eff_inv_II,
-                # whose .sym contains it), so that occurrence still reads the
-                # history live. No effect on the result while the snapshot
-                # equals psi_star[0] at the commit; substitute after unwrapping.
+                # .subs does not reach psi_star[0] held inside a UWexpression
+                # (at yield the viscosity reads E_eff_inv_II, whose .sym
+                # contains it), so that occurrence reads the history live. That
+                # is harmless only while the snapshot equals psi_star[0] at the
+                # commit, which commit_flux_to_history checks.
                 ps0 = self.psi_star[0]
                 psi_snapshot = self._psi_snapshot
                 substitutions = {
@@ -1184,6 +1181,26 @@ class _DDtBase(uw_object):
         if self._psi_snapshot_enabled and self._psi_snapshot is not None:
             self._psi_snapshot.data[...] = self.psi_star[0].data[...]
 
+    def _check_snapshot_is_level_0(self):
+        """The commit's frozen source must be ``psi_star[0]`` as it is now.
+
+        The substitution of the snapshot for ``psi_star[0]`` does not reach an
+        occurrence wrapped in a ``UWexpression``, which reads the history live;
+        the two readings agree only while nothing has written ``psi_star[0]``
+        since the refresh. Collective: every rank raises or none does.
+        """
+        if not (self._psi_snapshot_enabled and self._psi_snapshot is not None):
+            return
+        local = np.asarray(self.psi_star[0].data)
+        moved = float(np.abs(np.asarray(self._psi_snapshot.data) - local).max()) if local.size else 0.0
+        moved = uw.mpi.comm.allreduce(moved, op=uw.MPI.MAX)
+        if moved != 0.0:
+            raise RuntimeError(
+                f"{type(self).__name__}: psi_star[0] was written after the source snapshot "
+                f"was taken (largest difference {moved:.3g}), so the commit projection would "
+                "read two different histories. Write the history before the step's "
+                "update_pre_solve, which refreshes the snapshot.")
+
     #: A history that places the new flux on its own storage during
     #: ``update_post_solve`` (the particle flavours evaluate it at their
     #: particles) rather than through :meth:`commit_flux_to_history`.
@@ -1222,6 +1239,7 @@ class _DDtBase(uw_object):
             # The snapshot machinery has frozen the projection's input, so this
             # is a one-shot Galerkin projection and not a fixed-point iteration
             # (which at a yield kink admits the wrong branch).
+            self._check_snapshot_is_level_0()
             self._psi_star_projection_solver.smoothing = 0.0
             self._psi_star_projection_solver.solve(verbose=verbose)
             for k, (i, j) in enumerate(self._psi_star_indep_indices):
@@ -1391,6 +1409,19 @@ class _DDtBase(uw_object):
 def _as_matrix(R):
     """A residual as a sympy Matrix: a bare scalar becomes ``(1, 1)``."""
     return R if isinstance(R, sympy.MatrixBase) else sympy.Matrix([[R]])
+
+
+def _velocity_row(V, dim):
+    """A velocity expression as a sympy row matrix: a mesh variable contributes
+    its symbol, and a ``(dim, 1)`` column is transposed to the ``(1, dim)`` row
+    it means (the trace reads row components; a column gave its first row, the
+    x component alone)."""
+    if hasattr(V, "sym") and not isinstance(V, sympy.Basic):
+        V = V.sym
+    V = sympy.Matrix(V)
+    if dim > 1 and V.shape == (dim, 1):
+        return V.T
+    return V
 
 
 def _as_row_vector(V_fn, dim):
@@ -2064,23 +2095,25 @@ class Eulerian(_DDtBase):
         # psi_fn the shape is (1,1); for vector it is (1,dim).
         psi = self.psi_fn
         V = self.V_fn
-        # TODO(BUG): right for a scalar or a vector only. A 2x2 symmetric
-        # tensor has 3 stored components, but this corrects 2 data columns
-        # with the flat entries psi[0], psi[1] (xx, xy); it should walk
-        # psi_star[0]._data_layout(i, j) as EulerianSUPG._transport_history does.
-        ncomp = max(psi.shape)  # number of tracked components
+        # Every stored component: a symmetric tensor stores its upper triangle,
+        # each through the variable's own layout; a scalar or vector stores its
+        # flat entries in order.
+        level_0 = self.psi_star[0]
+        rows, cols = psi.shape
+        if self.vtype == uw.VarType.SYM_TENSOR:
+            pairs = [(i, j) for i in range(rows) for j in range(i, cols)]
+        else:
+            pairs = [(i, j) for i in range(rows) for j in range(cols)]
+        tensor = self.vtype in (uw.VarType.SYM_TENSOR, uw.VarType.TENSOR)
 
-        for c in range(ncomp):
-            # ∂φ_c/∂x_i for each spatial dimension
-            grad_c = sympy.Matrix([psi[c].diff(X[i]) for i in range(dim)])
-            # u·∇φ_c = V_i * ∂φ_c/∂x_i
-            advection_expr = sum(V[i] * grad_c[i] for i in range(dim))
-
+        for flat, (i, j) in enumerate(pairs):
+            # u . grad(phi) for this component
+            advection_expr = sum(V[k] * psi[i, j].diff(X[k]) for k in range(dim))
             advection_vals = _history_evaluate(
                 advection_expr, coords, evalf=evalf,
             ).reshape(-1)
-
-            self.psi_star[0].data[:, c] -= dt * advection_vals
+            column = level_0._data_layout(i, j) if tensor else flat
+            level_0.data[:, column] -= dt * advection_vals
 
     def update_post_solve(
         self,
@@ -2590,10 +2623,7 @@ class CharacteristicTrace:
     # -- the velocity ---------------------------------------------------------
 
     def V_matrix(self):
-        V = self.V_fn
-        if hasattr(V, "sym") and not isinstance(V, sympy.Basic):
-            return sympy.Matrix(V.sym)
-        return sympy.Matrix(V)
+        return _velocity_row(self.V_fn, self.mesh.cdim)
 
     def velocity_degree(self):
         _, varfns, _ = uw.function.expressions.mesh_vars_in_expression(self.V_matrix())
@@ -2742,9 +2772,9 @@ class CharacteristicTrace:
         ``x_mid = x - dt/2 v_start(x)``, ``x_dep = x - dt v_mid(x_mid)``.
 
         ``key`` names the launch node set (a variable's ``_basis_key`` plus
-        a tag for the nudge); ``X_eval`` are the points where the first
-        segment's start velocity is evaluated when they differ from ``X0``
-        (the centroid-nudged nodes of the nodal history). Midpoints are
+        a tag); ``X_eval`` are the points where the first
+        segment's start velocity is evaluated when they differ from ``X0``.
+        Midpoints are
         clamped to the domain; the last point is clamped unless
         ``clamp_final`` is False (old-frame reach-back).
         """
@@ -3601,14 +3631,6 @@ class SemiLagrangian(_DDtBase):
         if getattr(self, "_owns_characteristics", True):
             self.characteristics.finish_step()
 
-    def _centroid_shifted_var_coords(self, var):
-        """ND node coordinates of ``var`` nudged 0.1 % toward their cell
-        centroids (see :meth:`_centroid_shifted_node_coords`)."""
-        coords = np.asarray(var.coords_nd)
-        cellid = self.mesh.get_closest_cells(coords).reshape(-1)
-        cent = np.asarray(self.mesh._centroids)[cellid]
-        return 0.999 * coords + 0.001 * cent
-
     def _velocity_nd_at(
         self,
         coords,
@@ -3738,74 +3760,42 @@ class SemiLagrangian(_DDtBase):
         points = _to_nondim_ndarray(history.coords).reshape(-1, self.mesh.cdim)
         return values, points
 
-    def _centroid_shifted_node_coords(self):
-        r"""ND node coordinates of ``psi_star[0]``, nudged toward cell centroids.
+    def _node_coords_nd(self):
+        r"""ND node coordinates of ``psi_star[0]``, where the trace starts.
 
-        Point-location and FE interpolation are ambiguous exactly on
-        element edges/vertices (worst on quad meshes at the domain
-        boundary), so the sample points are moved 0.1 % of the way toward
-        the centroid of their owning cell: far enough to make cell
-        ownership unambiguous, close enough not to bias the sampled
-        values. Coordinates are plain non-dimensional arrays — never raw
-        ``.magnitude``, which would be dimensional metres (see
-        ``_to_nondim_ndarray`` and issue #267).
+        The exact nodes: a node at rest traces to itself and samples the
+        history at its own vertex, where a continuous field has one value
+        whichever cell is chosen. These used to be nudged 0.1 % toward the
+        centroid of the closest cell; the closest cell a rank can see depends
+        on the partition, so the nudge made the trace's start, and the record
+        step's route, differ between serial and parallel, and it moved a
+        static field by the nudge at every record (#1237). Coordinates are
+        plain non-dimensional arrays -- never raw ``.magnitude``, which would
+        be dimensional metres (see ``_to_nondim_ndarray`` and issue #267).
         """
-        psi_star_0_coords_nd = _to_nondim_ndarray(self.psi_star[0].coords)
+        return _to_nondim_ndarray(self.psi_star[0].coords)
 
-        cellid = self.mesh.get_closest_cells(
-            psi_star_0_coords_nd,
-        )
-        centroid_coords = self.mesh._centroids[cellid]
-
-        shift = 0.001
-        return (1.0 - shift) * psi_star_0_coords_nd[:, :] + shift * centroid_coords[
-            :, :
-        ]
-
-    def _record_current_field_into_history(
-        self, node_coords_nd, evalf, verbose, oldframe_active
-    ):
+    def _record_current_field_into_history(self, node_coords_nd, evalf, verbose):
         r"""Record the current value of :math:`\psi` into ``psi_star[0]``.
 
-        Three routes, in order of preference:
+        Three routes, in order of preference, the same on any number of ranks:
 
-        1. direct nodal copy of the tracked field's data (parallel, or
-           old-frame reach-back);
-        2. pointwise evaluation of ``psi_fn`` at the centroid-shifted
-           node coordinates (the validated serial path);
+        1. direct nodal copy of the tracked field's data, when ``psi_fn`` is
+           a single component of a mesh variable laid out as ``psi_star[0]``;
+        2. pointwise evaluation of ``psi_fn`` at the node coordinates;
         3. an L2 projection for expressions that ``evaluate`` cannot
            handle (e.g. the NS viscous flux, which contains derivatives).
         """
         try:
-            # Use shifted ND coords to avoid quad mesh boundary issues
-            # node_coords_nd is slightly shifted toward cell centroids
-            # evaluate() treats plain numpy as ND [0-1] coordinates.
-            #
-            # PARALLEL band-aid (parallel-singular-corruption, 2026-05):
-            # this "record current field into psi_star" step samples psi_fn
-            # at its OWN node coords. On-vertex sampling + first-pass
-            # get_closest_cells mis-locates at a process seam under MPI,
-            # recording a spurious history value that the implicit solve
-            # then propagates (the seam spike in adaptive advection-
-            # diffusion). When psi_fn is a single mesh-variable component on
-            # this mesh (the SLCN adv-diff case), "evaluate at own nodes" ==
-            # the field's nodal data, so under MPI copy it directly (exact,
-            # no point location). Serial keeps the validated shifted-
-            # evaluate path bit-identically; non-scalar / expression psi_fn
-            # falls back to evaluate(). Proper fix (remap-on-adapt / ALE)
-            # tracked separately.
-            # Old-frame: record the history by a DIRECT nodal carry
-            # of the field rather than re-evaluating psi_fn at the
-            # (centroid-shifted) nodes of the DEFORMED mesh. The
-            # re-evaluate injects boundary-layer interpolation error
-            # that grows with mesh distortion and then rides the
-            # old-geometry sample below — the exact value we want is
-            # the carried nodal value (cf. the lagged-clone "store
-            # primitives" principle). Reuses the parallel direct-copy
-            # path, which returns None for non-scalar / expression
-            # psi_fn (those fall back to evaluate).
-            _direct = (self._record_psi_star_from_field_data()
-                       if (uw.mpi.size > 1 or oldframe_active) else None)
+            # "Evaluate psi_fn at its own nodes" is, for a mesh-variable
+            # component, exactly that variable's nodal data: copy it, with no
+            # point location (which mis-locates on-vertex points at a process
+            # seam, and on a deformed mesh re-injects interpolation error).
+            # The copy used to be taken only in parallel or old-frame, with
+            # serial evaluating at nudged nodes, so serial and parallel took
+            # different routes and differed by the nudge (#1237). The copy
+            # returns None for an expression psi_fn, which is evaluated.
+            _direct = self._record_psi_star_from_field_data()
             # One route on every rank: the routes differ in their collectives.
             if uw.mpi.size > 1 and not uw.mpi.comm.allreduce(_direct is not None,
                                                              op=uw.MPI.LAND):
@@ -3823,12 +3813,11 @@ class SemiLagrangian(_DDtBase):
         except Exception:
             # Fallback to projection solver for expressions that can't be directly evaluated
             # (e.g., containing derivatives — true for the NS viscous flux every step).
-            # TODO(BUG): with the source snapshot enabled this projection reads
-            # the snapshot, which update_pre_solve refreshes only after the
-            # trace-back, so it holds the previous step's carried history, not
-            # the last commit. Latent: Stokes, the one caller that enables the
-            # snapshot, passes store_result=False. Refresh before this record
-            # if a store_result=True caller ever needs it.
+            # With the source snapshot enabled this projection reads the
+            # snapshot, which update_pre_solve otherwise refreshes only after
+            # the trace-back: refresh it here, so the record reads the history
+            # as it is now.
+            self._refresh_source_snapshot()
             # Route via _build_projection_source so the (1, Nc) row-matrix flattening
             # required by SNES_MultiComponent_Projection is applied for tensor vtypes.
             # Without this, a (dim, dim) tensor function meets a (1, Nc) solver field
@@ -3851,7 +3840,7 @@ class SemiLagrangian(_DDtBase):
                         self.psi_star[0].array[:, j, i] = vals
 
     def _trace_departure_points(
-        self, i, node_coords_nd, dt_for_calc, evalf, subtract_v_mesh, oldframe_active
+        self, i, dt_for_calc, evalf, subtract_v_mesh, oldframe_active
     ):
         r"""RK2 midpoint trace-back: departure points for history slot ``i``.
 
@@ -3871,16 +3860,15 @@ class SemiLagrangian(_DDtBase):
         any foot that falls outside the old mesh, matching the validated
         prototype, which omits this clamp).
         """
-        # One RK2 segment from the true nodes, the start velocity taken at
-        # the centroid-nudged coordinates (node_coords_nd). Served from the
-        # shared trace: a second history on the same nodes, or an older slot
-        # of this one, reuses the departure points computed here.
+        # One RK2 segment from the nodes, the start velocity taken there.
+        # Served from the shared trace: a second history on the same nodes,
+        # or an older slot of this one, reuses the departure points computed
+        # here.
         return self.characteristics.departure_points(
-            (_basis_key_of(self.psi_star[i]), "nudged"),
+            (_basis_key_of(self.psi_star[i]), "nodes"),
             np.asarray(self.psi_star[i].coords_nd),
             (("first", 0, dt_for_calc),),
             evalf=evalf,
-            X_eval=node_coords_nd,
             clamp_final=not oldframe_active,
             subtract_v_mesh=subtract_v_mesh,
             v_mesh_var=getattr(self, "_v_mesh_var", None),
@@ -4039,12 +4027,10 @@ class SemiLagrangian(_DDtBase):
         #    When store_result=False (e.g. VE stress history), skip this —
         #    psi_star[0] already contains the projected actual stress from
         #    the previous solve and we want to advect *that*, not the flux.
-        node_coords_nd = self._centroid_shifted_node_coords()
+        node_coords_nd = self._node_coords_nd()
 
         if store_result:
-            self._record_current_field_into_history(
-                node_coords_nd, evalf, verbose, _oldframe_active
-            )
+            self._record_current_field_into_history(node_coords_nd, evalf, verbose)
 
         # 3. Trace the characteristics back and sample each history slot
         #    at its departure points. Work from the oldest slot backwards
@@ -4077,7 +4063,7 @@ class SemiLagrangian(_DDtBase):
             _ale_this_iter = _ale_active and not (store_result and i == 0)
 
             end_pt_coords = self._trace_departure_points(
-                i, node_coords_nd, dt_for_calc, evalf,
+                i, dt_for_calc, evalf,
                 _ale_this_iter, _oldframe_active,
             )
             self._sample_history_at_departure(
@@ -5427,15 +5413,6 @@ class IntegrationPointSemiLagrangian(_DDtBase):
 
 
     # ------------------------------------------------------------------
-    def _nudged_node_coords(self, var):
-        """ND node coordinates of ``var`` moved 0.1 % toward their cell
-        centroids so boundary nodes locate unambiguously (see
-        :meth:`SemiLagrangian._centroid_shifted_node_coords`)."""
-        coords = np.asarray(var.coords_nd)
-        cellid = self.mesh.get_closest_cells(coords).reshape(-1)
-        cent = np.asarray(self.mesh._centroids)[cellid]
-        return 0.999 * coords + 0.001 * cent
-
     def _record_current(self):
         """Snapshot slot 0 <- the current solution and velocity."""
         ps = self.psi_snap[0]
@@ -5445,7 +5422,7 @@ class IntegrationPointSemiLagrangian(_DDtBase):
         ):
             ps.data[...] = self._psi_meshVar.data[...]
         else:
-            self._write_components(ps, self.psi_fn, self._nudged_node_coords(ps))
+            self._write_components(ps, self.psi_fn, np.asarray(ps.coords_nd))
 
     def _write_components(self, var, expr, coords, evaluate=None, **kwargs):
         """Evaluate ``expr`` at ``coords`` and store it component by component.

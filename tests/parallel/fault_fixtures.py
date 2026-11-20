@@ -99,22 +99,28 @@ def base_3d():
         cellSize=0.2, regular=False, qdegree=2, refinement=1)
 
 
-def parents_contain_centroids(below, lev, centroids=None):
+def parents_contain_centroids(below, lev, centroids=None, as_built=False):
     """Fetch each cell's parent on ``below`` by the CURRENT address that ``lev``
     records (``lev._addon_parent``), and test that the cell's centroid lies inside
     it. Returns the global count of cells NOT inside their parent. ``centroids``
     replaces the centroids of ``lev`` as it stands: those of the geometry it was
-    made in, for a level that has moved since (#1091)."""
+    made in, for a level that has moved since (#1091). ``as_built`` reads the
+    parents where they were made too, when ``below`` moved with the finest
+    level (``fault_mg._cell_vertex_table``, #1244)."""
     from mpi4py import MPI
     from petsc4py import PETSc
 
     from underworld3.utilities import addon_partition as ap
     from underworld3.utilities.fault_mg import _barycentric, _cell_vertex_table
 
-    par = lev._addon_parent
-    vxy_b, cv_b = _cell_vertex_table(below)
-    nb = cv_b.shape[0]
-    verts = np.ascontiguousarray(vxy_b[cv_b].reshape(nb, -1))
+    par = np.asarray(lev._addon_parent).reshape(-1, 2)
+    vxy_b, cv_b = _cell_vertex_table(below, as_built=as_built)
+    # explicit widths, from the mesh and not the arrays: a rank with no cell
+    # has empty arrays, and reshape(0, -1) cannot infer a width (H5: test_1173
+    # raised on the empty rank at np 3 while the others waited)
+    nv, cdim = below.dm.getDimension() + 1, below.cdim
+    nb = cv_b.shape[0] if cv_b.ndim == 2 else 0
+    verts = np.ascontiguousarray(vxy_b[cv_b].reshape(nb, nv * cdim)) if nb else np.zeros((0, nv * cdim))
     sf = PETSc.SF().create(comm=PETSc.COMM_WORLD)
     sf.setGraph(nb, None, np.ascontiguousarray(par, dtype=np.int32))
     sf.setUp()
@@ -125,8 +131,10 @@ def parents_contain_centroids(below, lev, centroids=None):
     sf.bcastEnd(unit, verts, got, MPI.REPLACE)
     unit.Free()
     sf.destroy()
+    if par.shape[0] == 0:
+        return uw.mpi.comm.allreduce(0)
     fcent = ap._cell_centroids(lev)[0] if centroids is None else centroids
-    lam = _barycentric(fcent, got.reshape(par.shape[0], cv_b.shape[1], -1))
+    lam = _barycentric(fcent, got.reshape(par.shape[0], nv, cdim))
     return uw.mpi.comm.allreduce(int((lam.min(axis=1) < -1e-9).sum()))
 
 
@@ -136,7 +144,7 @@ def children_per_parent(below, lev):
     from mpi4py import MPI
     from petsc4py import PETSc
 
-    par = lev._addon_parent
+    par = np.asarray(lev._addon_parent).reshape(-1, 2)
     cS, cE = below.dm.getHeightStratum(0)
     sf = PETSc.SF().create(comm=PETSc.COMM_WORLD)
     sf.setGraph(cE - cS, None, np.ascontiguousarray(par, dtype=np.int32))

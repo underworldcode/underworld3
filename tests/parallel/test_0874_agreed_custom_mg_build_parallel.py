@@ -29,6 +29,10 @@ and has one before each collective it makes:
 * after a split pair's cell-located transfer (an adapt child with a fault cut
   in, whose coarse add-on levels are split).
 
+And the coarse side's move check (#1244): a refined mesh whose coarse levels
+moved with the finest reads each pair's coarse side as built, one more
+collective move check per level, with an agreement point before each.
+
 Each must be the same ``CollectiveBuildError`` on every rank, with the agreement
 calls per rank paired. Before the conversion each hangs the other ranks.
 """
@@ -302,3 +306,66 @@ def test_a_failure_before_the_matrix_is_created(built, monkeypatch):
 
     monkeypatch.setattr(sp, "csr_matrix", failing)
     _build_raises_everywhere(hierarchy, solver, "Local CSR", monkeypatch)
+
+
+# --------------------------------------------------------------------------- #
+#  The coarse side's move check (#1244)
+# --------------------------------------------------------------------------- #
+@pytest.fixture(scope="module")
+def moved_built():
+    """``(hierarchy, solver)`` of a refined triangle box whose top wall has
+    risen: its coarse levels moved with the finest, so the set-up phase reads
+    each pair's coarse side as built (a second move check per level)."""
+    mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0),
+                                             cellSize=0.25, qdegree=2, refinement=2)
+    coarse = list(mesh.multigrid_levels[:-1])
+    c = np.asarray(mesh.X.coords).copy()
+    c[:, -1] *= 1 + 0.1 * np.sin(np.pi * c[:, 0])
+    mesh.deform(c)
+    x, _y = mesh.X
+    stokes = uw.systems.Stokes(mesh)
+    stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    stokes.constitutive_model.Parameters.shear_viscosity_0 = 1.0
+    for wall in ("Bottom", "Left", "Right"):
+        stokes.add_dirichlet_bc((0.0, 0.0), wall)
+    stokes.bodyforce = [0.0, x]
+    stokes.tolerance = 1.0e-6
+    set_custom_fmg(stokes, coarse, field_id=0)
+    stokes.solve()
+    return stokes._custom_mg["hierarchy"], stokes
+
+
+def _move_checks_from(first_failing, original):
+    """``as_built_nodes``, raising on the last rank from its call
+    ``first_failing`` on (counted from 0, after the collective has returned)."""
+    calls = []
+
+    def counted(*a, **k):
+        out = original(*a, **k)
+        calls.append(1)
+        if len(calls) > first_failing:
+            _on_last_rank("Coarse-side move check")
+        return out
+
+    return counted, calls
+
+
+def test_a_failure_after_a_coarse_side_move_check(moved_built, monkeypatch):
+    """The coarse-side loop's move check: the first loop makes one per fine
+    level, so the failure is forced at the first coarse-side call, and the
+    other ranks meet the next coarse-side call's agreement point."""
+    hierarchy, solver = moved_built
+    nfine = len(hierarchy.level_meshes) - 1
+    assert nfine >= 2, "the coarse-side loop needs a next level to hang in"
+
+    original = fault_mg.as_built_nodes
+
+    # the fixture does read the coarse side as built: more calls than fine levels
+    counted, calls = _move_checks_from(10**9, original)
+    monkeypatch.setattr(fault_mg, "as_built_nodes", counted)
+    hierarchy.build(solver)
+    assert len(calls) > nfine, len(calls)
+
+    failing, _calls = _move_checks_from(nfine, original)
+    monkeypatch.setattr(fault_mg, "as_built_nodes", failing)
+    _build_raises_everywhere(hierarchy, solver, "Coarse-side move check", monkeypatch)

@@ -9,6 +9,7 @@ from petsc4py.PETSc cimport SF,  PetscSF
 from petsc4py.PETSc cimport FE,  PetscFE
 from petsc4py.PETSc cimport DMLabel, PetscDMLabel
 from petsc4py.PETSc cimport PetscQuadrature, PetscSection
+from petsc4py.PETSc cimport Section
 from petsc4py.PETSc cimport MPI_Comm, PetscMat, GetCommDefault, Viewer, PetscViewer
 
 
@@ -30,6 +31,31 @@ ctypedef enum PetscBool:
 cdef CHKERRQ(PetscErrorCode ierr):
     cdef int interr = <int>ierr
     if ierr != 0: raise RuntimeError(f"PETSc error code '{interr}' was encountered.\nhttps://www.mcs.anl.gov/petsc/petsc-current/include/petscerror.h.html")
+
+cdef extern from "petscsection.h" nogil:
+    ctypedef struct _p_PetscSectionSym
+    ctypedef _p_PetscSectionSym *PetscSectionSym
+    PetscErrorCode PetscSectionGetSym(PetscSection, PetscSectionSym *)
+    PetscErrorCode PetscSectionSetSym(PetscSection, PetscSectionSym)
+    PetscErrorCode PetscSectionGetFieldSym(PetscSection, PetscInt, PetscSectionSym *)
+    PetscErrorCode PetscSectionSetFieldSym(PetscSection, PetscInt, PetscSectionSym)
+
+cdef copy_section_symmetries(Section source, Section target):
+    """Give ``target`` the symmetries of ``source``, the section and each field's.
+
+    A field's symmetry orients the dofs of a point whose orientation in a cell is
+    not the reference one: two or more dofs on an edge (P3 and up), or on a 3-D
+    face. A section rebuilt field by field without them reads those dofs in the
+    wrong order in every cell that sees the point reversed."""
+    cdef PetscSectionSym sym = NULL
+    cdef PetscInt f, n
+    CHKERRQ(PetscSectionGetSym(source.sec, &sym))
+    CHKERRQ(PetscSectionSetSym(target.sec, sym))
+    n = source.getNumFields()
+    for f in range(n):
+        sym = NULL
+        CHKERRQ(PetscSectionGetFieldSym(source.sec, f, &sym))
+        CHKERRQ(PetscSectionSetFieldSym(target.sec, f, sym))
 
 cdef extern from "petscdstypes.h":
     ctypedef void *PetscWeakForm "PetscWeakForm"

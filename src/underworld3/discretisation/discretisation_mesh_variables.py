@@ -640,9 +640,24 @@ class _BaseMeshVariable(Stateful, uw_object):
             if not is_valid:
                 import warnings
 
+                # Say what the model does with it: a dimension without a
+                # reference takes its SI base unit as its scale, so the
+                # variable's model unit is the scale below (for K/s, one
+                # kelvin per model time unit).
+                if model.has_units():
+                    try:
+                        scale = model.get_scale_for_dimensionality(
+                            uw.units(str(units)).dimensionality).to_base_units()
+                        what = (f"The dimension without a reference takes its SI base unit as "
+                                f"its scale, so one model unit of '{self.name}' is "
+                                f"{float(scale.magnitude):.3g} {scale.units:~}; values far from "
+                                "it may be poorly conditioned.")
+                    except ValueError:
+                        what = ("Its scale cannot be formed from the reference quantities.")
+                else:
+                    what = "Without reference quantities the variable works in SI."
                 warnings.warn(
-                    f"\n{warning_msg}\n"
-                    f"Variable will use scaling_coefficient=1.0, which may lead to poor numerical conditioning.\n",
+                    f"\n{warning_msg}\n{what}\n",
                     UserWarning,
                     stacklevel=2,
                 )

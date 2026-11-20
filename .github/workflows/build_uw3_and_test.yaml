@@ -91,7 +91,10 @@ jobs:
     # ~5 min of install and build; 60 leaves room for a slow runner while still
     # being a real signal when a shard doubles. A hung batch costs shard 4 about 5
     # minutes more, and its stacks must still be uploaded: hence 70 (#954).
-    timeout-minutes: 70
+    # Shard 4 then reached 68.5 minutes on development itself: the np 2
+    # parallel batches now alternate between shards 4 and 6, the always-on
+    # np 3 and np 4 runs moved to shard 6, and 80 leaves headroom (#874).
+    timeout-minutes: 80
 
     steps:
       - uses: actions/checkout@v4

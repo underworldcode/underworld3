@@ -10,6 +10,43 @@ import numpy as np
 import underworld3 as uw
 
 
+def _evaluable(field):
+    """The form ``global_evaluate`` takes: a MeshVariable is evaluated through
+    its symbolic form, anything else (a sympy expression) as given."""
+    if isinstance(field, uw.discretisation.MeshVariable):
+        return field.sym
+    return field
+
+
+def _points_on_this_rank(sample_points, viz_rank):
+    """The points this rank asks ``global_evaluate`` for: the sample points on
+    ``viz_rank``, and an empty array of the same dimension on every other rank.
+
+    Only ``viz_rank``'s points are read. Their dimension is broadcast from it, so
+    the other ranks may pass anything, ``None`` included. Points on ``viz_rank``
+    that are not a finite ``(n, dim)`` array are refused on every rank together,
+    before the collective, instead of leaving the other ranks waiting in it."""
+    points, dim = None, None
+    if uw.mpi.rank == viz_rank:
+        try:
+            points = np.asarray(sample_points, dtype=float)
+        except (TypeError, ValueError):
+            # Not convertible to numbers: refused below, on every rank.
+            points = None
+        # A non-finite coordinate cannot be located, and global_evaluate does not
+        # refuse it the same way on every rank.
+        if points is not None and points.ndim == 2 and np.isfinite(points).all():
+            dim = points.shape[1]
+    dim = uw.mpi.comm.bcast(dim, root=viz_rank)
+    if dim is None:
+        raise ValueError(
+            f"the sample points on the plotting rank (viz_rank={viz_rank}) must be "
+            f"a finite array of shape (n, dim)")
+    if uw.mpi.rank == viz_rank:
+        return points
+    return np.zeros((0, dim))
+
+
 def parallel_line_plot(
     field, sample_points, title="Field Profile", xlabel="Position", ylabel="Field Value", viz_rank=0
 ):
@@ -17,29 +54,26 @@ def parallel_line_plot(
     Create a 1D line plot in parallel notebooks.
 
     Args:
-        field: UW field/expression to plot
+        field: a MeshVariable or a sympy expression to plot
         sample_points: numpy array of coordinates to sample
         title: Plot title
         xlabel, ylabel: Axis labels
         viz_rank: Which rank creates the visualization (default: 0)
-    """
-    if uw.mpi.rank == viz_rank:
-        # Designated rank requests data and creates plot
-        data = uw.function.global_evaluate(field, sample_points)
 
+    Every rank calls this; only ``viz_rank``'s ``sample_points`` are used.
+    """
+    points = _points_on_this_rank(sample_points, viz_rank)
+    data = uw.function.global_evaluate(_evaluable(field), points)
+    if uw.mpi.rank == viz_rank:
         import matplotlib.pyplot as plt
 
         plt.figure(figsize=(8, 5))
-        plt.plot(sample_points[:, 0], data.flatten())
+        plt.plot(points[:, 0], data.flatten())
         plt.title(title)
         plt.xlabel(xlabel)
         plt.ylabel(ylabel)
         plt.grid(True, alpha=0.3)
         plt.show()
-    else:
-        # Other ranks participate with empty requests
-        empty_points = np.array([]).reshape(0, field.mesh.dim)
-        uw.function.global_evaluate(field, empty_points)
 
 
 def parallel_scatter_plot(
@@ -49,17 +83,18 @@ def parallel_scatter_plot(
     Create scatter plot of two fields at sample points.
 
     Args:
-        field_x, field_y: UW fields/expressions to plot
+        field_x, field_y: MeshVariables or sympy expressions to plot
         sample_points: numpy array of coordinates to sample
         labels: Tuple of (xlabel, ylabel)
         title: Plot title
         viz_rank: Which rank creates the visualization
-    """
-    if uw.mpi.rank == viz_rank:
-        # Gather both fields
-        data_x = uw.function.global_evaluate(field_x, sample_points)
-        data_y = uw.function.global_evaluate(field_y, sample_points)
 
+    Every rank calls this; only ``viz_rank``'s ``sample_points`` are used.
+    """
+    points = _points_on_this_rank(sample_points, viz_rank)
+    data_x = uw.function.global_evaluate(_evaluable(field_x), points)
+    data_y = uw.function.global_evaluate(_evaluable(field_y), points)
+    if uw.mpi.rank == viz_rank:
         import matplotlib.pyplot as plt
 
         plt.figure(figsize=(8, 6))
@@ -69,11 +104,6 @@ def parallel_scatter_plot(
         plt.title(title)
         plt.grid(True, alpha=0.3)
         plt.show()
-    else:
-        # Other ranks participate
-        empty_points = np.array([]).reshape(0, field_x.mesh.dim)
-        uw.function.global_evaluate(field_x, empty_points)
-        uw.function.global_evaluate(field_y, empty_points)
 
 
 def parallel_profile_comparison(
@@ -83,27 +113,26 @@ def parallel_profile_comparison(
     Plot multiple field profiles on the same axes for comparison.
 
     Args:
-        fields: List of UW fields/expressions
+        fields: List of MeshVariables or sympy expressions
         sample_points: numpy array of coordinates to sample
         labels: List of field names (optional)
         title: Plot title
         viz_rank: Which rank creates the visualization
+
+    Every rank calls this; only ``viz_rank``'s ``sample_points`` are used.
     """
     if labels is None:
         labels = [f"Field {i}" for i in range(len(fields))]
 
+    points = _points_on_this_rank(sample_points, viz_rank)
+    field_data = [uw.function.global_evaluate(_evaluable(field), points).flatten()
+                  for field in fields]
     if uw.mpi.rank == viz_rank:
-        # Gather all field data
-        field_data = []
-        for field in fields:
-            data = uw.function.global_evaluate(field, sample_points)
-            field_data.append(data.flatten())
-
         import matplotlib.pyplot as plt
 
         plt.figure(figsize=(10, 6))
         for i, (data, label) in enumerate(zip(field_data, labels)):
-            plt.plot(sample_points[:, 0], data, label=label, marker="o", markersize=3)
+            plt.plot(points[:, 0], data, label=label, marker="o", markersize=3)
 
         plt.xlabel("Position")
         plt.ylabel("Field Value")
@@ -111,11 +140,6 @@ def parallel_profile_comparison(
         plt.legend()
         plt.grid(True, alpha=0.3)
         plt.show()
-    else:
-        # Other ranks participate
-        empty_points = np.array([]).reshape(0, fields[0].mesh.dim)
-        for field in fields:
-            uw.function.global_evaluate(field, empty_points)
 
 
 def parallel_custom_plot(plot_function, field_data_specs, viz_rank=0, **plot_kwargs):
@@ -127,6 +151,9 @@ def parallel_custom_plot(plot_function, field_data_specs, viz_rank=0, **plot_kwa
         field_data_specs: List of (field, points, name) tuples
         viz_rank: Which rank creates the visualization
         **plot_kwargs: Additional keyword arguments passed to plot_function
+
+    Every rank calls this with the same fields and names; only ``viz_rank``'s
+    points are used.
 
     Example:
         def my_custom_plot(velocity_data, velocity_points, temperature_data, temperature_points):
@@ -142,20 +169,13 @@ def parallel_custom_plot(plot_function, field_data_specs, viz_rank=0, **plot_kwa
              (temperature, x_line, "temperature")]
         )
     """
+    plot_data = {}
+    for field, sample_points, name in field_data_specs:
+        points = _points_on_this_rank(sample_points, viz_rank)
+        plot_data[f"{name}_data"] = uw.function.global_evaluate(_evaluable(field), points)
+        plot_data[f"{name}_points"] = points
     if uw.mpi.rank == viz_rank:
-        # Gather all field data
-        plot_data = {}
-        for field, points, name in field_data_specs:
-            plot_data[f"{name}_data"] = uw.function.global_evaluate(field, points)
-            plot_data[f"{name}_points"] = points
-
-        # Create visualization with gathered data
         plot_function(**plot_data, **plot_kwargs)
-    else:
-        # Other ranks participate in data gathering
-        for field, points, name in field_data_specs:
-            empty_points = np.array([]).reshape(0, field.mesh.dim)
-            uw.function.global_evaluate(field, empty_points)
 
 
 # Convenience functions for common sampling patterns

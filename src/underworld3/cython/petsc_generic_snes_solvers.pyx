@@ -508,7 +508,9 @@ class SolverReset:
         they are rebuilt from the nullspace settings on the next solve.
     ``discretisation``
         The DM, its hierarchy and the SNES; rebuilt on the next solve. The
-        registered conditions are kept.
+        nullspace objects are numbered on the DM, so they go with it (and
+        with ``conditions``, which drops the DM too). The registered
+        conditions are kept.
     ``all``
         All of the above: a new boundary-value problem on the same solver and
         fields.
@@ -558,6 +560,24 @@ class SolverReset:
         self.conditions()
         self.nullspace()
         self.discretisation()
+
+
+#: PETSc's default zero-pivot tolerance for LU and ILU in double precision: a
+#: pivot below it is treated as zero (#1059).
+_PETSC_ZERO_PIVOT = 2.22045e-14
+
+#: How far above that tolerance a pressure block's smallest diagonal entry may
+#: lie and still be blamed for a failed factorisation (#1059). ILU pivots can fall
+#: a little below the diagonal they start from; a hundredfold is a wide margin.
+_PIVOT_SUSPECT = 100.0
+
+#: The widest span of a pressure block's diagonal that one rescaling of the
+#: viscosity brings into range (#1059). Measured on a unit box (cell size 0.1, P2/P1)
+#: with the viscosity centred on one: a viscosity contrast of 1e8 (diagonal span
+#: 4.4e8) solves by default, 1e9 does not. Within it a model whose pivots fail is too
+#: viscous as a whole (reference quantities fix it); beyond it, the contrast is the
+#: problem.
+_RESCALABLE_SPAN = 1.0e8
 
 
 class SolverBaseClass(uw_object):
@@ -4444,6 +4464,107 @@ class SolverBaseClass(uw_object):
                         f"slowly; one that stagnates needs a better preconditioner "
                         f"(#585, #625).", RuntimeWarning)
 
+    def _warn_on_capped_rotated_sub_solves(self, info):
+        """The rotated free-slip loop's counterpart of
+        :meth:`_warn_on_capped_sub_solves` (#625). The loop solves its own
+        fieldsplit-Schur KSP, and counts the applications of each sub-solve that
+        stopped at its cap over the whole solve (``info["sub_capped"]``). One
+        warning per capped block, attributed to the user's ``solve()`` line. Rank 0
+        warns; the counts are the same on every rank, and nothing is collective."""
+        capped = (info or {}).get("sub_capped") or {}
+        for block, count in capped.items():
+            if not count:
+                continue
+            with uw.selective_ranks(0) as selected:
+                if selected:
+                    _warn_from_caller(
+                        f"{type(self).__name__}: the rotated free-slip {block} sub-solve "
+                        f"stopped at its iteration cap without converging, in {count} "
+                        f"application(s), so the solve's convergence does not mean that "
+                        f"block solved. Counts in _rotated_freeslip_info['sub_capped'] "
+                        f"(#625).", RuntimeWarning)
+
+    def _refuse_unfactorable_pressure_preconditioner(self):
+        """Raise on every rank when the solve failed because the pressure block's
+        preconditioner hit a zero pivot (#1059); and make the next solve rebuild a
+        preconditioner that failed.
+
+        The pressure block's preconditioner matrix is the pressure mass matrix
+        divided by the viscosity, so its entries scale as element size over
+        viscosity. PETSc's LU and ILU treat a pivot below an ABSOLUTE tolerance
+        (``_PETSC_ZERO_PIVOT``) as zero: with the viscosity large everywhere (a model
+        in raw SI units) or across a large contrast, the factorisation fails, the
+        solve stops, and the fields look like a solution. A warning is not enough.
+
+        Only a failure the matrix explains is refused: the pressure PC failed with a
+        zero pivot, or with a sub-preconditioner error (GASM reports its ILU blocks'
+        zero pivots that way) while its smallest diagonal entry is within
+        ``_PIVOT_SUSPECT`` of the tolerance. Any other failure keeps the diverged-solve
+        warning. Collective: reached on every rank, since the SNES reason is global;
+        the flags are reduced and the diagonal extremes are global reductions."""
+        if self.snes.getConvergedReason() >= 0:
+            return
+        from petsc4py import PETSc
+        ksp = self.snes.getKSP()
+        # A PC that failed keeps its failed state: the next solve on this solver
+        # failed again at iteration 0 with a healthy matrix, until a setup was
+        # forced. The KSP reason is global, so every rank sets the flag alike.
+        if ksp.getConvergedReason() == PETSc.KSP.ConvergedReason.DIVERGED_PCSETUP_FAILED:
+            self._rebuild_after_pc_failure = True
+        zero_pivot = (PETSc.PC.FailedReason.FACTOR_STRUCT_ZEROPIVOT,
+                      PETSc.PC.FailedReason.FACTOR_NUMERIC_ZEROPIVOT,
+                      PETSc.PC.FailedReason.SUBPC_ERROR)
+        pressure = None
+        try:
+            for sub in ksp.getPC().getFieldSplitSubKSP():
+                if (sub.getOptionsPrefix() or "").endswith("fieldsplit_pressure_"):
+                    pressure = sub
+        except Exception:
+            pressure = None
+        failed = int(pressure is not None
+                     and pressure.getPC().getFailedReason() in zero_pivot)
+        if not uw.mpi.comm.allreduce(failed, op=uw.MPI.MAX):
+            return
+        # Every rank has the same split, so either every rank found the pressure
+        # block or none did; then the reductions below are skipped everywhere.
+        if not uw.mpi.comm.allreduce(int(pressure is not None), op=uw.MPI.MIN):
+            return
+        diagonal = pressure.getOperators()[1].getDiagonal()
+        diagonal.abs()
+        smallest = diagonal.min()[1]
+        largest = diagonal.max()[1]
+        if smallest > _PIVOT_SUSPECT * _PETSC_ZERO_PIVOT:
+            return                  # not the matrix's scale: the warning stands
+        iterations = self.snes.getIterationNumber()
+        held = "the initial guess" if iterations == 0 else "the last iterate"
+        head = (
+            f"{type(self).__name__}: the pressure block's preconditioner could not be "
+            f"factored (a zero pivot), so the solve stopped at iteration {iterations} "
+            f"and the fields hold {held}. That matrix is the pressure mass matrix "
+            f"divided by the viscosity, and PETSc's factorisation treats pivots below "
+            f"{_PETSC_ZERO_PIVOT:.2g} as zero; its diagonal runs from {smallest:.3g} to "
+            f"{largest:.3g}. Where the limit falls depends on the element size as well "
+            f"as the viscosity. ")
+        if largest <= _RESCALABLE_SPAN * smallest:
+            remedy = (
+                f"The entries span a factor of {largest / smallest:.2g}, which one "
+                f"rescaling brings into range: the viscosity is too large as a whole, "
+                f"as in a model in raw SI units. Give the model reference quantities "
+                f"(uw.get_default_model().set_reference_quantities(...), see the "
+                f"units-system guide), so the viscosity it solves with is of order one.")
+        else:
+            remedy = (
+                f"The entries span a factor of {largest / smallest:.2g}: a viscosity "
+                f"contrast wider than one rescaling brings into range, which reference "
+                f"quantities cannot remove, since they rescale every viscosity together. Setting solver.petsc_options["
+                f"'fieldsplit_pressure_sub_pc_factor_zeropivot'] = 0 lets this "
+                f"factorisation through, but a contrast this large can then defeat the "
+                f"velocity multigrid as well (1e12 on a unit box needed a direct "
+                f"velocity solve, fieldsplit_velocity_pc_type = 'lu'); a smaller "
+                f"contrast is the robust remedy. Whether these should be defaults is "
+                f"open.")
+        raise RuntimeError(head + remedy + " (#1059)")
+
     def _warn_on_diverged_solve(self):
         """Warn when the solve diverged (#1059). The printed notice of
         ``_warn_on_divergence`` is easy to miss in a run's output, and a script carries
@@ -6564,6 +6685,7 @@ class SolverBaseClass(uw_object):
         # The warm-start flag must follow the rotated solve's own verdict — the SNES
         # was never run, so the generic reader would latch a stale reason.
         self._record_convergence_status(converged=_rotated_report.converged)
+        self._warn_on_capped_rotated_sub_solves(self._rotated_freeslip_info)
         # raised after the result and the convergence status are recorded, so a
         # caller that catches it reads a failed solve (#907)
         if self._rotated_freeslip_info.get("linear_failure"):
@@ -7464,9 +7586,14 @@ class SNES_Scalar(SolverBaseClass):
                 
                 bd_F0  = sympy.Array(bc.fn_f)
                 bc.fns["u_f0"] = sympy.ImmutableDenseMatrix(bd_F0)
-                
-                G0 = derive_by_array_wrt_field(bd_F0, U)
-                G1 = derive_by_array_wrt_field(bd_F0, L)
+
+                # The tangent is taken of the unwrapped term, as for the volume flux: a
+                # named expression in fn_f (the viscosity in a Nitsche penalty) was a
+                # constant to the derivative, and the tangent missed its dependence on
+                # the unknowns (#1162). The residual stays exact.
+                bd_F0_jac = self._jacobian_source(bd_F0)
+                G0 = derive_by_array_wrt_field(bd_F0_jac, U)
+                G1 = derive_by_array_wrt_field(bd_F0_jac, L)
 
                 bc.fns["uu_G0"] = sympy.ImmutableMatrix(G0.reshape(1, 1)) 
                 bc.fns["uu_G1"] = sympy.ImmutableMatrix(G1.reshape(dim, 1))
@@ -8515,11 +8642,16 @@ class SNES_Vector(SolverBaseClass):
                 # BC G1[fc*Nc + gc, df]       = ∂bd_f0[fc]/∂L[gc, df]
                 bd_G0 = sympy.zeros(Nc, Nc)
                 bd_G1 = sympy.zeros(Nc * Nc, cdim)
+                # The tangent is taken of the unwrapped term, as for the volume flux: a
+                # named expression in fn_f (the viscosity in a Nitsche penalty) was a
+                # constant to the derivative, and the tangent missed its dependence on
+                # the unknowns (#1162). The residual stays exact.
+                bd_f0_jac = list(self._jacobian_source(sympy.Array(bd_f0_list)))
                 for fc in range(Nc):
                     for gc in range(Nc):
-                        bd_G0[fc, gc] = diff_wrt_field(bd_f0_list[fc], U_list[gc])
+                        bd_G0[fc, gc] = diff_wrt_field(bd_f0_jac[fc], U_list[gc])
                         for df in range(cdim):
-                            bd_G1[fc * Nc + gc, df] = diff_wrt_field(bd_f0_list[fc], L[gc, df])
+                            bd_G1[fc * Nc + gc, df] = diff_wrt_field(bd_f0_jac[fc], L[gc, df])
 
                 bc.fns["uu_G0"] = sympy.ImmutableMatrix(bd_G0)
                 bc.fns["uu_G1"] = sympy.ImmutableMatrix(bd_G1)
@@ -9302,11 +9434,16 @@ class SNES_MultiComponent(SolverBaseClass):
 
                 bd_G0 = sympy.zeros(Nc, Nc)
                 bd_G1 = sympy.zeros(Nc * Nc, cdim)
+                # The tangent is taken of the unwrapped term, as for the volume flux: a
+                # named expression in fn_f (the viscosity in a Nitsche penalty) was a
+                # constant to the derivative, and the tangent missed its dependence on
+                # the unknowns (#1162). The residual stays exact.
+                bd_f0_jac = list(self._jacobian_source(sympy.Array(bd_f0_list)))
                 for fc in range(Nc):
                     for gc in range(Nc):
-                        bd_G0[fc, gc] = diff_wrt_field(bd_f0_list[fc], U_list[gc])
+                        bd_G0[fc, gc] = diff_wrt_field(bd_f0_jac[fc], U_list[gc])
                         for df in range(cdim):
-                            bd_G1[fc * Nc + gc, df] = diff_wrt_field(bd_f0_list[fc], L[gc, df])
+                            bd_G1[fc * Nc + gc, df] = diff_wrt_field(bd_f0_jac[fc], L[gc, df])
 
                 bc.fns["uu_G0"] = sympy.ImmutableMatrix(bd_G0)
                 bc.fns["uu_G1"] = sympy.ImmutableMatrix(bd_G1)
@@ -9830,6 +9967,20 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                     f"{pressureField.degree}, but degree={degree} asks for a pressure "
                     f"of degree {degree - 1} beside the velocity created here. "
                     f"{advice}, or pass both fields (#844).")
+        # A P1 velocity on simplices is refused, on either path (ruling,
+        # 2026-11-15): it pairs stably with no pressure offered here. Q1 on
+        # quads is not refused. The verdict is reduced, so every rank raises.
+        u_degree = velocityField.degree if velocityField is not None else degree
+        from mpi4py import MPI as _MPI
+        p1_on_simplices = bool(uw.mpi.comm.allreduce(
+            int(bool(self.mesh.isSimplex) and u_degree == 1), op=_MPI.MAX))
+        if p1_on_simplices:
+            raise ValueError(
+                f"{type(self).__name__}: a velocity of degree 1 on a simplex mesh is "
+                f"refused (ruling, 2026-11-15: degree=1 is an incomplete "
+                f"specification there). A P1 velocity on triangles or tetrahedra "
+                f"pairs stably with no pressure offered here. Use degree=2, the "
+                f"P2/P1 Taylor-Hood pair, or a quadrilateral mesh for Q1.")
         if velocityField is None or pressureField is None:
 
             # Note, ensure names are unique for each solver type
@@ -11924,7 +12075,11 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                 # explicit-index loops (the old permutedims form transposed
                 # fc/gc here too; harmless only while every natural-BC
                 # tangent happened to be symmetric).
-                bd_f0_list = list(sympy.Array(bc.fn_f).reshape(dim))
+                # The tangent is taken of the unwrapped term, as for the volume flux: a
+                # named expression in fn_f (the viscosity in a Nitsche penalty) was a
+                # constant to the derivative, and the tangent missed its dependence on
+                # the unknowns (#1162). The residual stays exact.
+                bd_f0_list = list(self._jacobian_source(sympy.Array(bc.fn_f).reshape(dim)))
 
                 # uu_G0[fc, gc]         = d bd_F0[fc] / dU[gc]
                 G0 = sympy.zeros(dim, dim)
@@ -12432,10 +12587,10 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
 
         Note (scatter-back): PetscSection constraints remove DOFs from the GLOBAL
         section only; the LOCAL section still allocates them. The multiplier IS is
-        built with ``unconstrained=False`` and (for a scalar ``h``, 1 dof/point)
-        appends the local offset of every h-bearing point regardless of
-        constraint, so the copy back into the full-domain ``h`` MeshVariable is
-        size-correct without change.
+        built with ``unconstrained=False`` and takes every dof of every h-bearing
+        point (two on each edge for a P3 ``h``), constrained or not, so the copy
+        back into the full-domain ``h`` MeshVariable is size-correct without
+        change.
 
         Why this is lossless (and why disabling it is NOT a "more accurate"
         reference). The interior ``h`` rows are the screening block alone,
@@ -12532,6 +12687,10 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                 addl_total += add_here
             Snew.setConstraintDof(p, Sold.getConstraintDof(p) + addl_total)
 
+        # The field symmetries orient multi-dof edges and faces in reversed
+        # cells; without them a P3 velocity was read in the wrong order next
+        # to every such edge, and the constrained solve came out 26% low.
+        copy_section_symmetries(Sold, Snew)
         Snew.setUp()
 
         # 2b. Constraint INDICES — must follow setUp(). Rebuild the point-local
@@ -13736,6 +13895,12 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                 return rate_strengthening_continuation(self, **options)
             return self._solve_yield_homotopy(homotopy_options, verbose=verbose)
 
+        if getattr(self, "_rebuild_after_pc_failure", False):
+            # The last solve's preconditioner failed and keeps its failed state;
+            # without a fresh setup this solve fails the same way at iteration 0,
+            # however healthy the operator now is (#1059).
+            self._rebuild_after_pc_failure = False
+            _force_setup = True
         if _force_setup:
             self.is_setup = False
         elif not self.constitutive_model._solver_is_setup:
@@ -13922,6 +14087,10 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         self._warn_on_divergence()
 
         self._record_convergence_status()
+
+        # a failure that leaves u = 0 looking like a solution is refused, on
+        # every rank (#1059)
+        self._refuse_unfactorable_pressure_preconditioner()
 
         # last: under -W error they raise on rank 0 only, after every rank has
         # recorded the solve
