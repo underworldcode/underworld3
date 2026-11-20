@@ -55,9 +55,27 @@ SCRIPTS = [
 
 # Wraps the solve of every solver class in uw.systems so that the first solve to
 # return ends the script with status 0; then runs the script as __main__.
+# A headless runner has no OpenGL, and some scripts plot before their first
+# solve, so pyvista's Plotter is replaced by one whose every call does nothing:
+# building pyvista meshes needs no OpenGL, and only rendering is skipped.
 BOOTSTRAP = textwrap.dedent("""
     import runpy, sys
     import underworld3 as uw
+
+    try:
+        import pyvista
+
+        class _NoRender:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def __getattr__(self, name):
+                return lambda *args, **kwargs: None
+
+        pyvista.OFF_SCREEN = True
+        pyvista.Plotter = _NoRender
+    except ImportError:
+        pass
 
     def _stop_after(solve):
         def wrapped(self, *args, **kwargs):
