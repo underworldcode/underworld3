@@ -165,9 +165,8 @@ def test_the_commit_reads_the_carried_history_frozen(transport):
 def test_the_split_eulerian_history_snapshots_after_its_correction():
     """The plain Eulerian advection correction is part of the carry as well.
 
-    Only the xx component is loaded: the correction is right for its first
-    component and wrong for a tensor's others (TODO(BUG) in
-    ``_apply_split_advection``), and this test is about the order, not that.
+    Only the xx component is loaded: this test is about the order; the
+    correction of every component is test_1109's.
     """
     mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(-1.0, -1.0), maxCoords=(1.0, 1.0),
                                              cellSize=1.0 / 8, qdegree=3)
