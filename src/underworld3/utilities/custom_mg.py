@@ -2232,6 +2232,7 @@ class CustomMGHierarchy:
         coarse_nodes, coarse_vertices = [None], [None]
         for l in range(1, nlev):
             below = self.level_meshes[l - 1]
+            agree()                    # the move check is collective
             followed = (built_vertices[l] is not None
                         and getattr(below, "_moves_with_the_finest", False))
             moved = (fault_mg.as_built_nodes(below, degree, continuous)

@@ -7,7 +7,9 @@ face — and asked them one point at a time through petsc4py, a Python call per
 point. These functions answer them for a whole stratum in one C loop and return
 numpy tables, so the logic above them can be written as array operations.
 
-All of them are rank-local: they read this rank's chart and call no collective.
+All of them but ``inherited_vertices`` are rank-local: they read this rank's
+chart and call no collective. ``inherited_vertices`` creates a refinement
+transform on the DM's communicator, so every rank of it must call it.
 """
 import numpy as np
 cimport numpy as cnp
@@ -201,9 +203,10 @@ def closure_dof_rows(DM dm, Section section, points, int block):
 def inherited_vertices(DM coarse):
     """The vertex of ``coarse.refine()`` that each vertex of ``coarse`` becomes,
     under PETSc's regular refinement: an int64 array over the coarse vertex
-    stratum, of fine DM points. Local to each rank: a refined DM keeps its
-    parent's partition, so a coarse vertex and its fine vertex are on the
-    same rank.
+    stratum, of fine DM points. The map is local to each rank: a refined DM
+    keeps its parent's partition, so a coarse vertex and its fine vertex are on
+    the same rank. The call is COLLECTIVE on the DM's communicator, since it
+    creates and sets up a ``DMPlexTransform`` there.
 
     The map is the refinement transform's own (``DMPlexTransformGetTargetPoint``),
     so it is exact and topological. It does not depend on where the inherited

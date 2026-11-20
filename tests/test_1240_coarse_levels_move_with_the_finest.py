@@ -128,6 +128,13 @@ def _velocity_iterations_after(steps, cells="quadrilaterals"):
 
 
 def test_quadrilateral_multigrid_holds_on_a_rising_wall():
-    # Measured serially: 4 velocity iterations after 10 rises with the coarse
-    # levels moved, 8 on development 246d6cef with them left where they were made.
-    assert _velocity_iterations_after(10) == 4
+    # Measured: 4 velocity iterations after 10 rises with the coarse levels
+    # moved, serially, and 5 at np 2 and 3 (the smoother differs with the
+    # partition); 8 serially on development 246d6cef, with them left where
+    # they were made.
+    expected = 4 if uw.mpi.size == 1 else 5
+    iterations = _velocity_iterations_after(10)
+    if uw.mpi.size <= 3:
+        assert iterations == expected
+    else:                                   # not measured above np 3
+        assert iterations <= expected
