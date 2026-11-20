@@ -1,3 +1,4 @@
+# WIP (#944): moved from docs/examples/fluid_mechanics/advanced/Ex_NS_Couette_PostProc.py: post-processes another user's local output files, which are not in the repository.
 # %% [markdown]
 """
 # 🎓 NS Couette PostProc
@@ -212,7 +213,7 @@ vx_theo_expr = 0.5 * vel * (1 + y / maxY)
 
 # calculate vx over the entire mesh variable
 with meshbox.access(v_ana):
-    v_ana.data[:, 0] = uw.function.evaluate(vx_theo_expr, v_ana.coords)
+    v_ana.array[:, 0, 0] = uw.function.evaluate(vx_theo_expr, v_ana.coords)[:, 0, 0]
 
 # create the mask function
 vel_mask_fn = sympy.Piecewise((1.0, (x >= x_samp) & (x <= (x_samp + 0.2))), 

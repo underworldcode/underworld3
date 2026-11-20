@@ -696,7 +696,7 @@ These example notebooks demonstrate advanced mesh patterns (in `docs/examples/`)
 | **Elliptical annulus** | Ellipse arcs, analytical normals, free-slip BCs | `fluid_mechanics/intermediate/Ex_Stokes_Ellipse_Cartesian.py` |
 | **Grain pack flow** | Boolean cuts, random geometry, many inclusions | `porous_flow/advanced/Ex_Explicit_Flow_Grains.py` |
 | **Internal boundaries** | pygmsh, refinement callback, embedded curves | `fluid_mechanics/intermediate/Ex_Stokes_Flow_Internal_BC.py` |
-| **Circular obstruction** | pygmsh, refinement callback, DFG benchmark | `fluid_mechanics/advanced/Ex_Navier_Stokes_Benchmarks_NS_DFG_2d.py` |
+| **Circular obstruction** | pygmsh, refinement callback, DFG benchmark | `WIP/needs_update/fluid_mechanics/advanced/Ex_Navier_Stokes_Benchmarks_NS_DFG_2d.py` |
 | **Notch geometry** | Complex .geo-style, rounded corners, multiple cell sizes | `solid_mechanics/advanced/Ex_Shear_Band_Notch_Benchmark.py` |
 | **Terrain mesh** | Discrete entities, 3D mesh from topography | `fluid_mechanics/intermediate/Ex_ChannelFlow_IrregularBase.py` |
 | **Spherical manifold** | Surface mesh in 3D, segmented sphere | `utilities/advanced/Manifold_S2.py` |

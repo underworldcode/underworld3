@@ -230,9 +230,9 @@ stokes.saddle_preconditioner = 1 / viscosity
 """
 
 # %%
-meshr.data[:, 0] = uw.function.evaluate(
+meshr.array[:, 0, 0] = uw.function.evaluate(
     sympy.sqrt(x**2 + y**2 + z**2), mesh.X.coords, mesh.N
-)
+)[:, 0, 0]
 
 # %% [markdown]
 """

@@ -1,3 +1,4 @@
+# WIP (#944): moved from docs/examples/fluid_mechanics/intermediate/Ex_Stokes_Disk_CylCoords_DEPRECATED_NATIVE.py: native coordinate systems were removed in ee29df2a.
 # %% [markdown]
 """
 # 🔬 Stokes Disk CylCoords
@@ -278,10 +279,10 @@ stokes_xy.bodyforce
 
 
 with meshball_xyz.access(r_xy):
-    r_xy.data[:, 0] = uw.function.evaluate(
+    r_xy.array[:, 0, 0] = uw.function.evaluate(
         meshball_xyz.CoordinateSystem.xR[0],
         coords=r_xy.coords,
-        coord_sys=meshball_xyz.N)
+        coord_sys=meshball_xyz.N)[:, 0, 0]
 
 timing.start()
 stokes.solve(zero_init_guess=True)

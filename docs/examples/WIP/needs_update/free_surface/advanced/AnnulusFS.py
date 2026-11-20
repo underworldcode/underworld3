@@ -1,3 +1,4 @@
+# WIP (#944): moved from docs/examples/free_surface/advanced/AnnulusFS.py: written for the old evaluate shapes and mesh-mover API, updated only in part.
 # %% [markdown]
 """
 # 🎓 AnnulusFS
@@ -105,8 +106,7 @@ def plot_mesh(title,mesh,showFig=True,color='Black'):
     pv.global_theme.show_edges = True
     pv.global_theme.axes.show = True
 
-    mesh.vtk("tmp_box_mesh.vtk")
-    pvmesh = pv.read("tmp_box_mesh.vtk")
+    pvmesh = uw.visualisation.mesh_to_pv_mesh(mesh)
     pl = pv.Plotter()
     pl.add_mesh(pvmesh,color, 'wireframe')
 
@@ -133,17 +133,16 @@ def plot_stream(title,showFig=False):
     pv.global_theme.show_edges = True
     pv.global_theme.axes.show = True
     
-    mesh.vtk("tmp_box_mesh.vtk")
-    pvmesh = pv.read("tmp_box_mesh.vtk")
+    pvmesh = uw.visualisation.mesh_to_pv_mesh(mesh)
     pl = pv.Plotter()
     #pl.add_mesh(pvmesh,'k', 'wireframe')
     
     dim = 2
     coords = pvmesh.points[:, 0:dim]
     vector_values = np.zeros_like(pvmesh.points)
-    vector_values[:, 0:dim] = uw.function.evalf(v.sym, coords)
+    vector_values[:, 0:dim] = uw.function.evaluate(v.sym, coords).squeeze()
     pvmesh.point_data["V"] = vector_values
-    pvmesh.point_data["P"] = uw.function.evalf(p.sym, coords)
+    pvmesh.point_data["P"] = uw.function.evaluate(p.sym, coords).squeeze()
     
     skip = 1
     points = np.zeros((mesh._centroids[::skip, 0].shape[0], 3))
@@ -327,14 +326,14 @@ mesh_solver = uw.systems.Poisson(init_mesh, u_Field=Rmesh)
 mesh_solver.constitutive_model = uw.constitutive_models.DiffusionModel
 mesh_solver.constitutive_model.Parameters.diffusivity = 1. 
 mesh_solver.f = 0.0
-mesh_solver.add_dirichlet_bc(Bmesh.sym[0], "Upper",0)
-mesh_solver.add_dirichlet_bc(Bmesh.sym[0], "Lower",0)
+mesh_solver.add_dirichlet_bc((Bmesh.sym[0],), "Upper")
+mesh_solver.add_dirichlet_bc((Bmesh.sym[0],), "Lower")
 
 _ra, _l1 = init_mesh.CoordinateSystem.xR
 _ra_new, _l1_new = perturbation_init(init_mesh)
 #Bmesh.data[:,0] = uw.function.evaluate(_ra,init_mesh.X.coords)
-Bmesh.data[botwall,0] = uw.function.evaluate(_ra,init_mesh.X.coords[botwall])
-Bmesh.data[topwall,0] = uw.function.evaluate(_ra_new,init_mesh.X.coords[topwall])
+Bmesh.data[botwall,0] = uw.function.evaluate(_ra,init_mesh.X.coords[botwall])[:, 0, 0]
+Bmesh.data[topwall,0] = uw.function.evaluate(_ra_new,init_mesh.X.coords[topwall])[:, 0, 0]
 mesh_solver.solve()
 
 def update_mesh():
@@ -369,13 +368,11 @@ if render:
     pv.global_theme.show_edges = True
     pv.global_theme.axes.show = True
     
-    mesh.vtk("tmp_box_mesh.vtk")
-    pvmesh = pv.read("tmp_box_mesh.vtk")
+    pvmesh = uw.visualisation.mesh_to_pv_mesh(mesh)
     pl = pv.Plotter()
     pl.add_mesh(pvmesh,'red', 'wireframe',label='mesh1')
     
-    mesh0.vtk("tmp_box_mesh0.vtk")
-    pvmesh0 = pv.read("tmp_box_mesh0.vtk")
+    pvmesh0 = uw.visualisation.mesh_to_pv_mesh(mesh0)
     pl.add_mesh(pvmesh0,'Black', 'wireframe',label='mesh0')
 
     # init_mesh.vtk("tmp_box_mesh_init.vtk")
@@ -602,8 +599,8 @@ class FreeSurfaceProcessor_Annulus(object):
         self.mesh_solver.constitutive_model = uw.constitutive_models.DiffusionModel
         self.mesh_solver.constitutive_model.Parameters.diffusivity = 1. 
         self.mesh_solver.f = 0.0
-        self.mesh_solver.add_dirichlet_bc(Bmesh.sym[0], "Upper",0)
-        self.mesh_solver.add_dirichlet_bc(Bmesh.sym[0], "Lower",0)
+        self.mesh_solver.add_dirichlet_bc((Bmesh.sym[0],), "Upper")
+        self.mesh_solver.add_dirichlet_bc((Bmesh.sym[0],), "Lower")
         
         self.v = v
         self._dt   = dt
@@ -623,8 +620,8 @@ class FreeSurfaceProcessor_Annulus(object):
             coords = self.mesh.X.coords[self.top]
             x = coords[:,0]
             y = coords[:,-1]
-            vx = uw.function.evalf(self.v.sym[0], coords)
-            vy = uw.function.evalf(self.v.sym[1], coords)
+            vx = uw.function.evaluate(self.v.sym[0], coords).squeeze()
+            vy = uw.function.evaluate(self.v.sym[1], coords).squeeze()
             
             # Advect top surface
             x2 = x + vx * self._dt

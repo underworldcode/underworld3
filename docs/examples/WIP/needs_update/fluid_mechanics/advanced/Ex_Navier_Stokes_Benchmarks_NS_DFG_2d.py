@@ -1,3 +1,4 @@
+# WIP (#944): moved from docs/examples/fluid_mechanics/advanced/Ex_Navier_Stokes_Benchmarks_NS_DFG_2d.py: particle recycling (Swarm recycle_rate > 1) is not implemented.
 # ---
 # jupyter:
 #   jupytext:
@@ -380,7 +381,7 @@ navier_stokes.bodyforce = sympy.Matrix([0, 0])
 
 hw = 1000.0 / res
 with pipemesh.access(r_inc):
-    r_inc.data[:, 0] = uw.function.evalf(r, pipemesh.X.coords, pipemesh.N)
+    r_inc.array[:, 0, 0] = uw.function.evaluate(r, pipemesh.X.coords, pipemesh.N)[:, 0, 0]
 
 surface_defn = sympy.exp(-(((r_inc.fn - radius) / radius) ** 2) * hw)
 
@@ -523,10 +524,10 @@ for step in range(0, maxsteps):
     navier_stokes.solve(timestep=dt_ns, zero_init_guess=False)
 
     # Update passive swarm
-    passive_swarm.advection(v_soln.sym, delta_t, order=2, corrector=False, evalf=False)
+    passive_swarm.advection(v_soln.sym, delta_t, order=2, corrector=False)
 
     # Update material point swarm
-    swarm.advection(v_soln.sym, delta_t, order=2, corrector=False, evalf=False)
+    swarm.advection(v_soln.sym, delta_t, order=2, corrector=False)
 
     # Add new points at inflow
     npoints = 200
