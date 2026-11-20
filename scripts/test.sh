@@ -421,6 +421,8 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   batch 3 tests/parallel/test_1154_stokes_active_region_refused_parallel.py
   # So is a constrained Stokes solve with a discontinuous pressure (#1167).
   batch 3 tests/parallel/test_1167_constrained_stokes_discontinuous_pressure_parallel.py
+  # So are a solver's scoped resets, the same on every rank (#1169).
+  batch 3 tests/parallel/test_1169_solver_reset_scopes_parallel.py
   # So is #1123's sheared mesh: every inside point owned at any rank count, exact serially.
   batch 3 tests/parallel/test_1123_exact_locator_parallel.py
   # So are the contained points the walk misses on that mesh, found by the exact fallback (#1183).
@@ -616,6 +618,13 @@ if [ $PARALLEL_RANKS -gt 0 ] && shard_owns 4; then
     # empty does so from np 3 (at np 2 the test skips), so it runs at np 3 always.
     OMPI_MCA_rmaps_base_oversubscribe=1 $SUPERVISE mpirun -n 3 python -m pytest --with-mpi \
       tests/parallel/test_1189_adapt_nvb_rank_without_cells_parallel.py || status=1
+    # A label only some ranks hold: at np 2 the fixture's one cell is redistributed
+    # onto both ranks and the test skips, so it runs at np 3 always.
+    OMPI_MCA_rmaps_base_oversubscribe=1 $SUPERVISE mpirun -n 3 python -m pytest --with-mpi \
+      tests/parallel/test_1069_boundary_label_on_some_ranks_parallel.py || status=1
+    # An SLCN step with an empty rank: the fixture empties a rank from np 3 only.
+    OMPI_MCA_rmaps_base_oversubscribe=1 $SUPERVISE mpirun -n 3 python -m pytest --with-mpi \
+      tests/parallel/test_1236_slcn_step_on_an_empty_rank_parallel.py || status=1
     # A free surface with a rank without cells: the shell partition empties a rank
     # from np 3 (at np 2 it would leave one rank holding every cell), so np 3 always.
     OMPI_MCA_rmaps_base_oversubscribe=1 $SUPERVISE mpirun -n 3 python -m pytest --with-mpi \

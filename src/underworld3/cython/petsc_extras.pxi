@@ -41,7 +41,7 @@ cdef extern from "petscdstypes.h":
 
 cdef extern from "petsc_compat.h":
 
-    PetscErrorCode PetscDSAddBoundary_UW( PetscDM, DMBoundaryConditionType, const char[], const char[] , PetscInt, PetscInt, PetscInt *, void (*)(), void (*)(), PetscInt, const PetscInt *, void *)
+    PetscErrorCode PetscDSAddBoundary_UW( PetscDM, DMBoundaryConditionType, const char[], const char[] , PetscInt, PetscInt, PetscInt *, void (*)(), void (*)(), PetscInt, const PetscInt *, void *, PetscInt *)
     PetscErrorCode DMSetAuxiliaryVec_UW(PetscDM, PetscDMLabel, PetscInt, PetscInt, PetscVec)
     PetscErrorCode UW_PetscDSGetBoundaryWeakForm(PetscDS, PetscInt, PetscWeakForm *)
     PetscErrorCode UW_DMPlexComputeResidualByKeyVolumeOnly( PetscDM, PetscFormKey, PetscIS, PetscReal, PetscVec, PetscVec, PetscReal, PetscVec, void *)
@@ -50,7 +50,6 @@ cdef extern from "petsc_compat.h":
     PetscErrorCode UW_PetscDSSetBdResidual(PetscDS, PetscDMLabel, PetscInt, PetscInt, PetscInt, PetscInt, void*, void*)
     PetscErrorCode UW_PetscDSSetBdJacobian(PetscDS, PetscDMLabel, PetscInt, PetscInt, PetscInt, PetscInt, PetscInt, void*, void*, void*, void*)
     PetscErrorCode UW_PetscDSSetBdJacobianPreconditioner(PetscDS, PetscDMLabel, PetscInt, PetscInt, PetscInt, PetscInt, PetscInt, void*, void*, void*, void*)
-    PetscErrorCode UW_PetscDSSetBdTerms   (PetscDS, PetscDMLabel, PetscInt, PetscInt, PetscInt, PetscInt, PetscInt, void*, void*, void*, void*, void*, void* )
     PetscErrorCode UW_PetscDSViewWF(PetscDS)     
     PetscErrorCode UW_PetscDSViewBdWF(PetscDS, PetscInt)
     PetscErrorCode UW_DMSetTime( PetscDM, PetscReal )

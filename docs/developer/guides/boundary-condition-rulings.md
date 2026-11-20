@@ -93,6 +93,46 @@ given as `None` (or `sympy.oo`) are left free. Three things to know:
   registration; a symbolic datum is scaled when it is compiled. Either way
   the transcript's key shows the value as applied.
 
+## Physical circular walls on affine annulus meshes (experimental)
+
+`Stokes.add_cylindrical_wall_transfer` registers a lagged rotated normal
+constraint and tangential natural load for free slip on the true circle.
+`Stokes.add_cylindrical_zero_slip_transfer` registers a full-vector shifted
+Dirichlet condition. These replace the ordinary wall registration on each
+boundary. Both require nondimensional affine triangles, continuous
+P2 velocity/P1 regular pressure, and a complete inner/outer circle pair.
+
+Each wall's circle is the one the mesh declares for it
+(`mesh.analytic_surface(label)`), never a radius from the caller, and the
+same holds for the sheet and outer wall of `cylindrical_pressure_lifting`. A
+boundary the mesh does not declare as an origin-centred circle is refused:
+undeclared (a mesh read from a file declares nothing), released (after
+`mesh.deform` or a direct coordinate write), or declared as a plane. If a
+mover slides the walls and keeps them on their circles, the next lagged solve
+builds the wall geometry again and restarts the lagged datum from zero.
+
+Call `solve_cylindrical_wall_updates(walls=walls, updates=...)` for free slip,
+or `solve_cylindrical_zero_slip_updates` for zero slip, with the pressure
+nullspace enabled. The explicit update count performs one initial solve plus
+that many numerical wall updates. Check the returned physical-circle residuals
+and update changes; a solver convergence flag alone does not establish wall
+iteration convergence. Free-slip transfer also requires constant viscosity.
+
+Pressure splitting remains separate. For free-slip transfer, pass the known
+`pressure_jump` expression from `cylindrical_pressure_lifting`, or the scalar
+DG P1 `pressure_jump_field` from `pressure_split`; pass zero without splitting.
+The latter uses one-sided cell coefficients, without averaging a jump at
+facets. Keep the split's exterior natural datum on natural components.
+Zero-slip transfer needs only velocity, so it accepts either pressure-split
+workflow without a wall pressure input. The wall traction after these solves
+is read with the existing `boundary_normal_traction` and `boundary_flux`, on
+the polygonal wall. Method docstrings give the equations, references and
+limitations; see also [Prescribed pressure jumps](../../advanced/prescribed-pressure-jumps.md).
+
+These methods are opt-in and experimental: no stability or convergence theorem
+is claimed, and the wall updates are not recorded in the run transcript, so a
+run that uses them inside `model.step` understates what it did.
+
 ## The mesh side: conditions that come out empty
 
 - Gmsh physical groups must be numbered in the order of the boundary

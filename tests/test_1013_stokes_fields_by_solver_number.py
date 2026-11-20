@@ -208,7 +208,8 @@ def test_the_multiplier_rows_before_a_solve_are_split_by_solver_field(order):
 @pytest.mark.tier_b
 @pytest.mark.parametrize("first_use", ("a residual before any solve", "a solve"))
 def test_constraints_added_after_a_reset_get_their_own_index_sets(first_use):
-    """``_reset()`` is private, and examples call it between solves."""
+    """A reset between solves, as the examples make (``reset.all()``, formerly
+    ``_reset()``)."""
     stokes, v = _stokes(("v", "p"), uw.systems.Stokes_Constrained)
     stokes.add_essential_bc((0.0, 0.0), "Bottom")
     stokes.add_essential_bc((0.0, 0.0), "Top")
@@ -218,7 +219,7 @@ def test_constraints_added_after_a_reset_get_their_own_index_sets(first_use):
     else:
         stokes.compute_volume_residual_fields()
 
-    stokes._reset()
+    stokes.reset.all()
     _no_flow_through_the_sides(stokes)
     stokes.solve(zero_init_guess=True)
 

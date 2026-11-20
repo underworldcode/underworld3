@@ -378,7 +378,7 @@ class LevelSetSolver:
             self._adv_solver.constitutive_model = uw.constitutive_models.DiffusionModel
         self._adv_solver.constitutive_model.Parameters.diffusivity = 0.0
         if far_field is not None:
-            for boundary in self.mesh.boundaries:
+            for boundary in self.mesh._boundaries_covering_the_exterior_once():
                 self._adv_solver.add_dirichlet_bc(float(far_field), boundary.name)
         self._adv_solver_bc = adv_solver_bc
         for key, value in (adv_solver_opts or {}).items():
@@ -474,7 +474,10 @@ class LevelSetSolver:
         """Clip to [0, 1]; return the volume the clip changed (a nodal estimate)."""
         values = np.asarray(self.phi.array[:, 0, 0])
         clipped = np.clip(values, 0.0, 1.0)
-        if np.array_equal(values, clipped):
+        # Decided over every rank: the volumes below are collective, so a rank
+        # with nothing to clip still takes part when another rank clips.
+        comm = self.mesh.dm.getComm().tompi4py()
+        if not comm.allreduce(not np.array_equal(values, clipped), op=uw.MPI.LOR):
             return 0.0
         before = self.interface_volume()
         self.phi.array[:, 0, 0] = clipped
@@ -533,46 +536,49 @@ class LevelSetSolver:
         axis_for_label = {"Left": 0, "Right": 0, "Top": 1, "Bottom": 1}
         is_min_side = {"Left": True, "Right": False, "Top": False, "Bottom": True}
 
-        for label in labels:
-            axis = axis_for_label[label]
-            tang = 1 - axis
-            op = MPI.MIN if is_min_side[label] else MPI.MAX
-            if n_local:
-                local_extreme = coords[:, axis].min() if is_min_side[label] else coords[:, axis].max()
-            else:
-                local_extreme = np.inf if is_min_side[label] else -np.inf
-            wall_val = comm.allreduce(float(local_extreme), op=op)
+        # A rank with no wall nodes writes nothing, and an .array write outside
+        # this context is collective, so the writes are synchronised at its exit.
+        with uw.synchronised_array_update("level-set wall correction"):
+            for label in labels:
+                axis = axis_for_label[label]
+                tang = 1 - axis
+                op = MPI.MIN if is_min_side[label] else MPI.MAX
+                if n_local:
+                    local_extreme = coords[:, axis].min() if is_min_side[label] else coords[:, axis].max()
+                else:
+                    local_extreme = np.inf if is_min_side[label] else -np.inf
+                wall_val = comm.allreduce(float(local_extreme), op=op)
 
-            local_axis_vals = np.unique(coords[:, axis]) if n_local else np.empty(0)
-            all_axis_vals = np.unique(np.concatenate(comm.allgather(local_axis_vals)))
-            if all_axis_vals.size < 2:
-                continue
-            inner_val = all_axis_vals[np.argsort(np.abs(all_axis_vals - wall_val))][1]
+                local_axis_vals = np.unique(coords[:, axis]) if n_local else np.empty(0)
+                all_axis_vals = np.unique(np.concatenate(comm.allgather(local_axis_vals)))
+                if all_axis_vals.size < 2:
+                    continue
+                inner_val = all_axis_vals[np.argsort(np.abs(all_axis_vals - wall_val))][1]
 
-            inner_idx = np.where(np.isclose(coords[:, axis], inner_val, atol=1e-8))[0] if n_local else np.empty(0, dtype=int)
-            local_pairs = (np.column_stack((coords[inner_idx, tang], np.asarray(self.phi.array[inner_idx, 0, 0])))
-                           if len(inner_idx) else np.empty((0, 2)))
-            gathered = [p for p in comm.allgather(local_pairs) if p.shape[0] > 0]
-            if not gathered:
-                continue
-            table = np.vstack(gathered)
-            table = table[np.argsort(table[:, 0])]
-            table = table[np.concatenate(([True], np.diff(table[:, 0]) > 1e-10))]
+                inner_idx = np.where(np.isclose(coords[:, axis], inner_val, atol=1e-8))[0] if n_local else np.empty(0, dtype=int)
+                local_pairs = (np.column_stack((coords[inner_idx, tang], np.asarray(self.phi.array[inner_idx, 0, 0])))
+                               if len(inner_idx) else np.empty((0, 2)))
+                gathered = [p for p in comm.allgather(local_pairs) if p.shape[0] > 0]
+                if not gathered:
+                    continue
+                table = np.vstack(gathered)
+                table = table[np.argsort(table[:, 0])]
+                table = table[np.concatenate(([True], np.diff(table[:, 0]) > 1e-10))]
 
-            wall_idx = np.where(np.isclose(coords[:, axis], wall_val, atol=1e-8))[0] if n_local else np.empty(0, dtype=int)
-            if len(wall_idx) == 0:
-                continue
-            wall_tang = coords[wall_idx, tang]
-            pos = np.clip(np.searchsorted(table[:, 0], wall_tang), 1, len(table) - 1)
-            left_err = np.abs(wall_tang - table[pos - 1, 0])
-            right_err = np.abs(table[pos, 0] - wall_tang)
-            nearest = np.where(right_err < left_err, pos, pos - 1)
-            good = np.minimum(left_err, right_err) <= 1e-6
-            if not np.all(good):
-                warnings.warn(
-                    f"Wall correction on {label!r}: {np.count_nonzero(~good)} wall node(s) "
-                    "have no interior counterpart; left unchanged.", stacklevel=2)
-            self.phi.array[wall_idx[good], 0, 0] = table[nearest[good], 1]
+                wall_idx = np.where(np.isclose(coords[:, axis], wall_val, atol=1e-8))[0] if n_local else np.empty(0, dtype=int)
+                if len(wall_idx) == 0:
+                    continue
+                wall_tang = coords[wall_idx, tang]
+                pos = np.clip(np.searchsorted(table[:, 0], wall_tang), 1, len(table) - 1)
+                left_err = np.abs(wall_tang - table[pos - 1, 0])
+                right_err = np.abs(table[pos, 0] - wall_tang)
+                nearest = np.where(right_err < left_err, pos, pos - 1)
+                good = np.minimum(left_err, right_err) <= 1e-6
+                if not np.all(good):
+                    warnings.warn(
+                        f"Wall correction on {label!r}: {np.count_nonzero(~good)} wall node(s) "
+                        "have no interior counterpart; left unchanged.", stacklevel=2)
+                self.phi.array[wall_idx[good], 0, 0] = table[nearest[good], 1]
 
     # ------------------------------------------------------------------
     # Mass correction
@@ -604,9 +610,16 @@ class LevelSetSolver:
 
         # First guess: only the band moves, so dV/d(delta) is about its area.
         # The nodal fraction of the field inside (lo, hi) times the domain area
-        # is a fair estimate of that on a reasonably uniform mesh.
+        # is a fair estimate of that on a reasonably uniform mesh. It is counted
+        # over every rank: the volumes are global, so with the same first guess
+        # every rank takes the same iterates and ends at the same shift. A
+        # rank-local fraction gave each rank its own shift (2.75e-4 and 3.33e-4
+        # at np 2, against 3.13e-4 serially, measured in the review of #1211).
         span = hi - lo
-        band = float(np.mean((data0 > lo + 1e-6 * span) & (data0 < hi - 1e-6 * span)))
+        in_band = int(np.count_nonzero((data0 > lo + 1e-6 * span) & (data0 < hi - 1e-6 * span)))
+        comm = self.mesh.dm.getComm().tompi4py()
+        in_band, nodes = comm.allreduce(np.array([in_band, data0.size]), op=uw.MPI.SUM)
+        band = float(in_band) / max(int(nodes), 1)
         domain = self._domain_volume()
         slope = max(band * domain, 1e-12)
         d_prev, v_prev = 0.0, v0
