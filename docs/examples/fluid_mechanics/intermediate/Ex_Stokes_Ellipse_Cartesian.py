@@ -267,7 +267,7 @@ timing.print_table()
 
 # %%
 # Solve with projected normals
-stokes._reset()
+stokes.reset.all()
 stokes.add_natural_bc(10000 * n_vect.sym.dot(v_soln.sym) * n_vect.sym, "Outer")
 stokes.add_natural_bc(10000 * n_vect.sym.dot(v_soln.sym) * n_vect.sym, "Inner")
 
@@ -278,7 +278,7 @@ with elliptical_mesh.access(v_soln_0):
 
 # %%
 # Solve with analytic normals
-stokes._reset()
+stokes.reset.all()
 stokes.add_natural_bc(10000 * Gamma_N_Outer.dot(v_soln.sym) * Gamma_N_Outer, "Outer")
 stokes.add_natural_bc(10000 * Gamma_N_Inner.dot(v_soln.sym) * Gamma_N_Inner, "Inner")
 

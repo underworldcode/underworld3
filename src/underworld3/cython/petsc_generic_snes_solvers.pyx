@@ -486,6 +486,80 @@ def _drop_solver_options(prefix, token):
         pass
 
 
+class SolverReset:
+    """Scoped resets of a solver (``solver.reset``).
+
+    Each scope clears exactly what it names, is idempotent, and changes only
+    Python state that is the same on every rank, so it is safe to call on every
+    rank (a rank without cells included) and takes no collective. The solver's
+    CONFIGURATION is never reset by any scope: its constitutive model and
+    parameters, tolerances, PETSc options, preconditioner choice and nullspace
+    settings stay. Fields keep their values.
+
+    Scopes (``scopes`` lists the ones this solver has):
+
+    ``conditions``
+        Every registered boundary condition: essential, natural (Nitsche
+        included), rotated free slip and, on the Stokes family, the constraint
+        conditions with their multipliers. The discretisation is rebuilt on the
+        next solve, since the conditions are compiled into it.
+    ``nullspace`` (Stokes family)
+        The nullspace objects built on the current discretisation's numbering;
+        they are rebuilt from the nullspace settings on the next solve.
+    ``discretisation``
+        The DM, its hierarchy and the SNES; rebuilt on the next solve. The
+        registered conditions are kept.
+    ``all``
+        All of the above: a new boundary-value problem on the same solver and
+        fields.
+    """
+
+    def __init__(self, solver):
+        self._solver = solver
+
+    @property
+    def scopes(self):
+        """The names of the scopes this solver has, ``all`` last."""
+        names = ["conditions", "discretisation"]
+        if hasattr(self._solver, "_reset_stokes_nullspace"):
+            names.insert(1, "nullspace")
+        return tuple(names + ["all"])
+
+    def conditions(self):
+        """Forget every registered boundary condition (see the class docstring)."""
+        s = self._solver
+        s.essential_bcs = []
+        s.natural_bcs = []
+        if getattr(s, "_rotated_freeslip_bcs", None):
+            s._rotated_freeslip_bcs = []
+        if getattr(s, "_block_constraint_bcs", None):
+            for h in s._multipliers:
+                s.fields.pop(getattr(h, "_solver_field_name", None), None)
+            s._multipliers = []
+            s._multiplier_screening = []
+            s._block_constraint_bcs = []
+            s._needs_function_rewire = True
+        # the conditions are compiled into the discretisation
+        s._reset_discretisation()
+
+    def nullspace(self):
+        """Forget the built nullspace objects (Stokes family; no-op elsewhere)."""
+        s = self._solver
+        if hasattr(s, "_reset_stokes_nullspace"):
+            s._reset_stokes_nullspace()
+            s.is_setup = False
+
+    def discretisation(self):
+        """Drop the DM, its hierarchy and the SNES; keep the conditions."""
+        self._solver._reset_discretisation()
+
+    def all(self):
+        """A new boundary-value problem: conditions, nullspace and discretisation."""
+        self.conditions()
+        self.nullspace()
+        self.discretisation()
+
+
 class SolverBaseClass(uw_object):
     r"""
     The Generic `Solver` is used to build the `SNES Solvers`
@@ -3591,11 +3665,31 @@ class SolverBaseClass(uw_object):
             from underworld3.utilities.rotated_bc import _destroy_rotated_linear_cache
             _destroy_rotated_linear_cache(cache)
 
-    def _reset(self):
+    @property
+    def reset(self):
+        """Scoped resets of this solver: ``solver.reset.conditions()``,
+        ``.nullspace()`` (Stokes family), ``.discretisation()`` and ``.all()``.
+        ``solver.reset.scopes`` lists them. See :class:`SolverReset`."""
+        return SolverReset(self)
 
+    def _reset(self):
+        """Deprecated: use ``solver.reset.all()`` (or a narrower scope).
+
+        Kept as an alias of ``reset.all()``: what its callers mean, a new
+        boundary-value problem on the same solver and fields. It used to clear
+        only the essential and natural conditions and the discretisation, and
+        kept the rotated and constraint conditions and the Stokes nullspace
+        objects of the problem it tore down (#1169)."""
+        import warnings
+        warnings.warn(
+            "solver._reset() is deprecated: use solver.reset.all() to pose a new "
+            "problem, or a narrower scope (solver.reset.scopes lists them)",
+            FutureWarning, stacklevel=2)
+        self.reset.all()
+
+    def _reset_discretisation(self):
+        """Drop the DM, its hierarchy and the SNES; the next solve rebuilds them."""
         self._reset_rotated_solver_cache()
-        self.natural_bcs = []
-        self.essential_bcs = []
         # A teardown means the next solve is a different discrete problem: a resume
         # anchor from the old problem's ||F0|| must not survive into it.
         self._resume_abs_target = None
@@ -3609,15 +3703,28 @@ class SolverBaseClass(uw_object):
             self.snes = None
 
         if self.dm is not None:
+            # The field split's index sets and sub-DMs are the old DM's.
+            for is_set, subdm in (getattr(self, "_subdict", None) or {}).values():
+                is_set.destroy()
+                subdm.destroy()
+            self._subdict = {}
+
             for coarse_dm in self.dm_hierarchy:
                 coarse_dm.destroy()
 
             self.dm = None
             self.dm_hierarchy = [None]
 
-        self.is_setup = False
+        # The nullspace objects are numbered on the DM just dropped. _build forgets
+        # them only when it finds a DM to tear down, which after this it does not,
+        # so a solve through conditions() or discretisation() used them on the new
+        # numbering: #1169 again (reason -6, PETSc error 75, a hang at np 3).
+        if hasattr(self, "_reset_stokes_nullspace"):
+            self._reset_stokes_nullspace()
+        if hasattr(self, "_constant_nullspace_obj"):
+            self._constant_nullspace_obj = None
 
-        return
+        self.is_setup = False
 
     @property
     def solve_report(self):
@@ -9933,6 +10040,245 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         """
         from underworld3.utilities._pressure_split import _create_pressure_split
         return _create_pressure_split(self, jumps, normals, tolerance)
+
+    def cylindrical_pressure_lifting(self, *, interface, outer,
+                                     wavenumber, amplitude, quadrature_points):
+        r"""Construct an exact-circle pressure lift and moment-equivalent force.
+
+        .. note::
+           Experimental and opt-in. No stability or convergence theorem is
+           claimed for this construction; convergence studies against analytic
+           annulus solutions are still to be recorded in this repository.
+
+        Parameters
+        ----------
+        interface, outer : str
+            Boundary names of the fitted circular sheet and the outer wall.
+            Their circles are the ones the mesh declares
+            (:meth:`~underworld3.discretisation.Mesh.analytic_surface`), centred
+            at the origin, with the outer radius larger. A boundary the mesh
+            does not declare as such a circle is refused.
+        wavenumber : int
+            Azimuthal cosine mode of the prescribed radial sheet load.
+        amplitude : float
+            Sheet amplitude in :math:`f=-A\cos(n\theta)e_r\delta(r-R)`.
+        quadrature_points : int
+            Points per direction in circular-cut quadrature.
+
+        Returns
+        -------
+        named tuple
+            ``pressure_jump``, ``regular_force`` (DG P2 MeshVariable),
+            ``natural_datum``, ``pressure_jump_integral`` and ``checks``.
+            Reconstruct physical pressure as :math:`p=q+p_J`. Assign the
+            force and register ``natural_datum`` on the natural outer-wall
+            components. This term is :math:`-p_J\Gamma` and does not vanish on
+            outer chords. Fully prescribed velocity has zero test trace, so
+            no outer natural datum is registered for zero-slip walls.
+
+        Notes
+        -----
+        Only nondimensional mesh coordinates, fields and input scalars are
+        supported; active reference-unit scaling is unsupported.
+
+        Explicitly selected correction for affine 2D P2/continuous-P1 annuli,
+        constant viscosity and a fitted circular sheet. No analytical Stokes
+        solution enters construction. Call collectively on every rank.
+
+        References
+        ----------
+        K. S. Chang and D. Y. Kwak (2009), "Extraction method for Stokes
+        Flow with jumps in the pressure", arXiv:0911.4769,
+        https://arxiv.org/abs/0911.4769, Section 2, equations (4)-(6).
+        The pressure split motivates this method. The radial lift, circular-cut
+        load integration and outer-chord natural datum are UW3 adaptations,
+        not the paper's harmonic-extension/CR scheme.
+        """
+        from underworld3.utilities._cylindrical_pressure import _create_circular_pressure_lift
+        from underworld3.utilities._cylindrical_dirichlet import _declared_circle_radius
+        if self.u.degree != 2 or not self.u.continuous or self.p.degree != 1 or not self.p.continuous:
+            raise ValueError("Circular pressure lifting requires continuous P2/P1 fields.")
+        interface_radius = _declared_circle_radius(self.mesh, interface)
+        outer_radius = _declared_circle_radius(self.mesh, outer)
+        return _create_circular_pressure_lift(self.mesh, interface_radius, outer_radius,
+                                             wavenumber, amplitude, quadrature_points)
+
+    def add_cylindrical_wall_transfer(self, *, boundary, sign,
+                                      viscosity, pressure_jump, quadrature):
+        r"""Register lagged free-slip transfer to a physical circular wall.
+
+        .. note::
+           Experimental and opt-in. No stability or convergence theorem is
+           claimed for this construction; convergence studies against analytic
+           annulus solutions are still to be recorded in this repository.
+
+        Parameters
+        ----------
+        boundary : str
+            Complete exterior circular boundary label. Its circle is the one
+            the mesh declares
+            (:meth:`~underworld3.discretisation.Mesh.analytic_surface`),
+            centred at the origin; a boundary the mesh does not declare as
+            such a circle is refused.
+        sign : int
+            Domain-outward normal orientation: -1 inner, +1 outer.
+        viscosity : float
+            Positive constant viscosity, matching the constitutive model.
+        pressure_jump : scalar expression or scalar P1 MeshVariable
+            Known pressure lift in :math:`p=q+p_J`; pass zero without splitting.
+            Accepts the coordinate expression from cylindrical_pressure_lifting
+            or the DG P1 field from pressure_split. Cell-side values are used
+            for discontinuous fields; no analytical Stokes state is required.
+        quadrature : int
+            Gauss points per boundary edge, at least three.
+
+        Returns
+        -------
+        object
+            Wall handle for :meth:`solve_cylindrical_wall_updates`.
+
+        Notes
+        -----
+        Requires nondimensional continuous P2 velocity/P1 regular pressure on
+        affine triangles. Replaces ordinary free-slip registration on this wall.
+        Registers a rotated normal datum and a tangential natural datum, then
+        updates them from numerical cell gradients/Hessians: the normal shift
+        is :math:`-s(R-r)\partial_r u_r`, the shear shift
+        :math:`-(R-r)\partial_r\sigma_{r\theta}`. Polygon-facet loads preserve
+        tangential P2 nodal moments, zero net flux and zero rotation torque.
+        The method does not recover boundary traction or compute topography.
+
+        References
+        ----------
+        Atallah, Canuto and Scovazzi (2020), CMAME 372, 113341,
+        https://doi.org/10.1016/j.cma.2020.113341, Section 2.2, equations
+        (8)--(13), motivates Taylor transfer. This strong, lagged mixed-slip
+        adaptation is not their Nitsche method; no convergence theorem is
+        claimed. Check physical-circle residuals in the solve history.
+        """
+        from underworld3.utilities._cylindrical_wall import _add_cylindrical_wall_transfer
+        return _add_cylindrical_wall_transfer(self, boundary=boundary,
+            sign=sign, viscosity=viscosity, pressure_jump=pressure_jump,
+            quadrature=quadrature)
+
+    def solve_cylindrical_wall_updates(self, *, walls, updates):
+        """Solve with lagged free-slip conditions on both physical circles.
+
+        .. note::
+           Experimental and opt-in. No stability or convergence theorem is
+           claimed for this construction; convergence studies against analytic
+           annulus solutions are still to be recorded in this repository.
+
+        Parameters
+        ----------
+        walls : mapping
+            Names to this system's inner and outer wall handles.
+        updates : int
+            Nonnegative update count; performs ``updates + 1`` Stokes solves.
+
+        Returns
+        -------
+        list of dict
+            Solver verdict, pressure gauge, update changes and true-circle
+            normal-velocity/shear-stress RMS after every solve. The iteration
+            count is explicit, not a convergence guarantee.
+
+        Notes
+        -----
+        Enable ``petsc_use_pressure_nullspace`` before solving. Existing rotated
+        solver settings are retained. No analytical solution enters the updates.
+
+        If the mesh coordinates moved since the walls were registered, each
+        wall's geometry is built again from the circle the mesh declares and
+        its lagged datum restarts from zero; if the move released the
+        declaration (:meth:`~underworld3.discretisation.Mesh.deform`, a direct
+        coordinate write), the solve is refused with the reason.
+        """
+        from underworld3.utilities._cylindrical_wall import _solve_with_wall_updates
+        return _solve_with_wall_updates(self, walls, updates)
+
+    def add_cylindrical_zero_slip_transfer(self, *, boundary, sign, quadrature):
+        r"""Register a full-vector zero-slip datum shifted to a physical circle.
+
+        .. note::
+           Experimental and opt-in. No stability or convergence theorem is
+           claimed for this construction; convergence studies against analytic
+           annulus solutions are still to be recorded in this repository.
+
+        Parameters
+        ----------
+        boundary : str
+            Complete exterior circular boundary label. Its circle is the one
+            the mesh declares
+            (:meth:`~underworld3.discretisation.Mesh.analytic_surface`),
+            centred at the origin; a boundary the mesh does not declare as
+            such a circle is refused.
+        sign : int
+            Domain-outward orientation: -1 inner, +1 outer.
+        quadrature : int
+            Gauss points per edge for physical-circle audits, at least three.
+
+        Returns
+        -------
+        object
+            Handle for :meth:`solve_cylindrical_zero_slip_updates`.
+
+        Notes
+        -----
+        Requires nondimensional affine triangles with continuous P2/P1 fields.
+        Replaces ordinary zero-slip registration on this wall. The lagged
+        essential datum is the complete P2 continuation
+        :math:`u_h(x)-u_h(Rx/|x|)`. Both walls receive one joint zero-flux
+        projection; vertex constraints remain zero. Pressure splitting is
+        independent and needs no exterior traction datum on zero-slip walls.
+
+        References
+        ----------
+        Ruas (2019), CAMWA 77(6), 1756--1769,
+        https://doi.org/10.1016/j.camwa.2018.05.029, Sections 2/4, equations
+        (29)--(30), provides a true-boundary trial-constraint precedent.
+        Atallah et al. (2020), https://doi.org/10.1016/j.cma.2020.113341,
+        Section 2.2, motivates the Taylor shift. The lagged symmetric-stress
+        scheme and joint flux projection are adaptations, not their theorems.
+        """
+        from underworld3.utilities._cylindrical_dirichlet import _add_cylindrical_zero_slip_transfer
+        return _add_cylindrical_zero_slip_transfer(self, boundary=boundary,
+            sign=sign, quadrature=quadrature)
+
+    def solve_cylindrical_zero_slip_updates(self, *, walls, updates):
+        """Solve with jointly flux-compatible shifted zero-slip data.
+
+        .. note::
+           Experimental and opt-in. No stability or convergence theorem is
+           claimed for this construction; convergence studies against analytic
+           annulus solutions are still to be recorded in this repository.
+
+        Parameters
+        ----------
+        walls : mapping
+            Names to this system's inner and outer zero-slip wall handles.
+        updates : int
+            Nonnegative update count; performs ``updates + 1`` standard solves.
+
+        Returns
+        -------
+        list of dict
+            Solver verdict, joint flux projection, update changes and true-circle
+            full-velocity residuals. Inspect these for fixed-point convergence.
+
+        Notes
+        -----
+        Enable ``petsc_use_pressure_nullspace`` before solving. No rotated
+        constraints, torque correction, pressure or traction recovery is added.
+
+        If the mesh coordinates moved since the walls were registered, each
+        wall's geometry is built again from the circle the mesh declares and
+        its lagged datum restarts from zero; if the move released the
+        declaration (:meth:`~underworld3.discretisation.Mesh.deform`, a direct
+        coordinate write), the solve is refused with the reason.
+        """
+        from underworld3.utilities._cylindrical_dirichlet import _solve_cylindrical_zero_slip_updates
+        return _solve_cylindrical_zero_slip_updates(self, walls=walls, updates=updates)
 
     def add_nitsche_bc(self, conds=None, boundary=None, direction=None, normal=None,
                        gamma=12.5, theta=1, mask=None, local_h=True, g=None):

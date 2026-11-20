@@ -235,6 +235,12 @@ shard_owns() {
     [ "$SHARD_COUNT" -eq 0 ] || [ "$1" -eq "$SHARD" ]
 }
 
+# parallel_batch_owned <k> — the k-th batch of tests/parallel/test_*.py: shard 4
+# runs the even-numbered batches and shard 6 the odd; unsharded, every batch.
+parallel_batch_owned() {
+    if [ $(( $1 % 2 )) -eq 0 ]; then shard_owns 4; else shard_owns 6; fi
+}
+
 export UW_NO_USAGE_METRICS=0
 # A hard crash must print a Python stack, not just "Segmentation fault".
 export PYTHONFAULTHANDLER=1
@@ -421,6 +427,8 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   batch 3 tests/parallel/test_1154_stokes_active_region_refused_parallel.py
   # So is a constrained Stokes solve with a discontinuous pressure (#1167).
   batch 3 tests/parallel/test_1167_constrained_stokes_discontinuous_pressure_parallel.py
+  # So are a solver's scoped resets, the same on every rank (#1169).
+  batch 3 tests/parallel/test_1169_solver_reset_scopes_parallel.py
   # So is #1123's sheared mesh: every inside point owned at any rank count, exact serially.
   batch 3 tests/parallel/test_1123_exact_locator_parallel.py
   # So are the contained points the walk misses on that mesh, found by the exact fallback (#1183).
@@ -489,8 +497,8 @@ fi
 
 # Parallel tests (run if --p N specified)
 #
-# The test_* mpirun phase belongs to ONE shard (4), not to each of them, and the
-# ptest_* loop below to shard 2. The phase costs ~4:38 and is the shard's
+# The test_* mpirun phase belongs to TWO shards (4 and 6, alternate batches), not
+# to each of them, and the ptest_* loop below to shard 2. The phase costs ~4:38 and is the shard's
 # smallest component, but running it on every shard
 # would multiply the only part of the suite that holds several MPI ranks at
 # once, which is also the part most likely to contend on a shared runner.
@@ -545,7 +553,7 @@ if [ $PARALLEL_RANKS -gt 0 ] && shard_owns 2 && command -v mpirun &> /dev/null; 
   fi
 fi
 
-if [ $PARALLEL_RANKS -gt 0 ] && shard_owns 4; then
+if [ $PARALLEL_RANKS -gt 0 ] && { shard_owns 4 || shard_owns 6; }; then
   if command -v mpirun &> /dev/null; then
     echo ""
     echo "=========================================="
@@ -591,11 +599,70 @@ if [ $PARALLEL_RANKS -gt 0 ] && shard_owns 4; then
     PARALLEL_FILES=(tests/parallel/test_*.py)
     echo "Testing parallel operations, swarms and solvers"
     echo "  ${#PARALLEL_FILES[@]} files in batches of $PARALLEL_BATCH"
+    #
+    # Sharded, the batches alternate between shards 4 and 6: even-numbered
+    # batches on shard 4, odd on shard 6. The batch boundaries are the same as
+    # unsharded (a hang has followed a batch boundary before), and a new file
+    # adds to whichever shard its batch falls on, so neither grows alone. On
+    # #1225's run this phase took 26.5 of shard 4's 68.6 minutes, which put it
+    # at its time limit; shard 6 had about 4 minutes of work.
     for ((i = 0; i < ${#PARALLEL_FILES[@]}; i += PARALLEL_BATCH)); do
+      parallel_batch_owned $((i / PARALLEL_BATCH)) || continue
       $SUPERVISE mpirun -n $PARALLEL_RANKS python -m pytest --with-mpi \
         "${PARALLEL_FILES[@]:i:PARALLEL_BATCH}" || status=1
     done
 
+    # The always-on runs at three and four ranks are shard 6's (below).
+
+    # Further passes at three and four ranks, because two is a special case:
+    # the failure this suite exists to catch is a collective entered by some
+    # ranks and not others, and with two ranks the mismatched pair often still
+    # meets. Both #609's conditional collective and #611 passed at np=2 and
+    # hung at np=4. Three adds an odd, uneven split: #1087 passed at np 2 and
+    # 4 and failed at np 3.
+    #
+    # Opt-in via --full-parallel. A CI runner has two cores, so these are
+    # oversubscribed there; they belong in a nightly or a separate job (#573).
+    if [ $FULL_PARALLEL -eq 1 ]; then
+      for ranks in "${FULL_PARALLEL_RANKS[@]}"; do
+        [ "$ranks" -eq "$PARALLEL_RANKS" ] && continue
+        echo "Testing the same set at $ranks ranks..."
+        for ((i = 0; i < ${#PARALLEL_FILES[@]}; i += PARALLEL_BATCH)); do
+          parallel_batch_owned $((i / PARALLEL_BATCH)) || continue
+          $SUPERVISE mpirun -n $ranks python -m pytest --with-mpi \
+            "${PARALLEL_FILES[@]:i:PARALLEL_BATCH}" || status=1
+        done
+      done
+    fi
+
+    echo "Parallel tests complete"
+    echo "=========================================="
+  else
+    echo "⚠️  Warning: --p $PARALLEL_RANKS specified but mpirun not available"
+    echo "⚠️  Skipping parallel tests"
+  fi
+elif [ $PARALLEL_RANKS -gt 0 ]; then
+  # --p N was given, but this shard does not own the mpirun phase. Say which
+  # one does, so a reader of one shard's log does not conclude the parallel
+  # tests were skipped for the whole run.
+  echo ""
+  echo "Parallel tests belong to shards 4 and 6 (alternate batches; the always-on np 3 and np 4 runs to shard 6); this is shard $SHARD."
+else
+  echo ""
+  echo "⚠️  Skipping parallel tests (use --p N to enable)"
+fi
+
+# The always-on runs at three and four ranks: the files whose case needs a rank
+# with no cells, an odd split or a rank holding none of a boundary's faces, so
+# they run at that rank count on every run. They belong to shard 6 (about 3.4
+# minutes there), which also takes the odd-numbered np 2 batches above, so that
+# shard 4 (most serial batches) stays clear of its time limit.
+if [ $PARALLEL_RANKS -gt 0 ] && shard_owns 6 && command -v mpirun &> /dev/null; then
+    echo ""
+    echo "=========================================="
+    echo "Running the always-on parallel runs at 3 and 4 ranks"
+    echo "=========================================="
+    SUPERVISE="python $(dirname "$0")/mpi_supervisor.py --silence ${PARALLEL_SILENCE:-300} --"
     # Three ranks exercise a process owning no prescribed-wall groups. The np 3
     # pass below is opt-in (--full-parallel), so this one file runs at np 3 always.
     # (The variable lets Open MPI start three ranks on a two-slot host; MPICH ignores it.)
@@ -612,6 +679,11 @@ if [ $PARALLEL_RANKS -gt 0 ] && shard_owns 4; then
     # to solve for), so the solve on it with a rank without cells runs at np 3 always.
     OMPI_MCA_rmaps_base_oversubscribe=1 $SUPERVISE mpirun -n 3 python -m pytest --with-mpi \
       tests/parallel/test_0786_stokes_rank_without_cells_parallel.py || status=1
+
+    # The parallel plotting helpers: the non-plotting ranks join the plotting
+    # rank's global_evaluate with no points; at three ranks two of them do.
+    OMPI_MCA_rmaps_base_oversubscribe=1 $SUPERVISE mpirun -n 3 python -m pytest --with-mpi \
+      tests/parallel/test_1243_parallel_plot_helpers_parallel.py || status=1
     # adapt(engine='nvb') with a rank without cells: the box that leaves a rank
     # empty does so from np 3 (at np 2 the test skips), so it runs at np 3 always.
     OMPI_MCA_rmaps_base_oversubscribe=1 $SUPERVISE mpirun -n 3 python -m pytest --with-mpi \
@@ -620,6 +692,9 @@ if [ $PARALLEL_RANKS -gt 0 ] && shard_owns 4; then
     # onto both ranks and the test skips, so it runs at np 3 always.
     OMPI_MCA_rmaps_base_oversubscribe=1 $SUPERVISE mpirun -n 3 python -m pytest --with-mpi \
       tests/parallel/test_1069_boundary_label_on_some_ranks_parallel.py || status=1
+    # An SLCN step with an empty rank: the fixture empties a rank from np 3 only.
+    OMPI_MCA_rmaps_base_oversubscribe=1 $SUPERVISE mpirun -n 3 python -m pytest --with-mpi \
+      tests/parallel/test_1236_slcn_step_on_an_empty_rank_parallel.py || status=1
     # A free surface with a rank without cells: the shell partition empties a rank
     # from np 3 (at np 2 it would leave one rank holding every cell), so np 3 always.
     OMPI_MCA_rmaps_base_oversubscribe=1 $SUPERVISE mpirun -n 3 python -m pytest --with-mpi \
@@ -661,41 +736,6 @@ if [ $PARALLEL_RANKS -gt 0 ] && shard_owns 4; then
     OMPI_MCA_rmaps_base_oversubscribe=1 $SUPERVISE mpirun -n 4 python -m pytest --with-mpi \
       tests/parallel/test_1097_outcropping_ribbon_partitioned_parallel.py || status=1
 
-    # Further passes at three and four ranks, because two is a special case:
-    # the failure this suite exists to catch is a collective entered by some
-    # ranks and not others, and with two ranks the mismatched pair often still
-    # meets. Both #609's conditional collective and #611 passed at np=2 and
-    # hung at np=4. Three adds an odd, uneven split: #1087 passed at np 2 and
-    # 4 and failed at np 3.
-    #
-    # Opt-in via --full-parallel. A CI runner has two cores, so these are
-    # oversubscribed there; they belong in a nightly or a separate job (#573).
-    if [ $FULL_PARALLEL -eq 1 ]; then
-      for ranks in "${FULL_PARALLEL_RANKS[@]}"; do
-        [ "$ranks" -eq "$PARALLEL_RANKS" ] && continue
-        echo "Testing the same set at $ranks ranks..."
-        for ((i = 0; i < ${#PARALLEL_FILES[@]}; i += PARALLEL_BATCH)); do
-          $SUPERVISE mpirun -n $ranks python -m pytest --with-mpi \
-            "${PARALLEL_FILES[@]:i:PARALLEL_BATCH}" || status=1
-        done
-      done
-    fi
-
-    echo "Parallel tests complete"
-    echo "=========================================="
-  else
-    echo "⚠️  Warning: --p $PARALLEL_RANKS specified but mpirun not available"
-    echo "⚠️  Skipping parallel tests"
-  fi
-elif [ $PARALLEL_RANKS -gt 0 ]; then
-  # --p N was given, but this shard does not own the mpirun phase. Say which
-  # one does, so a reader of one shard's log does not conclude the parallel
-  # tests were skipped for the whole run.
-  echo ""
-  echo "Parallel tests belong to shard 4; this is shard $SHARD."
-else
-  echo ""
-  echo "⚠️  Skipping parallel tests (use --p N to enable)"
 fi
 
 #

@@ -21,12 +21,28 @@ stokes.constitutive_model.Parameters.dt_elastic = dt
 
 | `stress_transport` | storage | carried by | stable at | fails by |
 |---|---|---|---|---|
-| `semi_lagrangian` (nodal) | continuous P1 at the vertices | vertex trace-back, interpolation at the foot | any Courant number | excess stress in the first cells off a no-slip wall; on the confined cylinder that excess loses the conformation and the solve hangs |
+| `semi_lagrangian` (nodal) | continuous P1 at the vertices | vertex trace-back, interpolation at the foot | any Courant number | excess stress in the first cells off a no-slip wall; on the confined cylinder that excess loses the conformation and the solve hangs (both measured on the defect in the warning below) |
 | `integration_point` | continuous P1 store, sampled at the quadrature points | trace-back of every quadrature point | Courant near one, or below one with store smoothing | a cell-scale mode of the stress that grows below Courant one when the solvent viscosity is small |
 | `forward` | discontinuous P1 per cell, fitted from the arrivals | fixed launch set of interior points (the integration points), one forward trajectory a step; the flux is read back at the launch points through a continuous P1 projection; an inflow cell's uncovered share is filled with the inflow value | the cylinder walls at dt 0.04; below Courant one with `flux_smoothing` at c = 0.023 (Waters-King 1/16, dt 0.0125: 0.9543 at t 1 and 0.5185 at t 6.5, against nodal 0.9622 and 0.5171) | the same cell-scale mode as the integration-point history without that smoothing (diverges at t 2.4 there); first order only; does not cross a periodic seam or follow a moving mesh |
 | `lagrangian` (particles) | a swarm the solver owns and advects, one value per particle, read through a discontinuous cells proxy | the material points themselves: the constitutive flux is evaluated at the particles each step and never projected back to the mesh; a particle that entered through an inflow takes the inflow value | any Courant number; no numerical diffusion of the history | the cost and bookkeeping of a swarm, and a proxy that needs its cells kept populated (population control refills them); the conformation check does not read a per-point tensor from it |
 | `eulerian` (SUPG grid) | continuous P1 | assembled transport equation with streamline upwinding | with DEVSS | without DEVSS the velocity block loses its preconditioner as the stress grows |
 | `none` (grid, untransported) | continuous P1 | nothing: the history stays at its node | any step whose displacement is far below a cell (a tidal or seismic cycle: the box fault model moves 1e-3 of a cell a step) | it is not a transport at all, so it is wrong as soon as material moves by a cell; a traced-back history on a split-node fault reads the other side of the slit (measured: a quarter of the slip rate on the second step), which this flavour avoids by not tracing |
+
+```{warning}
+From beb4f2e3 (2026-04-25) until this fix (2026-11) the nodal history did not
+carry the stress it stored: its commit projection read the history as it was
+*before* the trace-back, so the stored stress was rebuilt every step where it
+was made, exactly as with `"none"` (`test_1106`: a stress turned 0.5 rad by
+rigid rotation, error 0.000 against where it was made and 1.538 against where
+the flow took it; 0.285 with the fix). The Eulerian flavours refreshed in the
+same wrong order but never took the snapshot (the request came before their
+projection existed, and lapsed), so their results were not affected; both now
+refresh after the carry. Every nodal result from that period was measured on a
+history that did not move, the confined cylinder and its wall layer (#735)
+among them, and needs re-measuring. On Waters and King the stress is uniform
+along the flow, so a history that does not move is exact there, and the fixed
+history's error is the trace's own: see the section on Waters and King below.
+```
 
 The nodal and integration-point flavours store the stress after every solve by
 the same global L2 projection onto the continuous space. The integration-point
@@ -72,7 +88,7 @@ the split recovers it. That is the default, linear step; the deformation step
 below does not have the limit. On the confined cylinder at Courant one on the far-field
 mesh the wall shear rate is ten times the far-field one: every history lost the
 conformation at the cylinder top in step one, the nodal history then ran away and
-the solve hung, and the integration-point history gave out at Wi 0.6. At a step
+the solve hung (measured on the defect in the warning above), and the integration-point history gave out at Wi 0.6. At a step
 ten times smaller the integration-point history is admissible everywhere to Wi 0.6,
 and at Wi 0.8 the conformation is mildly indefinite on two percent of its points.
 
@@ -178,6 +194,29 @@ handing the arrivals that cross a seam to the rank that owns them; it needs its 
 one on a Maxwell element: a version that did not ring turned out not to be
 transporting the memory at all.
 
+### Measured since: the cylinder at a coarse resolution (2026-11-20)
+
+The confined DFG cylinder, Re 100, Wi 0.5, β 0.5, resolution 20 (the campaign
+driver, upper-convected, log-conformation, ETD), with the nodal history
+carrying its stress (#1231). Drag at t 2:
+
+| history | drag |
+|---|---|
+| grid (SUPG) | 4.505 |
+| nodal | 4.985 |
+| integration point, unsmoothed | 3.370 |
+| integration point, c = 0.07 | 3.046 |
+
+The grid history's own reference is 4.593 at resolution 20 and 4.134 at 80.
+The integration-point history is a quarter low here even unsmoothed, and
+smoothing at c = 0.07 removes about a tenth more; it does not "cost nothing"
+at this resolution. On Waters and King at 1/16, Δt 0.0125, the unsmoothed
+integration-point history is the most accurate at t 2 (0.72143 against exact
+0.72077; nodal 0.72379) and rings by t 6.5 (0.59863, transverse velocity
+1.95), while c = 0.07 holds it at a cost of 1.2e-2 at t 2. The configuration
+above is characterised at finer resolution; at this one it is not the most
+accurate.
+
 ## Store smoothing for the integration-point history below Courant one
 
 The store cycle of the integration-point flavour, sample at the points then
@@ -203,7 +242,9 @@ Measured on the Waters-King start-up at 1/32 and $\Delta t = 0.01$: $c = 0.023$
 $c = 0.07$ holds it unconditionally at 0.5%, and $c = 0.23$ (ten times 0.023)
 costs 3%. The irregular mesh needs 0.07. Zero, the default, is the plain projection. When the
 solvent viscosity is a fair fraction of the total, as on the cylinder benchmark,
-the smoothing is unnecessary and costs nothing if left on.
+the mode does not grow and the smoothing is unnecessary. It is not free there at
+a coarse resolution: at resolution 20 it takes about a tenth off the drag (see
+"Measured since" above).
 
 ## DEVSS
 
@@ -219,12 +260,26 @@ history; treat it as optional elsewhere.
 ## Waters and King as the discriminating test
 
 The start-up of plane Poiseuille flow of a Maxwell fluid (Waters and King 1970)
-has a reference solution and separates the histories: nodal converges as the
-step falls, the integration-point history rings then diverges as the step falls
-without smoothing, and the grid history diverges at every step. Note that the
-exact solution is independent of $x$, so $u\cdot\nabla\sigma \equiv 0$ there:
-the test exercises the store cycle, not the trace-back. A pure Maxwell element is
-also the most demanding case for anything explicit in the stress.
+has a reference solution and separates the histories: the integration-point
+history rings then diverges as the step falls without smoothing, and the grid
+history diverges at every step (#749). The exact solution is independent of
+$x$, so $u\cdot\nabla\sigma \equiv 0$ there and a history that does not move
+is exact: the nodal history's earlier convergence here ("converges as the step
+falls") was measured while it did not move (the warning above). Carried, the
+nodal history traces with the discrete velocity, whose small transverse part
+samples the stored stress off the node's own height; the bias that adds does
+not fall with refinement at fixed Courant number (centre velocity at t 2,
+exact 0.72077, #1009):
+
+| 1/h, Δt | not moving (before the fix) | carried | carried, trace velocity $(u, 0)$ |
+|---|---|---|---|
+| 16, 0.0125 | 0.72156 | 0.72379 | 0.72150 |
+| 32, 0.00625 | 0.72116 (#1009) | 0.72380 | 0.72144 |
+
+Removing the transverse part of the trace velocity removes the bias at 1/16 and
+nine-tenths of it at 1/32, so it is the nodal trace's own error, not the
+fix's. A pure Maxwell element is also the most demanding case for anything
+explicit in the stress.
 
 Related: [constitutive models](constitutive-models.md),
 [integration-point variables](integration-point-variables.md),
@@ -232,4 +287,5 @@ Related: [constitutive models](constitutive-models.md),
 histories, the conformation check, the elastic timestep), `test_1060` (store
 smoothing below Courant one), `test_1061` (the forward flavour on Waters and
 King), `tests/parallel/test_1062` (the forward flavour at np 2), `test_1063`
-(save and restore).
+(save and restore), `test_1106` (a stored stress carried by a rigid rotation:
+the trace-back itself, which the uniform benchmarks cannot see).

@@ -1,7 +1,7 @@
 ---
 name: transport-schemes
 description: Which transport scheme and which time history to use in Underworld3, and why — nodal, integration-point or grid histories; semi-Lagrangian, Eulerian SUPG or Lagrangian swarm transport; the Courant number to run at; what each choice does to a settled state and to a peak. The evidence is the tests and notes named beside each ruling.
-families: [AdvDiffusion, NavierStokes, Eulerian, EulerianSUPG, SemiLagrangian, Lagrangian, Lagrangian_Swarm, IntegrationPointSemiLagrangian]
+families: [AdvDiffusion, NavierStokes, Eulerian, EulerianSUPG, SemiLagrangian, Lagrangian, Lagrangian_Swarm, IntegrationPointSemiLagrangian, ForwardSemiLagrangian]
 kind: guide
 status: draft, rulings to be confirmed
 ---
@@ -20,15 +20,19 @@ and how it is carried. The classes describe themselves
 |---|---|---|---|
 | `Eulerian` | mesh nodes | nothing moves; the transport term is in the residual | diffusion-dominated fields, or with SUPG below |
 | `EulerianSUPG` | mesh nodes | implicit advection with streamline-upwind stabilisation, assembled in the residual | the momentum equation of `NavierStokes`; a field advected by a resolved velocity |
-| `SemiLagrangian` | mesh nodes | traced back along the flow to a departure point and interpolated there | advection-diffusion at moderate Courant number; the transport the adjoint can differentiate |
+| `SemiLagrangian` | mesh nodes | traced back along the flow to a departure point and interpolated there | advection-diffusion at moderate Courant number |
 | `IntegrationPointSemiLagrangian` | integration points | the same trace, from the quadrature points | stress and other flux histories that must not be smoothed through the nodes |
+| `ForwardSemiLagrangian` | a per-cell discontinuous P1 fit | fixed launch points (the integration points) traced forward one step, the arrivals fitted per cell | a stress history below Courant one, with its read-back smoothing; first order, no moving mesh or periodic seam |
+| `Lagrangian` | particles the history creates and advects | the particles move; the constitutive flux is evaluated at them, read through a cells proxy | a stress history with no numerical diffusion (`stress_transport="lagrangian"`), at a swarm's cost |
 | `Lagrangian_Swarm` | particles | the particles move; the mesh reads a proxy | material identity, and any history that must follow the material exactly |
 | `Symbolic` | nowhere | the user's own expression | a history the script supplies itself |
 
 ## What the tests established
 
 **Advection of a step (Waters and King, 2026-09-16, #749).** With the
-same time integrator, a nodal history converges as the timestep falls; an
+same time integrator, a nodal history converges as the timestep falls
+(measured while the nodal history did not move, which is exact on this case:
+carried, it does not converge at fixed Courant number, #1009); an
 integration-point history degrades as the timestep falls, ringing and then
 diverging; a grid history diverges at every timestep. The peak of the
 profile is set by the integrator, the settled state by the transport. Rule:
@@ -41,7 +45,11 @@ half again too much stress in the first two cells off a no-slip wall,
 because the nodal projection smooths the history through the wall. Rule:
 a flux history lives on the integration points (or on the grid, with DEVSS
 opted in); a scalar field's history lives on the nodes. The two rules are
-not in conflict: they are different quantities.
+not in conflict: they are different quantities. The nodal measurement was
+made while the nodal history did not carry the stress it stored (from
+beb4f2e3, 2026-04-25, until #1231; see the warning in
+[stress transport](../subsystems/stress-transport.md)), so its wall excess
+is to be re-measured before this ruling is confirmed.
 
 **Courant number for the integration-point trace (#703, #737).** The
 integration-point semi-Lagrangian scheme runs at Courant number about
@@ -53,11 +61,18 @@ and the timestep together.
 transport as `EulerianSUPG`: implicit advection in the residual, with a
 partition-independent cell size in the stabilisation.
 
-**What the adjoint can differentiate.** A semi-Lagrangian trace is
-differentiable in the velocity, and the interpolation at the departure
-points is materialised, so a run built on it is adjointable end to end. A
-particle step is adjointable exactly when the particle set is fixed across
-it, which `swarm.advection` checks by counting.
+**What the adjoint can differentiate.** Each history declares it on its
+`history_shift` event (`_adjoint_support`). The grid histories (`Eulerian`,
+`EulerianSUPG`) are an implicit residual, so their linearisation is the
+owning solver's Jacobian. The trace-back histories (`SemiLagrangian`,
+`IntegrationPointSemiLagrangian`) are not adjointable yet: the trace is
+differentiable in the velocity, but the interpolation at the departure
+points is not materialised as an operator. Nor is the forward history
+(`ForwardSemiLagrangian`): its per-cell least-squares fit of the arrivals is
+not materialised, and the cell an arrival lands in is piecewise constant in
+the velocity. A particle step is adjointable
+exactly when the particle set is fixed across it, which `swarm.advection`
+checks by counting.
 
 ## The time integrator is a separate choice
 
