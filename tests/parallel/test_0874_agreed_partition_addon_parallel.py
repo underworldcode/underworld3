@@ -154,3 +154,59 @@ def test_a_failure_in_a_balance_sweep_is_raised_on_every_rank(monkeypatch):
     monkeypatch.setattr(ap, "_allreduce", failing)
     _raises_everywhere(lambda: _partition(child), "In a balance sweep", monkeypatch)
     assert uw.mpi.comm.allreduce(len(seen), op=uw.MPI.MIN) > 0, "no balance sweep ran"
+
+
+# The markers are collective (each reconciles its reach over the point
+# star-forest), so each agrees before that collective: a failure on one rank
+# in the marker's own local work must not leave the others in it.
+
+def _before(module, name, message, monkeypatch):
+    original = getattr(module, name)
+
+    def failing(*a, **k):
+        _on_last_rank(message)
+        return original(*a, **k)
+
+    monkeypatch.setattr(module, name, failing)
+
+
+def _in_an_agreed_build(marks, dm):
+    from underworld3.utilities.agreed_build import agreed_build
+    with agreed_build("test.region_marks", builder_failure=False):
+        marks(dm)
+
+
+def test_a_failure_inside_mark_polylines_is_raised_on_every_rank(monkeypatch):
+    """Forced on rank 1: cell_diameters runs only on a rank holding cells, and a
+    test partition may leave the last rank empty."""
+    import underworld3.utilities.edge_split as edge_split
+    child = adapted_2d(K)
+    original = edge_split.cell_diameters
+
+    def failing(*a, **k):
+        if uw.mpi.rank == 1:
+            raise IndexError("In mark_polylines (forced on one rank)")
+        return original(*a, **k)
+
+    monkeypatch.setattr(edge_split, "cell_diameters", failing)
+    _raises_everywhere(lambda: _partition(child), "In mark_polylines", monkeypatch)
+
+
+def test_a_failure_inside_mark_sheets_is_raised_on_every_rank(monkeypatch):
+    box = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0, 0.0, 0.0),
+                                            maxCoords=(1.0, 1.0, 1.0), cellSize=0.4)
+    sheet = (np.array([[0.2, 0.2, 0.5], [0.8, 0.2, 0.5], [0.5, 0.8, 0.5]]),
+             np.array([[0, 1, 2]]))
+    marks = ap.mark_sheets([sheet], clearance=1)
+    _before(place_surface, "_tet_vertices", "In mark_sheets", monkeypatch)
+    _raises_everywhere(lambda: _in_an_agreed_build(marks, box.dm), "In mark_sheets",
+                       monkeypatch)
+
+
+def test_a_failure_inside_mark_band_is_raised_on_every_rank(monkeypatch):
+    box = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0),
+                                            cellSize=0.1)
+    marks = ap.mark_band([np.array([[0.2, 0.5], [0.8, 0.5]])], width=0.05, clearance=1)
+    _before(ap, "_cell_vertices", "In mark_band", monkeypatch)
+    _raises_everywhere(lambda: _in_an_agreed_build(marks, box.dm), "In mark_band",
+                       monkeypatch)

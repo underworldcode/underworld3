@@ -127,7 +127,11 @@ def mark_polylines(polylines):
             CV = closure_points(dm, np.arange(cS, cE), 0) - pStart
             np.maximum.at(h_chart, CV, np.broadcast_to(h_cell[:, None], CV.shape))
         # a seam vertex sees only its local cells: the largest incident cell
-        # over every rank, so the reach is a function of the mesh alone
+        # over every rank, so the reach is a function of the mesh alone. The
+        # reconciliation is collective: inside partition_addon's agreed build
+        # a failure above is agreed first (#874)
+        from underworld3.utilities.agreed_build import agree
+        agree()
         h_chart = _propagate_vertex(dm, h_chart, MPI.MAX, np.maximum)
         h_vertex = h_chart[vS - pStart: vE - pStart]
         ids = np.zeros(pEnd - pStart, dtype=np.int32)
@@ -154,6 +158,8 @@ def mark_sheets(sheets, clearance):
         pStart, pEnd = dm.getChart()
         X = _coords(dm)[: vE - vS]
         cells = _tet_vertices(dm)
+        from underworld3.utilities.agreed_build import agree
+        agree()                   # _vertex_h_3d reconciles collectively (#874)
         h_vertex, _h_cell = _vertex_h_3d(dm, cells, len(X))
         reach = (float(clearance) + 1.0) * h_vertex
         ids = np.zeros(pEnd - pStart, dtype=np.int32)
@@ -187,8 +193,10 @@ def mark_band(paths, width, clearance):
         vS, vE = dm.getDepthStratum(0)
         pStart, pEnd = dm.getChart()
         X = _coords(dm)[: vE - vS]
-        h_vertex, _h_cell = _vertex_h_3d(dm, _tet_vertices(dm) if dm.getDimension() == 3
-                                         else _cell_vertices(dm), len(X))
+        cells = _tet_vertices(dm) if dm.getDimension() == 3 else _cell_vertices(dm)
+        from underworld3.utilities.agreed_build import agree
+        agree()                   # _vertex_h_3d reconciles collectively (#874)
+        h_vertex, _h_cell = _vertex_h_3d(dm, cells, len(X))
         reach = (np.maximum(float(clearance) * h_vertex, 0.6 * float(width))
                  + h_vertex + float(width))
         ids = np.zeros(pEnd - pStart, dtype=np.int32)
