@@ -4632,7 +4632,9 @@ class Swarm(Stateful, uw_object):
                 )
             )
 
-        valid = self.mesh.points_in_domain(coordinatesArray, strict_validation=True)
+        # A point on a partition seam is claimed by every rank on the seam; it
+        # goes to the lowest of them, so it is added once.
+        valid = self.mesh._points_owned_here(coordinatesArray, strict_validation=True)
         valid_coordinates = coordinatesArray[valid]
         npoints = len(valid_coordinates)
         swarm_size = self.dm.getLocalSize()

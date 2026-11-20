@@ -23,8 +23,12 @@ P_A = np.array([[0.30, 0.50, 0.30], [0.70, 0.50, 0.30],
 P_B = np.array([[0.30, 0.62, 0.32], [0.62, 0.30, 0.32],
                 [0.62, 0.30, 0.68], [0.30, 0.62, 0.68]])
 # the serial run of this exact case (test_0851's fixture, h=0.08):
-# peak tangential pair slip per prepared piece
-SERIAL = {"Main": 0.1517, "Cross_1": 0.0142, "Cross_2": 0.0064}
+# peak tangential pair slip per prepared piece. Cross is cut by Main into
+# Cross_1, the short piece on the y > 0.5 side (x 0.30..0.36), and Cross_2,
+# the long piece on the y < 0.5 side (x 0.48..0.62); the longer piece takes
+# the larger slip. Serial, 2026-11-20: Main 0.1513, Cross_1 0.00636,
+# Cross_2 0.01441 (#956: the two Cross values were swapped here before).
+SERIAL = {"Main": 0.1517, "Cross_1": 0.0064, "Cross_2": 0.0144}
 
 
 def test_network_3d_split_solve_np2():

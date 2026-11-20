@@ -1363,28 +1363,41 @@ def test_a_target_beside_the_interior_edge_across_a_domain_corner_is_refused(
 
 @pytest.mark.parametrize("first, second", [
     ((0.5, 0.2), (0.2, 0.5)), ((0.2, 0.5), (0.5, 0.2))])
-def test_two_targets_that_choose_one_vertex_leave_the_earlier_without_one(
-        first, second):
-    """What a collision does today: the later target takes the vertex.
+def test_a_target_left_without_a_vertex_is_counted_and_named(first, second):
+    """Two targets whose cells share their one interior corner (#559).
 
     (0.5, 0.2) is in the cell on the bottom wall at the corner (0, 0) and
     (0.2, 0.5) in the cell on the left wall there. Each cell has one interior
     corner, and it is the same one, (1, 1). Each target is chosen from the
-    mesh as given, so both choose it, and the second moves it off the first.
-
-    Asserted: one vertex moved, it is on the second target, and no vertex is
-    on the first. Nothing is raised. This is the open defect of issue #559,
-    held here so that a change to it is seen; the test changes with the fix.
+    mesh as given, so both choose it, and the second moves it off the first,
+    as before. The first is now recorded as left without a vertex and named
+    in a warning; before #559 nothing was said.
     """
+    from underworld3.utilities import line_cut
     from underworld3.utilities.line_cut import _coords
 
     dm = _grid_of_eighteen_triangles()
-    out = pull_vertex_onto(dm, np.array([first, second]))
+    with pytest.warns(UserWarning, match="left without a vertex"):
+        out = pull_vertex_onto(dm, np.array([first, second]))
     moved, worst = _moves(dm, out)
     assert moved == {(1.0, 1.0): second}
     assert np.linalg.norm(_coords(out) - np.array(first), axis=1).min() == pytest.approx(
         0.3 * np.sqrt(2.0), rel=1e-12)
     assert worst == pytest.approx(0.43849, abs=1e-5)
+    assert line_cut.last_shared_targets == {"count": 1, "first": [first]}
+
+
+def test_the_replay_records_a_target_left_without_a_vertex_without_a_warning(recwarn):
+    """``on_shared="note"``, as the fault replay on the coarse levels passes it:
+    the same placement and the same record, and no warning."""
+    from underworld3.utilities import line_cut
+
+    dm = _grid_of_eighteen_triangles()
+    out = pull_vertex_onto(dm, np.array([(0.5, 0.2), (0.2, 0.5)]), on_shared="note")
+    moved, _worst = _moves(dm, out)
+    assert moved == {(1.0, 1.0): (0.2, 0.5)}
+    assert line_cut.last_shared_targets == {"count": 1, "first": [(0.5, 0.2)]}
+    assert not [w for w in recwarn if "left without a vertex" in str(w.message)]
 
 
 def test_a_target_on_a_chord_of_a_curved_wall_takes_an_end_of_the_chord():
