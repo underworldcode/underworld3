@@ -239,10 +239,10 @@ def test_a_cell_table_failure_before_the_parent_location_is_raised_on_every_rank
     levels = [tail[i] for i in addon_level_indices(tail)] + [child]
     original = ap._cell_centroids
 
-    def failing(mesh):
+    def failing(mesh, **kwargs):
         if uw.mpi.rank == uw.mpi.size - 1:
             raise IndexError("cell table (forced on one rank)")
-        return original(mesh)
+        return original(mesh, **kwargs)
 
     ap._cell_centroids = failing
     try:
