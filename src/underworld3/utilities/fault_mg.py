@@ -1258,8 +1258,10 @@ def split_tail_levels(levels, fault_specs, verbose=False):
         try:
             # the level arrives partitioned with the finest (the add-on
             # partition ran once, for every level): no second partition
+            # the fine trace is sampled finer than this level: control points
+            # sharing a vertex are expected, recorded on the level, not warned
             split = add_fault(level, entries, verbose=verbose, partition=False,
-                              **kwargs)
+                              on_shared="note", **kwargs)
         except Exception as exc:   # sanctioned: agreed below, the level stays welded
             problem = f"{type(exc).__name__}: {exc}"
         # the split's refusals are collective; a failure on one rank after its
