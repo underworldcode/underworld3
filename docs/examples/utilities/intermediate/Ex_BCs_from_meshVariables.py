@@ -46,6 +46,9 @@ nest_asyncio.apply()
 # +
 from petsc4py import PETSc
 import underworld3 as uw
+import os
+
+os.makedirs("output", exist_ok=True)
 from underworld3.systems import Poisson
 import numpy as np
 
@@ -110,7 +113,7 @@ with pygmsh.occ.Geometry() as geom:
 
 import meshio
 
-mesh = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.0, cellSize=0.1)
+mesh = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.0, cellSize=0.1, centre=True)
 
 mesh.dm.view()
 
@@ -161,10 +164,10 @@ import sympy
 abs_r = sympy.sqrt(mesh.rvec.dot(mesh.rvec))
 bc = sympy.cos(2.0 * mesh.N.y)
 
-bcs_var.data[:, 0] = uw.function.evaluate(bc, bcs_var.coords)
+bcs_var.array[:, 0, 0] = uw.function.evaluate(bc, bcs_var.coords)[:, 0, 0]
 
-poisson.add_dirichlet_bc(bcs_var.sym[0], "Upper", components=0)
-poisson.add_dirichlet_bc(-1.0, "Centre", components=0)
+poisson.add_dirichlet_bc((bcs_var.sym[0],), "Upper")
+poisson.add_dirichlet_bc((-1.0,), "Centre")
 # -
 
 poisson.petsc_options.getAll()

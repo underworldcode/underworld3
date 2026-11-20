@@ -186,7 +186,7 @@ if uw.mpi.rank == 0:
     print(f"Pcp - {pc._lvec.array[0:10].T}", flush=True)
 
 # %%
-if not uw.is_notebook:
+if not uw.is_notebook():
     exit()
 else:
     0 / 0

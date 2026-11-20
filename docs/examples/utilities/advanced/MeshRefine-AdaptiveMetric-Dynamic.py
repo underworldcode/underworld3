@@ -96,7 +96,7 @@ grad_fn = 1.0 + (
 # gradient.solve()
 # -
 
-grad.data[:, 0] = uw.function.evaluate(grad_fn, mesh0.X.coords, mesh0.N)
+grad.array[:, 0, 0] = uw.function.evaluate(grad_fn, mesh0.X.coords, mesh0.N)[:, 0, 0]
 
 
 H.data[:, 0] = 10 + grad.data[:, 0] * 80

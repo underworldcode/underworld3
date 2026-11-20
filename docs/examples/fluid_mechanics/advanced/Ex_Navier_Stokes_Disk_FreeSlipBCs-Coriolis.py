@@ -63,7 +63,7 @@ import meshio
 #     dim=2, radius_outer=1.0, radius_inner=0.0, cell_size=0.075, degree=1, verbose=False
 # )
 
-meshball = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.0, cellSize=0.05, degree=1, centre=False, verbosity=True)
+meshball = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.0, cellSize=0.05, degree=1, centre=False, gmsh_verbosity=1)
 
 # +
 v_soln = uw.discretisation.MeshVariable("U", meshball, 2, degree=2)
@@ -171,14 +171,14 @@ t_init = sympy.cos(3 * th)
 
 # +
 with meshball.access(r):
-    r.data[:, 0] = uw.function.evaluate(
+    r.array[:, 0, 0] = uw.function.evaluate(
         sympy.sqrt(x**2 + y**2), meshball.data
-    )  # cf radius_fn which is 0->1
+    )[:, 0, 0]  # cf radius_fn which is 0->1
 
 # Write density into a variable for saving
 
 with meshball.access(t_soln):
-    t_soln.data[:, 0] = uw.function.evaluate(t_init, t_soln.coords)
+    t_soln.array[:, 0, 0] = uw.function.evaluate(t_init, t_soln.coords)[:, 0, 0]
 
 # +
 navier_stokes.bodyforce = Rayleigh * unit_rvec * t_init  # minus * minus

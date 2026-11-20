@@ -986,11 +986,16 @@ def SegmentedSphericalBall(
             wedge_slices.append(new_faces[2])
             wedge_slices.append(new_faces[3])
 
-        gmsh.model.addPhysicalGroup(0, [poleNo], 1)
-        gmsh.model.setPhysicalName(0, 1, "PolePtNo")
+        # the centre is a vertex of every wedge; its tag is the enum's, so the
+        # pole points take tags clear of it (they are labelled by name)
+        gmsh.model.addPhysicalGroup(0, [centre], boundaries.Centre.value)
+        gmsh.model.setPhysicalName(0, boundaries.Centre.value, boundaries.Centre.name)
 
-        gmsh.model.addPhysicalGroup(0, [poleSo], 3)
-        gmsh.model.setPhysicalName(0, 3, "PolePtSo")
+        gmsh.model.addPhysicalGroup(0, [poleNo], 101)
+        gmsh.model.setPhysicalName(0, 101, "PolePtNo")
+
+        gmsh.model.addPhysicalGroup(0, [poleSo], 103)
+        gmsh.model.setPhysicalName(0, 103, "PolePtSo")
 
         gmsh.model.addPhysicalGroup(1, [radialN], 10)
         gmsh.model.setPhysicalName(1, 10, "PoleAxisN")
