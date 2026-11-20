@@ -976,6 +976,9 @@ class UWexpression(MathematicalMixin, uw_object, Symbol):
         if value is not None and sym is not None:
             raise ValueError("Both 'sym' and 'value' provided - use only one")
 
+        from .quantities import from_raw_pint
+        sym = from_raw_pint(sym)
+
         # If units are provided and sym is a plain numeric value, wrap it in UWQuantity
         # Don't wrap if sym is already a UWQuantity, UWexpression, or SymPy expression
         if units is not None and not isinstance(sym, UWQuantity):
@@ -1024,6 +1027,8 @@ class UWexpression(MathematicalMixin, uw_object, Symbol):
     @sym.setter
     def sym(self, new_value):
         """Update the wrapped value."""
+        from .quantities import from_raw_pint
+        new_value = from_raw_pint(new_value)
         # TRANSPARENT CONTAINER PRINCIPLE: Store the object directly
         self._wrapped = new_value
 
