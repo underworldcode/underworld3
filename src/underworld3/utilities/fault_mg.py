@@ -313,6 +313,9 @@ _WEAK_COPY = 0.1
 # parallel transfer): weak copy columns found, rows taken from the recorded
 # parent, and fine nodes whose star held no same-side candidate.
 last_parent_rows = None
+# cells of the last recorded-parent pair, both levels, that touch both copies of
+# one fault (rank-local; summed over the ranks in ``last_parent_rows``)
+last_side_conflicts = 0
 
 
 def _split_record(mesh):
@@ -346,21 +349,33 @@ def _built_cell_table(mesh, moved=None):
 
 
 def _cell_fault_sides(mesh):
-    """``(n_cells, n_faults)``: +1 for a cell touching the Plus copy of a point of
-    that fault, -1 the Minus copy, 0 neither (topological, from
-    ``_fault_point_pairs``: keys Minus, values Plus)."""
+    """``(side, names, conflicts)``. ``side`` is ``(n_cells, n_faults)``: +1 for a
+    cell touching the Plus copy of a point of that fault, -1 the Minus copy, 0
+    neither (topological, from ``_fault_point_pairs``: keys Minus, values Plus).
+
+    A cell touching both copies of one fault has no side: it is given 0, so the
+    side filter excludes nothing for it, and is counted in ``conflicts`` (summed
+    over the faults). No such cell has been seen; one could arise at a tip or a
+    junction, where the order the copies were visited in decided its side.
+    Rank-local."""
     dm = mesh.dm
     cS, cE = dm.getHeightStratum(0)
     pairs = getattr(mesh, "_fault_point_pairs", None) or {}
     names = sorted(pairs)
     side = np.zeros((cE - cS, len(names)), dtype=np.int64)
+    conflicts = 0
     for j, name in enumerate(names):
+        touches = {-1: np.zeros(cE - cS, dtype=bool), 1: np.zeros(cE - cS, dtype=bool)}
         for q_minus, q_plus in pairs[name].items():
             for q, sign in ((q_minus, -1), (q_plus, 1)):
                 star = np.asarray(dm.getTransitiveClosure(int(q), useCone=False)[0])
-                cells = star[(star >= cS) & (star < cE)] - cS
-                side[cells, j] = sign
-    return side, names
+                touches[sign][star[(star >= cS) & (star < cE)] - cS] = True
+        both = touches[-1] & touches[1]
+        side[touches[1], j] = 1
+        side[touches[-1], j] = -1
+        side[both, j] = 0
+        conflicts += int(both.sum())
+    return side, names, conflicts
 
 
 def _fault_copy_nodes(mesh, degree, continuous):
@@ -418,8 +433,10 @@ def _recorded_parent_cells(coarse, fine, Xf, fn, vxy_c, cv_c, vxy_f, cv_f,
     # the cut pieces of each coarse host cell
     order = np.argsort(pc, kind="stable")
     sorted_pc = pc[order]
-    side_f, names_f = _cell_fault_sides(fine)
-    side_c, names_c = _cell_fault_sides(coarse)
+    global last_side_conflicts
+    side_f, names_f, conflicts_f = _cell_fault_sides(fine)
+    side_c, names_c, conflicts_c = _cell_fault_sides(coarse)
+    last_side_conflicts = conflicts_f + conflicts_c
     common = [n for n in names_f if n in names_c]
     sf = side_f[:, [names_f.index(n) for n in common]]
     sc = side_c[:, [names_c.index(n) for n in common]]
@@ -596,7 +613,8 @@ def _recorded_rows_where_weak(coarse, fine, degree, continuous, Xf, Xc, cn, fn,
     bar = _WEAK_COPY * float(np.median(norms[copies]))
     remaining = int((after[weak] < bar).sum())
     last_parent_rows = dict(weak_copies=int(weak.size), rows=int(rows.size),
-                            stranded_cells=int(stranded), remaining=remaining)
+                            stranded_cells=int(stranded), remaining=remaining,
+                            side_conflicts=int(last_side_conflicts))
     _warn_unrepaired(remaining, int(weak.size))
     return cells, W
 
@@ -859,6 +877,7 @@ def _recorded_rows_where_weak_parallel(coarse, fine, degree, continuous, Xf, Xc,
     n_weak = int(weak_cols.size)
     rows_taken = 0
     stranded = None
+    side_conflicts = 0
     # the hosts' built geometry is read collectively, on every rank, before
     # anything rank-local can fail: the record is on every rank or on none
     tables = None
@@ -885,6 +904,7 @@ def _recorded_rows_where_weak_parallel(coarse, fine, degree, continuous, Xf, Xc,
                                          host_tables=tables)
             if rec is not None:
                 pcells, stranded = rec
+                side_conflicts = last_side_conflicts
                 pc_nodes = pcells[nodes]
                 have = np.flatnonzero(pc_nodes >= 0)
                 if have.size:
@@ -925,7 +945,8 @@ def _recorded_rows_where_weak_parallel(coarse, fine, degree, continuous, Xf, Xc,
         weak_copies=n_weak,
         rows=int(m4.allreduce(rows_taken)),
         stranded_cells=int(m4.allreduce(int(stranded or 0))),
-        remaining=remaining)
+        remaining=remaining,
+        side_conflicts=int(m4.allreduce(int(side_conflicts))))
     _warn_unrepaired(remaining, n_weak)
     return Wall, Call
 
