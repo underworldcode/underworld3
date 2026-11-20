@@ -429,7 +429,6 @@ yield_stress = [0, 0, 0.06, 0.06, 0]
 # stokes.constitutive_model.Parameters.viscosity
 
 # %%
-stokes.constitutive_model.Parameters.averaging_method = "min"
 # stokes.constitutive_model.Parameters.viscosity
 
 # %% [markdown]

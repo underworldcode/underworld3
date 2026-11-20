@@ -133,7 +133,6 @@ import vtk
 
 pv.global_theme.background = "white"
 pv.global_theme.window_size = [750, 750]
-pv.global_theme.antialiasing = True
 pv.global_theme.jupyter_backend = "trame"
 pv.global_theme.smooth_shading = True
 
@@ -250,7 +249,6 @@ if uw.mpi.size == 1 and ad.projection:
 
     pv.global_theme.background = "white"
     pv.global_theme.window_size = [750, 250]
-    pv.global_theme.antialiasing = True
     pv.global_theme.jupyter_backend = "trame"
     pv.global_theme.smooth_shading = True
 
@@ -308,7 +306,6 @@ def plot_T_mesh(filename):
 
         pv.global_theme.background = "white"
         pv.global_theme.window_size = [750, 750]
-        pv.global_theme.antialiasing = True
         pv.global_theme.jupyter_backend = "trame"
         pv.global_theme.smooth_shading = False
         pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
@@ -437,7 +434,6 @@ if uw.mpi.size == 1:
 
     pv.global_theme.background = "white"
     pv.global_theme.window_size = [750, 750]
-    pv.global_theme.antialiasing = True
     pv.global_theme.jupyter_backend = "trame"
     pv.global_theme.smooth_shading = True
 

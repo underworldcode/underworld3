@@ -274,7 +274,7 @@ def diffusion_1D(sample_points, temp_profile, k, model_dt):
 
 
 # Get initial temperature profile
-temp_data = uw.function.evaluate(adv_diff.u.fn, sample_points)
+temp_data = uw.function.evaluate(adv_diff.u.fn, sample_points)[:, 0, 0]
 
 # %% [markdown]
 """

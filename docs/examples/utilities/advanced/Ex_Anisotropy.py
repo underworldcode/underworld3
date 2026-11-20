@@ -382,7 +382,7 @@ print(C_IJm_HW)
 
 # +
 C_ijkl_HW = uw.maths.tensor.mandel_to_rank4(C_IJm_HW - C_IJm, 3)
-display(uw.maths.tensor.rank4_to_mandel(C_ijkl_HW, 3)) 
+print(uw.maths.tensor.rank4_to_mandel(C_ijkl_HW, 3)) 
 
 C_ijkl_HW_R = sympy.simplify(uw.maths.tensor.tensor_rotation(R, C_ijkl_HW))
 C_IJm_HW_R = sympy.simplify(uw.maths.tensor.rank4_to_mandel(C_ijkl_HW_R, 3)) + C_IJm

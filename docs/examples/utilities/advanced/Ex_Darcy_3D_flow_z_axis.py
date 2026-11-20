@@ -155,6 +155,8 @@ darcy.solve()
 
 # + editable=true slideshow={"slide_type": ""}
 # saving output
+import os
+os.makedirs('output', exist_ok=True)
 mesh.petsc_save_checkpoint(index=0, meshVars=[p_soln, v_soln], outputPath='./output/darcy_3d_no_g')
 
 # + editable=true slideshow={"slide_type": ""}

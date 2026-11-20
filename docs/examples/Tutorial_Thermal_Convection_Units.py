@@ -252,7 +252,7 @@ print("All coefficients are passed to the solver as model-unit numbers")
 
 stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
 # a dimensional parameter takes a quantity in a units model; it is one model unit here
-stokes.constitutive_model.Parameters.shear_viscosity_0 = reference_viscosity
+stokes.constitutive_model.Parameters.shear_viscosity_0 = uw.quantity(1e21, "Pa*s")
 
 print(f"Viscosity: {visc_model.value:.2f} (model units)")
 
@@ -273,7 +273,7 @@ thermal = uw.systems.AdvDiffusionSLCN(
 )
 
 thermal.constitutive_model = uw.constitutive_models.DiffusionModel
-thermal.constitutive_model.Parameters.diffusivity = kappa_model.value
+thermal.constitutive_model.Parameters.diffusivity = thermal_diffusivity
 
 print("🌡️  THERMAL SOLVER SETUP:")
 print(f"Thermal diffusivity: {kappa_model.value:.2e} (model units)")

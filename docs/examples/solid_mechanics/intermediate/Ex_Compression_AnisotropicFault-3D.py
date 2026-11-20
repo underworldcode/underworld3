@@ -204,8 +204,8 @@ pl.show()
 stokes = uw.systems.Stokes(mesh, velocityField=v_soln, pressureField=p_soln)
 
 stokes.constitutive_model = uw.constitutive_models.TransverseIsotropicFlowModel
-stokes.constitutive_model.Parameters.eta_0 = 1
-stokes.constitutive_model.Parameters.eta_1 = 0 + sympy.Piecewise(
+stokes.constitutive_model.Parameters.shear_viscosity_0 = 1
+stokes.constitutive_model.Parameters.shear_viscosity_1 = 0 + sympy.Piecewise(
     (0.001, fault_dist.sym[0] < mesh.get_min_radius() * 2),
     (1, True))
 

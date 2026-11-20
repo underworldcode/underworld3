@@ -163,8 +163,8 @@ bc = sympy.cos(2.0 * mesh.N.y)
 
 bcs_var.array[:, 0, 0] = uw.function.evaluate(bc, bcs_var.coords)[:, 0, 0]
 
-poisson.add_dirichlet_bc(bcs_var.sym[0], "Upper", components=0)
-poisson.add_dirichlet_bc(-1.0, "Centre", components=0)
+poisson.add_dirichlet_bc((bcs_var.sym[0],), "Upper")
+poisson.add_dirichlet_bc((-1.0,), "Centre")
 # -
 
 poisson.petsc_options.getAll()

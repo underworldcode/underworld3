@@ -274,7 +274,7 @@ def diffusion_1D(sample_points, tempProfile, k, model_dt):
 
 
 ### get the initial temp profile
-tempData = uw.function.evaluate(adv_diff.u.fn, sample_points)
+tempData = uw.function.evaluate(adv_diff.u.fn, sample_points)[:, 0, 0]
 
 step = 0
 time = 0.0

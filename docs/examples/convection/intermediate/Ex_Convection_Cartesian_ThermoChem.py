@@ -51,6 +51,9 @@ import nest_asyncio
 nest_asyncio.apply()
 
 import underworld3 as uw
+import os
+
+os.makedirs("output", exist_ok=True)
 from underworld3.systems import Stokes
 from underworld3 import function
 import numpy as np
@@ -323,7 +326,7 @@ for step in range(0, params.uw_n_steps):
     adv_diff.solve(timestep=delta_t, zero_init_guess=False)
 
     # Update swarm locations
-    swarm.advection(v_soln.fn, delta_t, order=2, corrector=True)
+    swarm.advection(v_soln.sym, delta_t, order=2, corrector=True)
 
     # Stats
     tstats = t_soln.stats()

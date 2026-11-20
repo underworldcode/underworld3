@@ -103,7 +103,7 @@ dmplex.setCoordinates(rtheta_vec)
 meshball_xyz_tmp.vtk("tmp_disk.vtk")
 del meshball_xyz_tmp
 
-meshdisc = uw.meshing.Mesh(
+meshdisc = uw.discretisation.Mesh(
     dmplex,
     coordinate_system_type=uw.coordinates.CoordinateSystemType.CYLINDRICAL2D)
 uw.cython.petsc_discretisation.petsc_dm_set_periodicity(

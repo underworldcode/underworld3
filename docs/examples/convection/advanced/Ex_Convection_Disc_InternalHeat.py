@@ -300,8 +300,7 @@ if params.uw_restart_step != 0:
     )
 
 # %%
-with meshball.access(r_mesh):
-    r_mesh.X.coords[:, 0] = uw.function.evaluate(r, meshball.data).squeeze()
+r_mesh.array[:, 0, 0] = uw.function.evaluate(r, r_mesh.coords)[:, 0, 0]
 
 # %% [markdown]
 """

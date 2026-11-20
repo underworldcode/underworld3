@@ -96,7 +96,6 @@ swarm.populate(fill_param=5)
 # +
 ad = uw.systems.AdvDiffusionSLCN(meshbox, t_soln, T1.sym, order=3)
 
-ad._u_star_projector.smoothing = 0.0
 
 ad.add_dirichlet_bc(1.0, "Bottom")
 ad.add_dirichlet_bc(0.0, "Top")
