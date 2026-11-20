@@ -169,3 +169,18 @@ def test_unusable_points_on_the_plotting_rank_are_refused_on_every_rank(viz):
     viz_rank = _viz_ranks()[viz]
     with pytest.raises(ValueError, match=r"sample points on the plotting rank"):
         vp.parallel_line_plot(T, None, viz_rank=viz_rank)
+
+
+@pytest.mark.tier_b
+@pytest.mark.parametrize("viz", [0, -1])
+def test_a_non_finite_point_on_the_plotting_rank_is_refused_on_every_rank(viz):
+    """One NaN row in the plotting rank's points is refused with the same message
+    on every rank, before global_evaluate (before: a different error on each rank,
+    and with the plotting rank last a hang in the swarm migration)."""
+    mesh, T = _linear_field()
+    viz_rank = _viz_ranks()[viz]
+    points = POINTS.copy()
+    points[3, 1] = np.nan
+    with pytest.raises(ValueError, match=r"sample points on the plotting rank"):
+        vp.parallel_line_plot(T, points if uw.mpi.rank == viz_rank else None,
+                              viz_rank=viz_rank)
