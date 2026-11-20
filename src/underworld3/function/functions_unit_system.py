@@ -1083,7 +1083,9 @@ def _named_expression_state(e):
                 hash(value)
             except TypeError:
                 value = str(value)          # a mutable Matrix: compared by its text
-            state.append((id(x), value, str(getattr(x, "units", None))))
+            # its units follow from its value (a transparent container), so the
+            # value alone is the key; formatting units per call was the cost
+            state.append((id(x), value))
             stack.append(x.sym)
             continue
         if isinstance(x, sympy.MatrixBase):
@@ -1164,8 +1166,21 @@ def _find_dimensional_function_argument(expr):
                 and cls.__name__ not in _UNIT_PASSING_FUNCTIONS
                 and not isinstance(f, sympy.Derivative))
 
+    from underworld3.function.unit_conversion import MismatchedSumError
+    from underworld3.units import get_units
+
+    # A sum of terms of different dimensions anywhere in the expression, outside
+    # a function too (a viscosity eta0 + T): refused where the expression is set
+    # or solved, as at evaluate.
+    top = _as_symbolic(expr)
+    for element in (list(top) if isinstance(top, sympy.MatrixBase) else [top]):
+        try:
+            get_units(element)
+        except MismatchedSumError as mismatch:
+            return ("a sum", str(mismatch))
+
     seen = set()
-    stack = [_as_symbolic(expr)]
+    stack = [top]
     while stack:
         e = stack.pop()
         if isinstance(e, UWexpression):
@@ -1225,6 +1240,8 @@ def _refuse_dimensional_function_argument(expr, where="evaluate"):
     if bad is None:
         return
     name, argument = bad
+    if name == "a sum":
+        raise ValueError(f"{where}: {argument}")
     power = name == "a power with exponent"
     base = None
     if power:

@@ -365,13 +365,13 @@ def compute_expression_units(expr):
 
             # Addition: the terms share a dimension, and the sum has it. A sum of
             # dimensionless terms that carry units (T/T0 - 1, units cancelling)
-            # is dimensionless. It used to return None, "unknown", and get_units
-            # then took the units of the first field in it: kelvin for T/T0 - 1.
-            # A term that carries no units at all (a field without units, read
-            # as a pure number) is left unknown, as before, and so is a sum of
-            # only such terms. A plain number may sit beside a dimensional term
-            # (T + 0); two terms that carry units of different dimensions are
-            # refused, naming them.
+            # is dimensionless, and a term that carries no units at all (a plain
+            # named parameter, a field without units) is a pure number beside
+            # it (T/T0 + k). It used to return None, "unknown", and get_units
+            # then took the units of the first field in it: kelvin. A sum of
+            # only terms that carry no units has no units, as before. A plain
+            # number may sit beside a dimensional term (T + 0); two terms that
+            # carry units of different dimensions are refused, naming them.
             def carries_units(term):
                 for atom in term.atoms(sympy.Symbol, sympy.Function):
                     if isinstance(atom, UWexpression) and atom.has_units:
@@ -398,7 +398,7 @@ def compute_expression_units(expr):
                     known.append((arg, arg_units))
             dimensional = [(a, u) for a, u in known if not is_dimensionless_unit(u)]
             if not dimensional:
-                if unknown or not any(not a.is_Number for a, _ in known):
+                if not any(not a.is_Number for a, _ in known):
                     return None
                 return uw.units.dimensionless
             first_arg, first_units = dimensional[0]
@@ -408,14 +408,28 @@ def compute_expression_units(expr):
                     continue
                 if (1 * arg_units).dimensionality != first_dim:
                     def named(term):
-                        # a named expression prints its value; name it instead
-                        return str(getattr(term, "name", term)) if isinstance(
-                            term, UWexpression) else str(term)
+                        # a named expression prints its value: name it; a
+                        # constant term prints as its number (not "--3.93")
+                        if isinstance(term, UWexpression):
+                            return str(term.name)
+                        values = {}
+                        for atom in term.atoms():
+                            try:
+                                values[atom] = sympy.Float(float(getattr(atom, "value")))
+                            except (AttributeError, TypeError, ValueError):
+                                continue    # not a constant with a numeric value
+                        try:
+                            return f"{float(term.xreplace(values)):.6g}"
+                        except (TypeError, ValueError):
+                            return str(term)
                     raise MismatchedSumError(
                         f"a sum of terms with different dimensions: {named(first_arg)} is in "
                         f"{first_units} and {named(arg)} is in "
                         f"{arg_units if not is_dimensionless_unit(arg_units) else 'no units (a pure number)'}. "
-                        "Every term of a sum needs the same dimension.")
+                        "Every term of a sum needs the same dimension. A plain number "
+                        "beside a dimensional term is read in model units; a "
+                        "dimensionless quantity there is ambiguous: give it its units "
+                        "(c * L, with L a length expression).")
             return first_units
 
         elif hasattr(expr, "func"):

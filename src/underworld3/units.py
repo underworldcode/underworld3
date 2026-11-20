@@ -321,6 +321,11 @@ def _extract_units_info(obj):
                 backend = _get_pint_helper()
                 # compute_expression_units returns pint.Unit objects - keep as Pint object
                 return True, units_result, backend
+            if isinstance(obj, sympy.Add):
+                # A sum has the units its terms give it, worked out above; when
+                # none of them carries units it has none. It does not take the
+                # units of the first field in it (T/T0 + k read as kelvin).
+                return False, None, None
 
             # Third try: extract unit-aware variables from the expression
             units_from_variables = _extract_units_from_sympy_expression(obj)

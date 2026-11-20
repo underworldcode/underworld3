@@ -745,3 +745,54 @@ def test_a_sum_of_terms_with_different_dimensions_is_refused_naming_them(units_m
     with pytest.raises(ValueError, match="different dimensions") as refused:
         uw.function.evaluate(T + W, _PTS)
     assert "W_m" in str(refused.value) and "T_a" in str(refused.value)
+
+
+# --- H1's review of #1197 at 7355f469 -------------------------------------
+
+
+@pytest.mark.level_1
+@pytest.mark.tier_b
+@pytest.mark.parametrize("form", ["T/T0 + k", "beta*C - gamma*T/T0"])
+def test_a_plain_parameter_or_unitless_field_beside_a_ratio_is_a_pure_number(units_model, form):
+    """A term with no units beside a dimensionless ratio is a pure number; the
+    sum does not take the first field's kelvin."""
+    mesh = _box()
+    T = _temperature_field(mesh).sym[0]
+    C = uw.discretisation.MeshVariable("C_a", mesh, 1, degree=1)
+    C.data[:] = 0.3
+    _e1, _e0, _E, _R, T0 = _arrhenius_constants()
+    k = uw.expression("k_a", 0.5, "plain parameter")
+    beta = uw.expression(r"\beta_a", 2.0, "plain parameter")
+    gamma = uw.expression(r"\gamma_a", 4.0, "plain parameter")
+    argument, expected = {
+        "T/T0 + k": (T / T0 + k, 1400 / 1600 + 0.5),
+        "beta*C - gamma*T/T0": (beta * C.sym[0] - gamma * T / T0, 0.6 - 4 * 1400 / 1600),
+    }[form]
+    assert uw.get_units(argument) == uw.units.dimensionless
+    r = uw.function.evaluate(sympy.exp(argument), _PTS)
+    assert float(np.asarray(r).ravel()[0]) == pytest.approx(np.exp(expected), rel=1e-9)
+
+
+@pytest.mark.level_1
+@pytest.mark.tier_b
+def test_a_mismatched_sum_is_refused_at_the_setter(units_model):
+    """eta0 + T, Pa s plus K, outside any function."""
+    mesh = _box()
+    T = _temperature_field(mesh).sym[0]
+    st = uw.systems.Stokes(mesh)
+    st.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    _e1, e0, _E, _R, _T0 = _arrhenius_constants()
+    with pytest.raises(ValueError, match="different dimensions"):
+        st.constitutive_model.Parameters.shear_viscosity_0 = e0 + T
+
+
+@pytest.mark.level_1
+@pytest.mark.tier_b
+def test_the_mismatch_message_prints_a_negated_constant_as_its_number(units_model):
+    mesh = _box()
+    x, _y = mesh.X
+    c = uw.quantity(-3.5, "dimensionless")
+    with pytest.raises(ValueError) as refused:
+        uw.function.evaluate(x - c, _PTS)
+    assert "--" not in str(refused.value)
+    assert "give it its units" in str(refused.value)
