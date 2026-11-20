@@ -20,8 +20,9 @@ host's mesh. The kept solver must carry nothing else from before the move: on th
 a registration made after the move with the kept solver's own mask takes the same
 velocity count, and both take fewer than a registration with no zone, which installs no
 patch. On a split level a move also drops the structural rows outside the zone, and the
-kept solver takes no more than one velocity iteration more than a fresh registration.
-The counts measured are beside the assertions.
+kept solver takes no more than one velocity iteration more than a fresh registration on
+one rank, and no more than two on several (the kept patch's own parallel cost, see the
+split-level assertion). The counts measured are beside the assertions.
 
 The fixture is test_1139's: a transverse-isotropic weak band beside a placed fault,
 the band's cells as the zone.
@@ -52,6 +53,9 @@ T_HAT = (B - A) / LENGTH
 N_HAT = np.array([T_HAT[1], -T_HAT[0]])
 MOVES = 3
 TOLERANCE = 1.0e-8
+# How many velocity iterations more than a fresh registration the kept patch may take
+# on a split level: one on one rank, two on several (see the split-level assertion).
+_SPLIT_LEVEL_MARGIN = 1 if uw.mpi.size == 1 else 2
 
 
 def _fixture(split):
@@ -285,7 +289,7 @@ def test_a_kept_zone_patch_matches_a_fresh_registration(split, capsys):
                       + ("" if split else f", kept mask registered again {its['same']}, "
                                           f"no zone {its['none']}"),
                       flush=True)
-        counts_hold = (its_k <= its_f + 1 if split
+        counts_hold = (its_k <= its_f + _SPLIT_LEVEL_MARGIN if split
                        else its_k == its["same"] and its_k < its["none"])
         if not (counts_hold and errors["velocity"] < 100 * TOLERANCE
                 and all(errors[key] < 1000 * TOLERANCE for key in errors)):
@@ -303,7 +307,20 @@ def test_a_kept_zone_patch_matches_a_fresh_registration(split, capsys):
             # np 1 on macOS (12-core Apple M4), kept and fresh at each move: 17 and 16,
             # 17 and 17, 17 and 17. With no zone registered: 18, 18, 17, so the bound
             # tells a lost patch at the first move only.
-            assert its_k <= its_f + 1, (k, told["velocity_its"])
+            # 2026-11-21, a 96-thread Linux workstation (Intel Xeon Gold 6240R, MPICH),
+            # kept and fresh at moves 1, 2 and 3: np 1 18/17, 17/17, 18/18; np 2
+            # 19/18, 19/17, 20/19. At np 2 a registration made after each move with
+            # the kept solver's own mask takes 19, 19, 20, the kept count exactly, so
+            # the kept solver carries nothing partition-dependent from before the
+            # move: the gap to the recomputed zone is the zone drift the patch is kept
+            # despite (Louis, 2026-11-10). On several ranks that drift costs one or two
+            # iterations more than on one (19 at np 2 against 17-18 serially; also so
+            # before #1258), while a fresh registration matches serial once the mover
+            # evaluates seam points on their owning rank (#1258; before it the parallel
+            # mover moved the mesh up to 3.4e-3 off the serial one and the recomputed
+            # zone was wrong, which inflated the fresh count to 19 and hid that cost).
+            # So the margin is one on one rank and two on several.
+            assert its_k <= its_f + _SPLIT_LEVEL_MARGIN, (k, told["velocity_its"])
         else:
             # Velocity iterations at moves 1, 2 and 3, np 1 on macOS (12-core Apple M4):
             # kept 7, 7, 7; the kept mask registered again 7, 7, 7; the zone recomputed
