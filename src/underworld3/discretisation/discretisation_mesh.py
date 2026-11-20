@@ -2597,11 +2597,24 @@ class Mesh(Stateful, uw_object):
         Clone the dm hierarchy on the mesh
         """
 
+        from underworld3.cython.petsc_maths import dm_force_coordinate_field
+
         dm_hierarchy = self.dm_hierarchy
 
+        # A clone does not carry the coordinate field (DMClone copies the
+        # coordinates, not the DMField over them), so PETSc creates it lazily
+        # the first time an assembly needs a cell's geometry -- and a rank
+        # holding no cells never does in the residual. Creating a PETSc object
+        # on the mesh's communicator takes a tag from that communicator, so the
+        # ranks' tag counters drift apart, and a later two-sided exchange on it
+        # (the next mesh load's label read) waits on messages under a tag the
+        # other ranks never use. The field is created here, where every rank
+        # clones.
         new_dm_hierarchy = []
         for dm in dm_hierarchy:
-            new_dm_hierarchy.append(dm.clone())
+            clone = dm.clone()
+            dm_force_coordinate_field(clone)
+            new_dm_hierarchy.append(clone)
 
         for i, dm in enumerate(new_dm_hierarchy[:-1]):
             new_dm_hierarchy[i + 1].setCoarseDM(new_dm_hierarchy[i])
