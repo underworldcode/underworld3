@@ -1451,6 +1451,7 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
     # announced this solver to the step transcript. This push is for THIS
     # function's own assembly; recording it again reports one operator as two.
     solver._update_constants(record=False)
+    _report_given_normal_extra_constraint(solver, boundaries)
     if rtol is None:
         rtol = float(solver.tolerance)
     # A negative cap carries PETSc's meaning. PETSC_UNLIMITED lifts the cap;
@@ -3925,6 +3926,95 @@ def _declared_mode_flags(solver):
                 f"mesh.deform, for example), declare the rotation about their new "
                 f"centre: set mesh.nullspace_rotations (#969)")
     return [True] * n_modes, None
+
+
+def _normal_varies(solver, normal):
+    """Whether a given normal ``normal`` varies over the mesh: a sympy normal
+    with a mesh coordinate among its free symbols (after unwrapping). A
+    constant array, or a sympy normal of numbers, does not."""
+    if not isinstance(normal, sympy.MatrixBase):
+        return False
+    from underworld3.function.expressions import unwrap
+    names = {str(xk) for xk in solver.mesh.X}
+    for component in normal:
+        expr = sympy.sympify(unwrap(sympy.sympify(component), keep_constants=False,
+                                    return_self=False))
+        if any(str(symbol) in names for symbol in expr.free_symbols):
+            return True
+    return False
+
+
+def _boundary_flux_is_fixed(solver, rotated_walls):
+    """Whether every exterior boundary facet of the mesh has its normal velocity
+    fixed: it lies on a rotated free-slip wall in ``rotated_walls``, or on an
+    essential condition that fixes every velocity component. Exterior facets are
+    the ``All_Boundaries`` label's (marked before distribution, so a partition
+    face is never among them). Collective; the same answer on every rank. False
+    when the mesh carries no ``All_Boundaries`` label, or the pressure has an
+    essential condition (the constant-pressure row is then not the sum of the
+    continuity rows)."""
+    dm = solver.mesh.dm
+    if not dm.hasLabel("All_Boundaries"):
+        return False
+    if any(bc.f_id == _PRESSURE_FIELD for bc in solver.essential_bcs):
+        return False
+    dim = solver.mesh.dim
+    fixing = set(rotated_walls)
+    for bc in solver.essential_bcs:
+        if bc.f_id == _VELOCITY_FIELD and all(
+                _essential_value(bc, c, dim) is not None for c in range(dim)):
+            fixing.add(bc.boundary)
+    f0, f1 = dm.getDepthStratum(dim - 1)
+
+    def facets(name):
+        label = dm.getLabel(name)
+        points = [label.getStratumIS(int(value)).getIndices()
+                  for value in label.getValueIS().getIndices()]
+        points = np.concatenate(points) if points else np.empty(0, dtype=np.int64)
+        return points[(points >= f0) & (points < f1)]
+
+    exterior = facets("All_Boundaries")
+    covered = [facets(name) for name in sorted(fixing) if dm.hasLabel(name)]
+    covered = np.concatenate(covered) if covered else np.empty(0, dtype=np.int64)
+    free_here = int(np.count_nonzero(~np.isin(exterior, covered)))
+    return mpi.comm.allreduce(free_here) == 0
+
+
+def _report_given_normal_extra_constraint(solver, boundaries):
+    """Warn, once per solver, when a rotated wall takes a given normal that varies
+    along it and the whole boundary's normal flux is fixed (#1168).
+
+    The continuity row tested with a constant pressure is then a sum over the
+    boundary of the facet-weighted normal flux. The given normal differs from
+    the facet-weighted normal at each node of a faceted curved wall, so that row
+    holds a weighted sum of the wall slip fixed, with the mean pressure as its
+    multiplier: one constraint the continuous problem does not have. Nothing
+    is changed; the verdict is recorded on the solver as
+    ``_given_normal_extra_constraint``, the same on every rank."""
+    specs = [_boundary_spec(spec) for spec in boundaries]
+    varying = sorted(name for name, normal in specs
+                     if name != SHEET_TANGENCY and normal is not None
+                     and _normal_varies(solver, normal))
+    if not varying:
+        solver._given_normal_extra_constraint = False
+        return
+    walls = [name for name, _normal in specs if name != SHEET_TANGENCY]
+    flagged = _boundary_flux_is_fixed(solver, walls)
+    solver._given_normal_extra_constraint = flagged
+    if flagged and not getattr(solver, "_given_normal_extra_constraint_reported", False):
+        solver._given_normal_extra_constraint_reported = True
+        mpi.pprint(
+            f"[rotated_bc] WARNING: rotated free slip on {varying} takes a given normal "
+            f"that varies along the wall, and the normal velocity is fixed on the whole "
+            f"boundary. The constant-pressure continuity row then holds a weighted sum of "
+            f"the wall slip fixed (the weights are where the given normal differs from "
+            f"the facet-weighted normal; the mean pressure is its multiplier), a "
+            f"constraint the continuous problem does not have. On a curved wall that is "
+            f"not a circle this can stop the velocity converging: 63 to 67 % error, not "
+            f"falling with refinement, on a manufactured free-slip solution on an "
+            f"elliptical annulus (#1168). Use normal=None (the default, facet-weighted "
+            f"normal) unless the given normal is needed for an exact rigid-rotation "
+            f"null mode.")
 
 
 def _given_normal_walls(solver):
