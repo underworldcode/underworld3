@@ -363,6 +363,10 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   # Units system tests (0800-0899: unit-aware functions, arrays, and conversions)
   batch 3 tests/test_08*py
 
+  # 0900-0999 (the spherical generators' refinement, #949). The band had no
+  # line, so a test placed in it matched no glob.
+  batch 5 tests/test_09*py
+
   # Poisson solvers (including Darcy flow)
   batch 4 tests/test_100[0-9]*py tests/test_103*py
 
