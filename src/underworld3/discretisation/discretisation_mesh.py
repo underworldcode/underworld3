@@ -8350,8 +8350,11 @@ class Mesh(Stateful, uw_object):
     # ownership unique: a point within the slab of a partition seam is claimed
     # by the ranks on both sides (measured by H1 on #1175: 30 to 2,690 points
     # per run claimed twice), and the rank that does not contain it evaluates
-    # it in a cell that does not (up to 2.8e-4 off, 1e-5 typical). Claiming by
-    # exact containment first is the follow-up named on #1175.
+    # it in a cell that does not (up to 2.8e-4 off, 1e-5 typical).
+    # global_evaluate therefore hands each point it holds without containing it
+    # to a rank that contains it, after its migration (#1178,
+    # _hand_points_to_containing_rank in function/_function.pyx); the face
+    # tolerance decides only for points no rank contains.
     _EVAL_FACE_TOL = 1.0e-2
     # Containment to rounding, relative like _EVAL_FACE_TOL. A point some local
     # cell contains to this tolerance is evaluated in that cell (#1115).
@@ -8451,6 +8454,22 @@ class Mesh(Stateful, uw_object):
                 dtype=numpy.int64,
             )
         return cells
+
+    def _contained_in_local_cells(self, coords):
+        """Whether a local cell contains each point (coords in model units),
+        with no face tolerance: the exact walk on a simplex mesh
+        (:meth:`_walk_to_owning_cells`), containment to rounding
+        (``_EVAL_CONTAIN_TOL``) on other meshes. Rank-local."""
+        coords = numpy.asarray(coords)
+        cStart, cEnd = self.dm.getHeightStratum(0)
+        if coords.shape[0] == 0 or cEnd == cStart:
+            return numpy.zeros(coords.shape[0], dtype=bool)
+        locator = self._simplex_locator()
+        if locator is not None:
+            cells, _, _ = self._walk_to_owning_cells(locator, coords)
+        else:
+            cells = self._get_closest_local_cells_internal(coords, tol=self._EVAL_CONTAIN_TOL)
+        return numpy.asarray(cells) >= 0
 
     def _simplex_locator(self):
         """The exact barycentric locator for this mesh's local cells, or None
