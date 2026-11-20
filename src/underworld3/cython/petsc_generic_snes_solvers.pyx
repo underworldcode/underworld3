@@ -6477,6 +6477,12 @@ class SolverBaseClass(uw_object):
         cdef DM _time_dm
         if not (self._rotated_freeslip_bcs or self._fault_contact_faults):
             return False
+        # every solver's rotated path passes here (a vector projection with a
+        # law included); the check reads registrations only, the same on every
+        # rank (#940)
+        from underworld3.utilities.fault_contact import (
+            refuse_essential_conditions_on_law_faults)
+        refuse_essential_conditions_on_law_faults(self)
         # Rotated strong free-slip: delegate to the rotated_bc module (per-node DOF
         # rotation + strong v_n=0 + reaction=sigma_nn). Handles the whole assemble/
         # solve/rotate-back/gauge-removal; stashes info for boundary_normal_traction.

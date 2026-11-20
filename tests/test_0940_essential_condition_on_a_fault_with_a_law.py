@@ -62,3 +62,54 @@ def test_conditions_on_both_sides_without_a_law_still_solve():
     s.add_dirichlet_bc((0.0, 0.0), "FltMinus")
     s.solve()
     assert s.snes.getConvergedReason() > 0
+
+
+def _projection_with_a_law():
+    """A vector projection with a law and a pinned side: its solve reaches the
+    rotated path through _solve_rotated_if_registered, not Stokes' solve."""
+    import sympy
+    mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0, 0), maxCoords=(1, 1), cellSize=1 / 8,
+                                             regular=True, qdegree=2).add_fault([("Flt", TRACE)])
+    x, y = mesh.X
+    u = uw.discretisation.MeshVariable("u0940", mesh, 2, degree=2)
+    projection = uw.systems.Vector_Projection(mesh, u)
+    projection.uw_function = sympy.Matrix([[x, y]])
+    projection.add_fault_bc(1.0, "Flt")
+    projection.add_dirichlet_bc((0.0, 0.0), "FltMinus")
+    return projection
+
+
+def test_a_vector_solve_with_a_law_and_a_pinned_side_is_refused():
+    with pytest.raises(ValueError, match=r"#940"):
+        _projection_with_a_law().solve()
+
+
+def test_a_frictionless_law_is_refused_with_its_own_reason():
+    s = _sheared(law=False)
+    s.add_fault_bc(0, "Flt")
+    s.add_dirichlet_bc((0.0, 0.0), "FltMinus")
+    with pytest.raises(ValueError, match=r"#940") as err:
+        s.solve()
+    assert "frictionless law is lost" in str(err.value)
+
+
+def test_a_pressure_condition_on_a_side_is_not_this_refusal():
+    """It constrains no velocity pair DOF; the pressure-nullspace check refuses
+    it, as on development."""
+    s = _sheared()
+    s.add_condition(1, "dirichlet", (0.0,), "FltMinus")
+    with pytest.raises(ValueError) as err:
+        s.solve()
+    assert "#940" not in str(err.value) and "pressure" in str(err.value)
+
+
+def test_an_all_free_condition_on_a_side_is_not_this_refusal():
+    """(None, None) constrains no component, so it is not said to. (Such a
+    condition fails on any boundary, a wall included, in the discretisation
+    set-up; that is not #940's.)"""
+    s = _sheared()
+    s.add_dirichlet_bc((None, None), "FltMinus")
+    try:
+        s.solve()
+    except Exception as err:            # noqa: BLE001 - only the message is checked
+        assert "#940" not in str(err)

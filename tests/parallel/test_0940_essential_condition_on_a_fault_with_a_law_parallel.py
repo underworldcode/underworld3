@@ -14,7 +14,8 @@ import pytest
 import underworld3 as uw
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from test_0940_essential_condition_on_a_fault_with_a_law import _sheared  # noqa: E402
+from test_0940_essential_condition_on_a_fault_with_a_law import (  # noqa: E402
+    _projection_with_a_law, _sheared)
 
 pytestmark = [pytest.mark.mpi(min_size=2), pytest.mark.level_1, pytest.mark.tier_b,
               pytest.mark.timeout(300)]
@@ -27,6 +28,18 @@ def test_every_rank_refuses_together(where):
     message = None
     try:
         s.solve()
+    except ValueError as err:
+        message = str(err)
+    messages = uw.mpi.comm.allgather(message)
+    assert messages[0] is not None and "#940" in messages[0], messages
+    assert len(set(messages)) == 1, messages
+
+
+def test_a_vector_solve_is_refused_on_every_rank_together():
+    """At np 2 this ended in PETSc error 63 under residual_add, then a hang."""
+    message = None
+    try:
+        _projection_with_a_law().solve()
     except ValueError as err:
         message = str(err)
     messages = uw.mpi.comm.allgather(message)
