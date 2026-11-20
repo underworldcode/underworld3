@@ -4446,6 +4446,50 @@ class SolverBaseClass(uw_object):
                         f"slowly; one that stagnates needs a better preconditioner "
                         f"(#585, #625).", RuntimeWarning)
 
+    def _refuse_unfactorable_pressure_preconditioner(self):
+        """Raise on every rank when the solve failed because the pressure block's
+        preconditioner could not be factored (#1059).
+
+        That matrix is the pressure mass matrix divided by the viscosity. PETSc's
+        LU and ILU treat a pivot below an ABSOLUTE tolerance (2.2e-14) as zero, so
+        once the viscosity in the solver's frame is about 1e11 or more the
+        factorisation fails, the solve stops at iteration 0 and u = 0. A warning
+        is not enough: the fields look like a solution. Collective, and reached
+        only when the solve diverged, which every rank agrees on."""
+        if self.snes.getConvergedReason() >= 0:
+            return
+        from petsc4py import PETSc
+        bad = (PETSc.PC.FailedReason.FACTOR_STRUCT_ZEROPIVOT,
+               PETSc.PC.FailedReason.FACTOR_NUMERIC_ZEROPIVOT,
+               PETSc.PC.FailedReason.SUBPC_ERROR)
+        failed, largest, pressure = 0, float("nan"), None
+        try:
+            for sub in self.snes.getKSP().getPC().getFieldSplitSubKSP():
+                if (sub.getOptionsPrefix() or "").endswith("fieldsplit_pressure_"):
+                    pressure = sub
+        except Exception:
+            pressure = None
+        if pressure is not None:
+            failed = int(pressure.getPC().getFailedReason() in bad)
+        failed = uw.mpi.comm.allreduce(failed, op=uw.MPI.MAX)
+        if not failed:
+            return
+        # Collective. Every rank has the same split, so either every rank found the
+        # pressure block or none did; then the norm is skipped everywhere.
+        if uw.mpi.comm.allreduce(int(pressure is not None), op=uw.MPI.MIN):
+            largest = pressure.getOperators()[1].getDiagonal().norm(PETSc.NormType.INFINITY)
+        raise RuntimeError(
+            f"{type(self).__name__}: the pressure block's preconditioner could not be "
+            f"factored, so the solve stopped at iteration {self.snes.getIterationNumber()} "
+            f"and the fields hold the initial guess. That matrix is the pressure mass "
+            f"matrix divided by the viscosity; its largest diagonal entry is "
+            f"{largest:.3g}, and PETSc's factorisation treats pivots below 2.2e-14 as "
+            f"zero. This happens when the viscosity in the solver's frame is about 1e11 "
+            f"or more, as in a model in raw SI units. Give the model reference "
+            f"quantities (uw.get_default_model().set_reference_quantities(...), see the "
+            f"units-system guide), so the viscosity it solves with is of order one. "
+            f"(#1059)")
+
     def _warn_on_diverged_solve(self):
         """Warn when the solve diverged (#1059). The printed notice of
         ``_warn_on_divergence`` is easy to miss in a run's output, and a script carries
@@ -13889,6 +13933,10 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         self._warn_on_divergence()
 
         self._record_convergence_status()
+
+        # a failure that leaves u = 0 looking like a solution is refused, on
+        # every rank (#1059)
+        self._refuse_unfactorable_pressure_preconditioner()
 
         # last: under -W error they raise on rank 0 only, after every rank has
         # recorded the solve
