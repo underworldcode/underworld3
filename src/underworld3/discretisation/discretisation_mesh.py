@@ -1851,6 +1851,10 @@ class Mesh(Stateful, uw_object):
                     left_off_surface |= _labels_holding_vertices(dm, put_back, boundary_names)
             self._refinement_left_off_surface = frozenset(left_off_surface)
             if held:
+                # ``held`` is global, so every rank is here; the walls are each
+                # rank's own, gathered for the message (#949)
+                walls = sorted(set().union(*uw.mpi.comm.allgather(left_off_surface)))
+                remedy = getattr(refinement_callback, "remedy", None)
                 with uw.selective_ranks(0) as selected:
                     if selected:
                         import warnings
@@ -1859,7 +1863,11 @@ class Mesh(Stateful, uw_object):
                             f"The refinement callback would have turned cells inside "
                             f"out. {held} vertices it moved, over the hierarchy's "
                             f"{len(self.dm_hierarchy)} levels, stay where refinement "
-                            f"placed them instead (#946).",
+                            f"placed them instead"
+                            + (f", off the walls {walls}: a condition or a surface "
+                               f"placed on those walls sees them off the wall"
+                               if walls else "")
+                            + " (#946)." + (f" {remedy}" if remedy else ""),
                             UserWarning,
                         )
 
