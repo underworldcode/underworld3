@@ -6073,6 +6073,24 @@ def _occ_assembly_2d(polylines, width, size, assembly="fuse", domain=None,
                 ltags = [occ.addLine(ptags[i], ptags[i + 1])
                          for i in range(len(ptags) - 1)]
                 occ.synchronize()
+                # Every spine point must lie in a resolved face (a point on the
+                # face's edge counts). A strand drawn past the domain wall has
+                # points outside the face the domain clipped, and gmsh, handed
+                # embedded points outside their face, either meshes nothing or
+                # does not return (#1177: measured, a strand crossing the right
+                # wall with its other end near the top did not return in an
+                # hour). Refused here, before gmsh is called.
+                outside = [q for q in P
+                           if not any(gmsh.model.isInside(2, t, [q[0], q[1], 0.0])
+                                      for t in face_tags)]
+                if outside:
+                    raise RuntimeError(
+                        f"network assembly: {len(outside)} point(s) of an embedded "
+                        f"spine lie outside the ribbon faces, the first at "
+                        f"{np.round(outside[0], 6).tolist()}: a strand drawn past the "
+                        f"domain wall is not built by mesher='network', which embeds "
+                        f"the strand itself. End the strand on the wall or inside "
+                        f"the domain (#1177).")
                 mid = P[len(P) // 2]
                 host = [t for t in face_tags
                         if gmsh.model.isInside(2, t, [mid[0], mid[1], 0.0])]
