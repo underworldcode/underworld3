@@ -3580,10 +3580,14 @@ class SemiLagrangian(_DDtBase):
             # layout falls back to evaluate.
             if var.vtype not in (uw.VarType.SCALAR, uw.VarType.VECTOR):
                 return None
+            # Columns from the trailing shape, not reshape(n, -1): a rank with
+            # no nodes holds zero rows, and NumPy cannot infer -1 from zero
+            # elements. The ValueError sent that rank alone down the evaluate
+            # route, and the step hung (review of #1234).
             vflat = np.asarray(var.data)
-            vflat = vflat.reshape(vflat.shape[0], -1)
+            vflat = vflat.reshape(vflat.shape[0], int(np.prod(vflat.shape[1:])))
             store = np.asarray(self.psi_star[0].data)
-            if vflat.shape[0] != store.shape[0] or store.reshape(store.shape[0], -1).shape[1] != 1:
+            if vflat.shape[0] != store.shape[0] or int(np.prod(store.shape[1:])) != 1:
                 return None
             return np.array(vflat[:, comp]).reshape(-1, 1, 1)
         except Exception:
@@ -3802,6 +3806,10 @@ class SemiLagrangian(_DDtBase):
             # psi_fn (those fall back to evaluate).
             _direct = (self._record_psi_star_from_field_data()
                        if (uw.mpi.size > 1 or oldframe_active) else None)
+            # One route on every rank: the routes differ in their collectives.
+            if uw.mpi.size > 1 and not uw.mpi.comm.allreduce(_direct is not None,
+                                                             op=uw.MPI.LAND):
+                _direct = None
             if _direct is not None:
                 eval_result = _direct
             else:
