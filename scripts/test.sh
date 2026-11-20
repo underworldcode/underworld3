@@ -464,7 +464,8 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   # 25:47 of shard 3's 56:28 on run 42412307017 (see the header).
   batch 5 tests/test_108*py tests/test_109*py
   # The docs examples gate (#944 part C): 17 scripts to their first solve,
-  # each in a subprocess, about 25 s with 6 workers on a laptop.
+  # each in a subprocess, and 5 beginner tutorials run whole as notebooks;
+  # about 45 s with 6 workers on a laptop.
   batch 5 tests/test_1293_docs_examples_reach_their_first_solve.py
   #
   # test_1072 used to be pulled forward out of test_107* by name, because that
