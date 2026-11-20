@@ -614,6 +614,11 @@ if [ $PARALLEL_RANKS -gt 0 ] && shard_owns 4; then
     # to solve for), so the solve on it with a rank without cells runs at np 3 always.
     OMPI_MCA_rmaps_base_oversubscribe=1 $SUPERVISE mpirun -n 3 python -m pytest --with-mpi \
       tests/parallel/test_0786_stokes_rank_without_cells_parallel.py || status=1
+
+    # The parallel plotting helpers: the non-plotting ranks join the plotting
+    # rank's global_evaluate with no points; at three ranks two of them do.
+    OMPI_MCA_rmaps_base_oversubscribe=1 $SUPERVISE mpirun -n 3 python -m pytest --with-mpi \
+      tests/parallel/test_1243_parallel_plot_helpers_parallel.py || status=1
     # adapt(engine='nvb') with a rank without cells: the box that leaves a rank
     # empty does so from np 3 (at np 2 the test skips), so it runs at np 3 always.
     OMPI_MCA_rmaps_base_oversubscribe=1 $SUPERVISE mpirun -n 3 python -m pytest --with-mpi \
