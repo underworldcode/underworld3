@@ -5081,7 +5081,14 @@ class Swarm(Stateful, uw_object):
     ):
         """
 
-        Use PETSc to save the swarm and attached data to a .pbin and xdmf file.
+        Save the swarm and its variables to h5 files with an XDMF file,
+        ``{outputPath}{swarmName}_{index:05d}.xmf``, that points at them.
+
+        The data is written by :meth:`write_timestep`, with ``swarmName`` as
+        both its file name and swarm name, so
+        ``read_timestep(swarmName, swarmName, index, outputPath)`` restores
+        it. (PETSc's ``DMSwarm.viewXDMF``, which wrote a ``.pbin``, needs an
+        active cell DM from PETSc 3.25, and these swarms have none.)
 
         Parameters
         ----------
@@ -5092,9 +5099,16 @@ class Swarm(Stateful, uw_object):
         outputPath :
             Path to save the data. If left empty it will save the data in the current working directory.
         """
+        import shutil
 
-        x_swarm_fname = f"{outputPath}{swarmName}_{index:05d}.xmf"
-        self.dm.viewXDMF(x_swarm_fname)
+        swarm_vars = [var for name, var in self._vars.items() if not name.startswith("DMSwarm")]
+        self.write_timestep(swarmName, swarmName, index, swarmVars=swarm_vars,
+                            outputPath=outputPath)
+        if uw.mpi.rank == 0:
+            written = os.path.join(outputPath, swarmName) + f".{swarmName}.{index:05d}.xdmf"
+            # the h5 files it names are in the same directory
+            shutil.copyfile(written, f"{outputPath}{swarmName}_{index:05d}.xmf")
+        uw.mpi.barrier()
 
     @timing.routine_timer_decorator
     def write_timestep(
