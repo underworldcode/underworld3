@@ -5712,6 +5712,38 @@ def _ladder_domain_gate_2d(pts, domain):
             "band (which clips).")
 
 
+# How far inside the domain a ladder row's points must be for the row to end the
+# structured band before the outcrop cap (#1090). A row closer to the wall leaves
+# a cap sliver that the geometry kernel's clip merges away, and the cap then
+# meshes short of its CAD area, loses a rung vertex, or meets no part of the
+# domain. Measured on a unit square with the rung under a straight wall, at cell
+# sizes 0.3, 0.03 and 0.003 alike: refused at 3e-7 and closer, built at 5e-7 and
+# further, so the limit is absolute, not a fraction of the cell. It is measured,
+# not tied to a gmsh option: it is above Geometry.Tolerance (1e-8), and which
+# OCC boolean tolerance sets it was not determined. On an annulus the two
+# refusals of #1090 came at about 3e-8 and
+# 3e-7. 1e-5 is twenty times the measured edge. A placement changes only where a
+# rung lies within it of the wall: its band, and a split along it, end one rung
+# earlier. Coordinates are the mesh's own, non-dimensional.
+_LADDER_CAP_MARGIN = 1.0e-5
+
+
+def _distance_to_loops_2d(pts, domain):
+    """Each point's distance to the nearest segment of the domain's boundary
+    loops."""
+    pts = np.asarray(pts, dtype=float)
+    best = np.full(len(pts), np.inf)
+    for L in domain:
+        L = np.asarray(L, dtype=float)
+        A, B = L, np.roll(L, -1, axis=0)
+        AB = B - A
+        t = np.clip(((pts[:, None, :] - A[None]) * AB[None]).sum(-1)
+                    / np.maximum((AB * AB).sum(-1), 1e-300)[None], 0.0, 1.0)
+        d = np.linalg.norm(pts[:, None, :] - (A[None] + t[..., None] * AB[None]), axis=-1)
+        best = np.minimum(best, d.min(axis=1))
+    return best
+
+
 def _ladder_outcrop_assembly_2d(S, R, width, size, domain):
     """The ladder that OUTCROPS: the structured band on the samples inside
     the domain, stopping one rung short of the wall, closed by a small
@@ -5733,7 +5765,13 @@ def _ladder_outcrop_assembly_2d(S, R, width, size, domain):
     S = np.asarray(S, dtype=float)
     R = np.asarray(R, dtype=float)
     rows = np.stack([S + 0.5 * width * R, S, S - 0.5 * width * R], axis=1)
-    inside = _inside_domain_2d(rows.reshape(-1, 2), domain).reshape(-1, 3).all(axis=1)
+    flat = rows.reshape(-1, 2)
+    # A row counts as inside when its three points are inside the domain and
+    # at least _LADDER_CAP_MARGIN from its boundary; a closer rung goes to the
+    # cap, which then starts at the rung before it (#1090).
+    inside = (_inside_domain_2d(flat, domain)
+              & (_distance_to_loops_2d(flat, domain) >= _LADDER_CAP_MARGIN)
+              ).reshape(-1, 3).all(axis=1)
     if inside.all():
         return _ladder_curved_assembly_2d(S, width, size, reach=R)
     idx = np.flatnonzero(inside)
