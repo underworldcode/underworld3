@@ -11689,14 +11689,11 @@ class Mesh(Stateful, uw_object):
                                 rg.setValue(c, region.value)
                 rgLabel_name = "_CellRegions_"
 
-        # TODO(BUG): after metricCreateIsotropic on a rank with no cells, the next
-        # dm.distribute hangs, with cells [8, 8, 0] and not with cells on every rank.
-        # A clone, createGlobalVector, a norm, a barrier and a new variable all pass.
-        # No PETSc we build adapts on more than one rank yet, so nothing reaches
-        # it. See issue #975.
-        # Create the metric from the field
+        # Create the metric from the field, on every rank in step: a rank with
+        # no cells otherwise falls a tag behind and the next distribute hangs
+        # (#975)
         hvec = metric_field._lvec
-        metric_vec = self.dm.metricCreateIsotropic(hvec, metric_field.field_id)
+        metric_vec = adaptivity._isotropic_metric(self.dm, hvec, metric_field.field_id)
 
         if verbose:
             n_nodes_old = self.dm.getChart()[1] - self.dm.getChart()[0]
