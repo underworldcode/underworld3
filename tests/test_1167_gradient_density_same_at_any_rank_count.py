@@ -10,7 +10,8 @@ partitions by about 1e-3 relative, so the density differed from np 1 at about
 at np 4. The gradient is now projected to a relative tolerance of 1e-12, and
 the density is then the same at every rank count.
 
-Two fields on #1166's mesh: its smooth front, and a field exactly constant
+Three cases on #1166's mesh: its smooth front; the same front pre-smoothed with
+``smoothing_length``, which projects the field first; and a field exactly constant
 below a curve (the projection spreads a small, converged gradient into the flat
 part, which then ranks the same everywhere). Each rank count writes the density at every node, sorted by
 coordinate; np 2 and np 4 must equal np 1.
@@ -43,10 +44,15 @@ def _densities(out):
     mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0),
                                              cellSize=0.07, qdegree=3)
     x, y = mesh.X
-    for case, expression in _fields(x, y).items():
+    cases = dict(_fields(x, y))
+    cases["smoothed"] = cases["front"]
+    for case, expression in cases.items():
         T = uw.discretisation.MeshVariable(f"T1166_{case}", mesh, 1, degree=1)
         T.array[:, 0, 0] = np.asarray(uw.function.evaluate(expression, T.coords)).reshape(-1)
-        uw.meshing.metric_density_from_gradient(mesh, T, refinement=4, name=case)
+        # "smoothed" takes the field-side pre-smoothing path, a second projection
+        smoothing = {"smoothing_length": 0.05} if case == "smoothed" else {}
+        uw.meshing.metric_density_from_gradient(mesh, T, refinement=4, name=case,
+                                                **smoothing)
         rho = [v for v in mesh.vars.values() if v.clean_name == f"mdg_rho_{case}1"][0]
         rows = _owned_dof_rows(rho)
         mine = np.column_stack([np.asarray(rho.coords)[rows], np.asarray(rho.data[:, 0])[rows]])
@@ -77,7 +83,7 @@ def test_the_density_is_the_same_at_np_1_2_and_4(tmp_path):
         pytest.skip("Run in serial; it launches its own MPI runs.")
     for ranks in (1, 2, 4):
         _run(ranks, tmp_path)
-    for case in ("front", "flat"):
+    for case in ("front", "flat", "smoothed"):
         reference = np.load(tmp_path / f"{case}_np1.npy")
         assert np.ptp(reference[:, 2]) > 1.0, f"{case}: the density does not grade at all"
         for ranks in (2, 4):

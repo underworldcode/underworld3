@@ -296,7 +296,8 @@ def _owned_dof_rows(var):
     return owned
 
 
-#: Relative tolerance the metric's gradient projection is solved to. The
+#: Relative tolerance the metric's projections (the gradient, and the field
+#: when it is pre-smoothed) are solved to. The
 #: front-following density ranks |grad field|; at the default tolerance the
 #: ranking of near-equal gradients followed the partition (#1166).
 _GRADIENT_PROJECTION_RTOL = 1.0e-12
@@ -534,6 +535,11 @@ def metric_density_from_gradient(
         # projected gradient field rather than T).
         fp.uw_function = f_sym
         fp.smoothing_length = smoothing_length
+        # converged for the same reason as the gradient projection below: the
+        # density ranks what comes out of it (#1166)
+        fp.tolerance = _GRADIENT_PROJECTION_RTOL
+        fp.petsc_options["ksp_rtol"] = _GRADIENT_PROJECTION_RTOL
+        fp.petsc_options["ksp_atol"] = 1.0e-30
         fp.solve()
         f_for_grad = f_smooth.sym[0]
     else:
