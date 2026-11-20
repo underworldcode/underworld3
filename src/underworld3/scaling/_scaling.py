@@ -201,6 +201,22 @@ def non_dimensionalise(dimValue):
     if isinstance(dimValue, (int, float)):
         return dimValue
 
+    # A named expression holding a quantity or a number takes that value's path
+    # (Annulus(radiusOuter=uw.expression("r_o", uw.quantity(6370, "km"), ...)));
+    # any other expression, or a Matrix, is non-dimensionalised as an
+    # expression by uw.non_dimensionalise (UNFILED 41).
+    import sympy
+    from underworld3.function.expressions import UWexpression
+    if isinstance(dimValue, UWexpression):
+        held = dimValue._sym
+        if not isinstance(held, sympy.Basic) or isinstance(held, sympy.Number):
+            return non_dimensionalise(held)
+        import underworld3 as _uw
+        return _uw.non_dimensionalise(dimValue)
+    if isinstance(dimValue, (sympy.Basic, sympy.MatrixBase)):
+        import underworld3 as _uw
+        return _uw.non_dimensionalise(dimValue)
+
     # Check if it's a UWQuantity - extract the underlying Pint quantity
     if hasattr(dimValue, '_pint_qty'):
         if dimValue._pint_qty is not None:
