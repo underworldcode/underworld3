@@ -126,3 +126,26 @@ def test_a_curved_given_normal_with_an_open_boundary_does_not_warn(capsys):
     flagged, out = _solve_and_read(stokes, capsys)
     assert not flagged
     assert WARNING not in out
+
+
+@pytest.mark.mpi(min_size=2)
+def test_a_rank_without_the_exterior_label_still_joins_the_verdict():
+    """The flux verdict is one reduction over the ranks: a rank whose DM holds no
+    ``All_Boundaries`` label (here removed on the last rank) contributes nothing
+    and still reaches the reduction, so no rank waits on it and every rank gets
+    the same answer (before: that rank returned early and the others hung)."""
+    from underworld3.utilities.rotated_bc import _boundary_flux_is_fixed
+
+    mesh = _annulus()
+    stokes = _stokes(mesh, "f", nullspace=True)
+    stokes.bodyforce = _load(mesh)
+    stokes.add_rotated_freeslip_bc(0, "Upper", normal=_radial(mesh))
+    stokes.add_rotated_freeslip_bc(0, "Lower", normal=_radial(mesh))
+    if uw.mpi.rank == uw.mpi.size - 1:
+        mesh.dm.removeLabel("All_Boundaries")
+    verdict = _boundary_flux_is_fixed(stokes, ["Upper", "Lower"])
+    verdicts = uw.mpi.comm.allgather(bool(verdict))
+    assert len(set(verdicts)) == 1, f"the verdict differs between ranks: {verdicts}"
+    # The other ranks hold the label and every exterior facet they see is on a
+    # rotated wall, so the verdict is that the flux is fixed.
+    assert verdicts[0]
