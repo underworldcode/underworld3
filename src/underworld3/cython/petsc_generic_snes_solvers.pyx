@@ -13706,7 +13706,10 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         self._reject_mixed_constraint_mechanisms("solve")
         # a split fault this solver neither ties nor constrains is an open
         # crack: said, not refused (#1099)
-        from underworld3.utilities.fault_contact import warn_unpaired_split_faults
+        from underworld3.utilities.fault_contact import (
+            refuse_essential_conditions_on_law_faults, warn_unpaired_split_faults)
+        # a law and an essential condition on one fault: refused (#940)
+        refuse_essential_conditions_on_law_faults(self)
         warn_unpaired_split_faults(self)
 
         _check_homotopy_value(homotopy)

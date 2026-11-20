@@ -98,6 +98,42 @@ def _collective_raise(problem, error=RuntimeError, **error_kwargs):
         raise exc
 
 
+def refuse_essential_conditions_on_law_faults(solver):
+    """Refuse an essential condition on a fault that also carries a law (#940).
+
+    The interface law (``add_fault_bc``) reads the slip and the normal
+    traction at the fault's pair nodes from pooled local vectors filled by
+    ``globalToLocal``, which does not write a DOF an essential condition
+    constrains. A condition on ``<name>Plus``, ``<name>Minus`` or the fault's
+    own label left those reads to whatever the pool last held (sigma_nn 1e-10
+    or 2.1e4 at one node, for pool contents 0 or 1e3), and the solve then
+    crashed. A law and conditions on the sides are the two ways to drive a
+    split fault, and they are exclusive on one fault. The check reads the
+    solver's registrations only, the same on every rank, so every rank refuses
+    together. Natural conditions are not refused: they constrain no DOF.
+    """
+    split = getattr(solver.mesh, "_fault_point_pairs", None) or {}
+    if not split:
+        return
+    mechanisms = dict(solver._constraint_mechanisms())
+    with_law = set(mechanisms.get("fault_contact") or [])
+    essential = {bc.boundary for bc in mechanisms.get("essential") or []}
+    clashes = [(name, where) for name in sorted(with_law & set(split))
+               for where in (name, f"{name}Plus", f"{name}Minus") if where in essential]
+    if not clashes:
+        return
+    name, where = clashes[0]
+    others = "" if len(clashes) == 1 else f" ({len(clashes) - 1} more: " + ", ".join(
+        f"{w!r} on {n!r}" for n, w in clashes[1:]) + ")"
+    raise ValueError(
+        f"an essential condition on {where!r} constrains the pair nodes of fault {name!r}, "
+        f"which also carries a law (add_fault_bc){others}. The law reads the slip and the "
+        f"normal traction at those nodes, and a constrained node leaves them undefined "
+        f"(#940). Drive the fault one way: either keep the law and put the condition on "
+        f"the domain's walls, or remove add_fault_bc for {name!r} and put a condition on "
+        f"each of {name + 'Plus'!r} and {name + 'Minus'!r} (fault_split.split_fault).")
+
+
 def warn_unpaired_split_faults(solver):
     """Warn, naming each one, about the split faults of the solver's mesh that
     this solver neither ties with a law (``add_fault_bc``) nor constrains on
@@ -622,6 +658,7 @@ def solve_with_fault(solver, verbose=False, zero_init_guess=True, picard=0):
         raise RuntimeError(
             "no fault contact registered on this solver; call "
             "add_frictionless_fault_bc first.")
+    refuse_essential_conditions_on_law_faults(solver)
     warn_unpaired_split_faults(solver)
     info = solve_rotated_freeslip(
         solver, list(getattr(solver, "_rotated_freeslip_bcs", [])),

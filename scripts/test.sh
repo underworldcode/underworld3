@@ -362,6 +362,8 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
 
   # Units system tests (0800-0899: unit-aware functions, arrays, and conversions)
   batch 3 tests/test_08*py
+  # the 09xx decade (#940 opened it): on shard 6, not shard 3, the longest (#1245)
+  batch 6 tests/test_09*py
 
   # Poisson solvers (including Darcy flow)
   batch 4 tests/test_100[0-9]*py tests/test_103*py
