@@ -465,7 +465,10 @@ example, or a cut that puts chord vertices on a wall. The modes then take the
 constraint test like undeclared ones, and the solve warns once, naming the wall
 and the spread of its vertices. The warning also says that the answer may carry a
 rigid rotation. A mesh moved rigidly (translated by `mesh.deform`) still declares
-its rotation about the old centre; the warning tells the user to declare it about
+its rotation about the old centre. The rotation it then carries is not a round-off
+effect: an annulus shifted by 1e-3 carried 0.60 of its v_rms as a rigid rotation
+about the new centre under the custom FMG, and 0.030 under GAMG, with the solve
+reporting converged (serial, #969). The warning tells the user to declare it about
 the new one through `mesh.nullspace_rotations`. The library does not fit a centre
 to the moved walls (#969, ruled 2026-11-12). The verdict, the same for every mode, is in the
 solve's `declared_modes_exempt` entry; which modes were admitted is in
