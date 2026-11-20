@@ -439,6 +439,8 @@ if [ $PARALLEL_ONLY -eq 0 ]; then
   batch 3 tests/parallel/test_0874_mirrored_mesh_cut_parallel.py
   # So are the multigrid levels an adapt keeps, the same at any rank count (#865).
   batch 3 tests/parallel/test_1177_mg_levels_same_at_any_rank_count_parallel.py
+  # So is a P3 velocity's route off native FMG, which PETSc cannot inject (#821).
+  batch 3 tests/parallel/test_0821_stokes_p3_velocity_fmg_parallel.py
   # So is the monotone clamp by the containing cell, the same bound at any rank count for a point inside a cell (#682).
   batch 3 tests/parallel/test_0682_clamp_by_containing_cell_parallel.py
   # So is adapt's node_budget, one cut for the whole mesh at any rank count (#1122).

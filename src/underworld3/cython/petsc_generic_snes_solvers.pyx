@@ -1585,9 +1585,10 @@ class SolverBaseClass(uw_object):
         # time with err62 "Could not locate matching functional for injection"
         # on the common curved-shell cases (issue #276) as well as some flat
         # high-degree ones. The Stokes velocity sub-block (prefix
-        # "fieldsplit_velocity_") is the validated, robust native-FMG path and is
-        # unaffected. So a single-field solver never routes to NATIVE FMG. Two
-        # routes instead (#478):
+        # "fieldsplit_velocity_") is the validated, robust native-FMG path for a
+        # P2 velocity; a velocity of degree 3 or more cannot take it either, and
+        # is gated below (#821). So a single-field solver never routes to NATIVE
+        # FMG. Two routes instead (#478):
         #  * explicit `preconditioner="fmg"` is honoured via custom-P transfers
         #    over the mesh's own dm_hierarchy (no DMCreateInjection anywhere, so
         #    the err62 failure mode cannot arise). The options DB deliberately
@@ -1624,6 +1625,31 @@ class SolverBaseClass(uw_object):
                     reason="declined",
                     detail="single-field native FMG is fragile (#276); "
                            "auto never routes there")
+            want_fmg = False
+
+        # PETSc cannot inject a Lagrange space of degree 3 or more between the
+        # levels of a refined DMPlex: DMCreateInjection fails with error 62 ("Could
+        # not locate matching functional for injection") on simplices and quads,
+        # whatever the node placement, so a P3 velocity on the native route failed
+        # at its first solve (#821). The custom-P transfers need no injection and
+        # converge on the same hierarchy, so a P3+ velocity takes them, as an
+        # explicit single-field "fmg" does: GAMG stays the base configuration, the
+        # custom-P PCMG is installed at the first solve, and a failed transfer
+        # build degrades to GAMG, recorded. This is not a new default for any
+        # discretisation that worked: the native route raised for these.
+        velocity_degree = getattr(getattr(self, "u", None), "degree", 0) or 0
+        if want_fmg and prefix == "fieldsplit_velocity_" and velocity_degree >= 3:
+            self._pc_single_field_geo_requested = True
+            self._record_pc_fallback(
+                "high_degree_velocity_gate",
+                requested=f"native geometric FMG (preconditioner={self._preconditioner!r})",
+                installed="custom-P geometric MG (resolved at first solve)",
+                reason="declined",
+                detail=f"native FMG needs DMCreateInjection, which PETSc cannot build "
+                       f"for a degree-{velocity_degree} velocity on a refined DMPlex "
+                       f"(#821); the velocity block takes custom-P transfers over the "
+                       f"mesh hierarchy instead, degrading to GAMG (recorded) if the "
+                       f"transfer build fails")
             want_fmg = False
 
         # The option VALUES live in utilities.multigrid_options, which is the
