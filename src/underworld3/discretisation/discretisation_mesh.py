@@ -259,6 +259,9 @@ def _from_plexh5(
         viewer.pushFormat(PETSc.Viewer.Format.HDF5_PETSC)
         try:
             sf0 = h5plex.topologyLoad(viewer)
+            # the file whose point numbering sf0 maps from: read_checkpoint
+            # checks a variable file against it (UNFILED 48)
+            sf0.setAttr("_uw_source_file", os.path.realpath(filename))
             h5plex.coordinatesLoad(viewer, sf0)
             # DMPlexCoordinatesLoad restores the coordinates with their stored
             # block size but leaves the embedding dimension at the topological
@@ -1186,6 +1189,9 @@ class Mesh(Stateful, uw_object):
             self.sf = self.sf0.compose(self.sf1)
         else:
             self.sf = self.sf0  # could be None !
+        if not hasattr(self, "_sf_source_file"):
+            self._sf_source_file = (None if self.sf0 is None
+                                    else self.sf0.getAttr("_uw_source_file"))
 
         if self.name is None:
             self.name = "mesh"
@@ -1785,6 +1791,8 @@ class Mesh(Stateful, uw_object):
 
         # The matched SF replaces sf0 (which maps the file to the loaded DM,
         # now discarded); there is no later distribute to compose with.
+        # (it maps the same file's points, so the source recorded at load stands)
+        self._sf_source_file = (None if sf0 is None else sf0.getAttr("_uw_source_file"))
         self.sf0, self.sf1 = sf, None
 
         # Defer the deformed-coordinate stamp: the hierarchy and working dm
@@ -6693,6 +6701,22 @@ class Mesh(Stateful, uw_object):
             iset.destroy()
             subdm.destroy()
 
+    def _petsc_layout_token(self):
+        """This rank's part of the mesh's parallel layout: the chart, the cell
+        count and the point SF's graph. Adding a variable rebuilds the DM but
+        keeps these, and so does moving the mesh. The same token on every rank
+        at a read means a vector this mesh wrote loads directly. Rank-local."""
+        import hashlib
+        pS, pE = self.dm.getChart()
+        cS, cE = self.dm.getHeightStratum(0)
+        digest = hashlib.sha1()
+        if uw.mpi.size > 1:
+            _nroots, leaves, remotes = self.dm.getPointSF().getGraph()
+            for arr in (leaves, remotes):
+                if arr is not None:
+                    digest.update(numpy.ascontiguousarray(arr).tobytes())
+        return (uw.mpi.size, int(pS), int(pE), int(cE - cS), digest.hexdigest())
+
     def _write_petsc_reload_file(self, checkpoint_file, variables, mode="w"):
         """Write compact DMPlex reload metadata and native global vectors."""
 
@@ -6716,6 +6740,13 @@ class Mesh(Stateful, uw_object):
                     self._write_petsc_reload_variable(viewer, var)
 
                 uw.mpi.barrier()
+                # this mesh, in this layout, wrote the file: read_checkpoint on
+                # it may read it back directly (same_layout) when its own point
+                # map is for another file (UNFILED 48)
+                written = getattr(self, "_petsc_reload_written", None)
+                if written is None:
+                    written = self._petsc_reload_written = {}
+                written[os.path.realpath(checkpoint_file)] = self._petsc_layout_token()
             finally:
                 viewer.popGroup()
                 viewer.popFormat()

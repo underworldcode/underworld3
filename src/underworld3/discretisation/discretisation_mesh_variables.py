@@ -240,6 +240,26 @@ def _declared_layout(mesh, num_components, vtype):
     return vtype, num_components, None
 
 
+
+def _point_map_verdict(saved_order, source_file):
+    """``"match"`` when a variable file's saved point order is the order of the
+    topology file a mesh's SF maps from, ``"mismatch"`` when it is not, and
+    ``None`` when either is unknown (a legacy file, a mesh built from a DMPlex).
+    Rank 0 only: it reads ``source_file``."""
+    if saved_order is None or not source_file or not os.path.exists(source_file):
+        return None
+    import h5py
+    with h5py.File(source_file, "r") as source_h5:
+        for key in ("topology/order", "topologies/uw_mesh/topology/order",
+                    "restart/petsc/topologies/uw_mesh/topology/order",
+                    "uw_checkpoint/topologies/uw_mesh/topology/order"):
+            if key in source_h5:
+                source_order = source_h5[key][()]
+                break
+        else:
+            return None
+    return "match" if numpy.array_equal(saved_order, source_order) else "mismatch"
+
 class _BaseMeshVariable(Stateful, uw_object):
     """
     The MeshVariable class generates a variable supported by a finite element mesh and the
@@ -2063,6 +2083,19 @@ class _BaseMeshVariable(Stateful, uw_object):
         if data_name is None:
             data_name = self.clean_name
 
+        # The vector is loaded as stored, so it is this field only in the
+        # layout that wrote it. On another mesh, or another layout, it was the
+        # wrong field from np 2 on, silently (a mesh rebuilt from the
+        # checkpoint: UNFILED 48). Unless this mesh, in this layout, wrote the
+        # file, the read goes through read_checkpoint, which maps the points.
+        if uw.mpi.size > 1:
+            from mpi4py import MPI as _MPI
+            written = getattr(self.mesh, "_petsc_reload_written", None) or {}
+            token = written.get(os.path.realpath(filename))
+            mine = token is not None and token == self.mesh._petsc_layout_token()
+            if not uw.mpi.comm.allreduce(int(mine), op=_MPI.MIN):
+                return self.read_checkpoint(filename, data_name=data_name)
+
         # Ensure vectors are initialized
         if self._lvec is None:
             self._set_vec(available=True)
@@ -2148,11 +2181,48 @@ class _BaseMeshVariable(Stateful, uw_object):
                     direct_vector_group = "/uw_checkpoint"
                 else:
                     direct_vector_group = None
+                saved_order = None
+                if checkpoint_group is not None:
+                    key = f"{checkpoint_group.strip('/')}/topologies/uw_mesh/dms/uw_mesh/order"
+                    if key in checkpoint_h5:
+                        saved_order = checkpoint_h5[key][()]
+            point_map = _point_map_verdict(saved_order, getattr(self.mesh, "_sf_source_file", None))
         else:
             checkpoint_group = None
             direct_vector_group = None
+            point_map = None
         checkpoint_group = uw.mpi.comm.bcast(checkpoint_group, root=0)
         direct_vector_group = uw.mpi.comm.bcast(direct_vector_group, root=0)
+        point_map = uw.mpi.comm.bcast(point_map, root=0)
+
+        # The default path maps the file's points through the mesh's topology SF,
+        # which maps from the file the mesh was loaded from. That holds only when
+        # the variable was written on that topology (a mesh rebuilt from the
+        # checkpoint). The mesh that wrote the file was loaded from another (the
+        # gmsh cache), whose points are numbered differently from np 2 on: the
+        # read then gave the wrong field, silently (UNFILED 48). The file's saved
+        # point order is compared with the source's; on a mismatch the mesh that
+        # wrote the file, unchanged since, reads it back in its own layout, and
+        # any other mesh is refused.
+        if not same_layout and point_map == "mismatch":
+            written = getattr(self.mesh, "_petsc_reload_written", None) or {}
+            token = written.get(os.path.realpath(filename))
+            mine = token is not None and token == self.mesh._petsc_layout_token()
+            # every rank's layout must be the one it wrote with
+            from mpi4py import MPI as _MPI
+            if uw.mpi.comm.allreduce(int(mine), op=_MPI.MIN):
+                same_layout = True
+            else:
+                raise RuntimeError(
+                    f"read_checkpoint({filename!r}): the file's points are numbered "
+                    f"for another topology than the one mesh '{self.mesh.name}' was "
+                    f"loaded from ({self.mesh._sf_source_file}), so its point map "
+                    f"does not apply and the read would give the wrong field. Read "
+                    f"it with read_timestep (the coordinate remap); or rebuild the "
+                    f"mesh from the checkpoint written with this file "
+                    f"(uw.discretisation.Mesh('<name>.mesh.<index>.h5')) and read "
+                    f"into a variable on that; or pass same_layout=True if this "
+                    f"mesh, in this parallel layout, wrote the file.")
         grouped_checkpoint = checkpoint_group is not None
         legacy_direct_vector = direct_vector_group is not None
 
