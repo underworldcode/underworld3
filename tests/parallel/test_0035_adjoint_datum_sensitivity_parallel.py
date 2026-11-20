@@ -41,7 +41,10 @@ def test_a_lid_datum_gradient_matches_central_differences(references, datum):
     # for a dimensional parameter is refused (ruling, 2026-11-13).
     stokes.constitutive_model.Parameters.shear_viscosity_0 = (
         uw.quantity(1e21, "Pa*s") if references else 1.0)
-    stokes.bodyforce = sympy.Matrix([0, -sympy.sin(sympy.pi * x)])
+    # One model length: a coordinate inside a function is divided by a length
+    # in a units model (ruling, 2026-11-19); the argument keeps its value.
+    L = uw.expression("L", uw.quantity(30, "km"), "one model length") if references else 1
+    stokes.bodyforce = sympy.Matrix([0, -sympy.sin(sympy.pi * x / L)])
     lid = alpha * x * (1 - x)
     if datum == "field":
         g = uw.discretisation.MeshVariable("g_lid", mesh, 1, degree=1)
@@ -53,7 +56,7 @@ def test_a_lid_datum_gradient_matches_central_differences(references, datum):
     stokes.tolerance = 1.0e-11
     stokes.solve()
     u = stokes.Unknowns.u
-    misfit = u.sym[1] * sympy.sin(sympy.pi * x) + u.sym[0] * y
+    misfit = u.sym[1] * sympy.sin(sympy.pi * x / L) + u.sym[0] * y
 
     adjoint = stokes.gradient(misfit, parameters=[alpha])["parameters"][alpha]
 

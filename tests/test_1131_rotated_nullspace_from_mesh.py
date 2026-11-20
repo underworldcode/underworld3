@@ -46,7 +46,7 @@ from mpi4py import MPI
 from petsc4py import PETSc
 
 import underworld3 as uw
-from _units_helpers import model_units
+from _units_helpers import model_length, model_units
 from underworld3.adjoint import misfit_duals
 from underworld3.utilities import custom_mg, rotated_bc
 
@@ -708,7 +708,8 @@ def test_an_undeclared_box_in_a_units_model_offers_the_cartesian_rotations():
         stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
         stokes.constitutive_model.Parameters.shear_viscosity_0 = model_units(1.0, "Pa*s")
         x, y, z = mesh.X
-        stokes.bodyforce = sympy.Matrix([[0, 0, sympy.sin(sympy.pi * x) * sympy.sin(sympy.pi * y)]])
+        L = model_length()
+        stokes.bodyforce = sympy.Matrix([[0, 0, sympy.sin(sympy.pi * x / L) * sympy.sin(sympy.pi * y / L)]])
         for wall in ("Bottom", "Top", "Right", "Left", "Front", "Back"):
             stokes.add_rotated_freeslip_bc(0, wall)
         stokes.petsc_use_pressure_nullspace = True
