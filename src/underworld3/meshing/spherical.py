@@ -1041,33 +1041,33 @@ def SegmentofSphere(
     # is called if the general mesh routine does some refinement
     # and the new dm object needs some tweeks
 
-    # TODO(BUG): the callback snaps the walls onto spheres about the origin, not
-    # about ``centroid``; with a centroid off the origin, refinement moves the wall
-    # vertices off their sphere (and the hierarchy holds some back, #946).
+    # The walls are spheres about ``centroid``, so the snap is about it: about
+    # the origin, a centroid off it moved the wall vertices off their sphere at
+    # refinement (#949: Lower vertices 0.25 to 0.55 from the centroid against a
+    # wall at 0.547, with the centroid at (0, 0, 0.3)).
     def spherical_mesh_refinement_callback(dm):
         r_o = radiusOuter
         r_i = radiusInner
 
         import underworld3 as uw
 
-        # print(f"Refinement callback - spherical", flush=True)
-
         c2 = dm.getCoordinatesLocal()
         coords = c2.array.reshape(-1, 3)
-        R = np.sqrt(coords[:, 0] ** 2 + coords[:, 1] ** 2 + coords[:, 2] ** 2)
+        centre = np.asarray(centroid, dtype=float)
+        offset = coords - centre
+        R = np.sqrt((offset ** 2).sum(axis=1))
 
         upperIndices = uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
             dm, "Upper"
         )
-        coords[upperIndices] *= r_o / R[upperIndices].reshape(-1, 1)
-        # print(f"Refinement callback - Upper {len(upperIndices)}", flush=True)
+        coords[upperIndices] = centre + offset[upperIndices] * (
+            r_o / R[upperIndices].reshape(-1, 1))
 
         lowerIndices = uw.cython.petsc_discretisation.petsc_dm_find_labeled_points_local(
             dm, "Lower"
         )
-
-        coords[lowerIndices] *= r_i / (1.0e-16 + R[lowerIndices].reshape(-1, 1))
-        # print(f"Refinement callback - Lower {len(lowerIndices)}", flush=True)
+        coords[lowerIndices] = centre + offset[lowerIndices] * (
+            r_i / (1.0e-16 + R[lowerIndices].reshape(-1, 1)))
 
         c2.array[...] = coords.reshape(-1)
         dm.setCoordinatesLocal(c2)
@@ -1297,7 +1297,11 @@ def CubedSphere(
 
         # TODO(BUG): a crease on a curve between two wall patches is not reached by
         # the surface-by-surface flips below, so refinement holds back vertices off the
-        # wall (simplex, numElements=3: 3 at refinement 1, 47 at refinement 2; #949).
+        # wall (#949). Measured on development 2026-11-21, vertices held: numElements
+        # 2: 0 at refinement 1, 24 at 2; numElements 3: 1 and 21; numElements 4: 0
+        # and 0. The transfinite arrangement does not cure it: "AlternateRight" is
+        # the best (0 and 4 at numElements 3), and numElements 2 at refinement 2
+        # holds 24 under every arrangement.
         for _, surface in gmsh.model.get_entities(2):
             gmsh.model.mesh.setTransfiniteSurface(surface)
             if not simplex:
@@ -1356,6 +1360,15 @@ def CubedSphere(
         dm.setCoordinatesLocal(c2)
 
         return
+
+    # what to do when the refinement holds wall vertices back (#949, item 1):
+    # measured on development, a simplex mesh at numElements 4 held none at
+    # refinement 1 and 2, where 2 and 3 held up to 24
+    spherical_mesh_refinement_callback.remedy = (
+        "CubedSphere(simplex=True) leaves them on a crease between two wall "
+        "patches (#949). numElements=4 held none at refinements 1 and 2 "
+        "(measured); simplex=False has no such crease."
+        if simplex else None)
 
     new_mesh = Mesh(
         uw_filename,

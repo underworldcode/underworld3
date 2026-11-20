@@ -175,8 +175,8 @@ fault_norm.data[mask] = surf2d_3.point_data["Normals"][closest_points[mask]]
 import underworld3.visualisation as vis
 
 pv_mesh = vis.mesh_to_pv_mesh(mesh)
-pv_mesh.point_data["norm"] = uw.function.evalf(fault_norm.sym, pv_mesh.points)
-pv_mesh.point_data["dist"] = uw.function.evalf(fault_dist.sym, pv_mesh.points)
+pv_mesh.point_data["norm"] = uw.function.evaluate(fault_norm.sym, pv_mesh.points).squeeze()
+pv_mesh.point_data["dist"] = uw.function.evaluate(fault_dist.sym, pv_mesh.points).squeeze()
 
 pv_mesh_clipped = pv_mesh.clip(normal="y", origin=(0,0.5,0))
 
@@ -204,8 +204,8 @@ pl.show()
 stokes = uw.systems.Stokes(mesh, velocityField=v_soln, pressureField=p_soln)
 
 stokes.constitutive_model = uw.constitutive_models.TransverseIsotropicFlowModel
-stokes.constitutive_model.Parameters.eta_0 = 1
-stokes.constitutive_model.Parameters.eta_1 = 0 + sympy.Piecewise(
+stokes.constitutive_model.Parameters.shear_viscosity_0 = 1
+stokes.constitutive_model.Parameters.shear_viscosity_1 = 0 + sympy.Piecewise(
     (0.001, fault_dist.sym[0] < mesh.get_min_radius() * 2),
     (1, True))
 
@@ -266,24 +266,24 @@ nodal_strain_rate_inv2.solve()
 import underworld3.visualisation as vis
 
 pv_mesh = vis.mesh_to_pv_mesh(mesh)
-pv_mesh.point_data["norm"] = uw.function.evalf(fault_norm.sym, pv_mesh.points)
-pv_mesh.point_data["D"] = uw.function.evalf(fault_dist.sym, pv_mesh.points)
-pv_mesh.point_data["V"] = uw.function.evalf(v_soln.sym, pv_mesh.points)
-pv_mesh.point_data["Edot"] = uw.function.evalf(strain_rate_inv2.sym, pv_mesh.points)
+pv_mesh.point_data["norm"] = uw.function.evaluate(fault_norm.sym, pv_mesh.points).squeeze()
+pv_mesh.point_data["D"] = uw.function.evaluate(fault_dist.sym, pv_mesh.points).squeeze()
+pv_mesh.point_data["V"] = uw.function.evaluate(v_soln.sym, pv_mesh.points).squeeze()
+pv_mesh.point_data["Edot"] = uw.function.evaluate(strain_rate_inv2.sym, pv_mesh.points).squeeze()
 
 pv_mesh_clip = pv_mesh.clip(normal="y", origin=(0, 0.5, 0))
 
-surf2d.point_data["Edot"] = uw.function.evalf(strain_rate_inv2.sym, surf2d.points)
-surf2d.point_data["V"] = uw.function.evalf(v_soln.sym, surf2d.points)
+surf2d.point_data["Edot"] = uw.function.evaluate(strain_rate_inv2.sym, surf2d.points).squeeze()
+surf2d.point_data["V"] = uw.function.evaluate(v_soln.sym, surf2d.points).squeeze()
 
-surf2d_1.point_data["Edot"] = uw.function.evalf(strain_rate_inv2.sym, surf2d_1.points)
-surf2d_1.point_data["V"] = uw.function.evalf(v_soln.sym, surf2d_1.points)
+surf2d_1.point_data["Edot"] = uw.function.evaluate(strain_rate_inv2.sym, surf2d_1.points).squeeze()
+surf2d_1.point_data["V"] = uw.function.evaluate(v_soln.sym, surf2d_1.points).squeeze()
 
-surf2d_2.point_data["Edot"] = uw.function.evalf(strain_rate_inv2.sym, surf2d_2.points)
-surf2d_2.point_data["V"] = uw.function.evalf(v_soln.sym, surf2d_2.points)
+surf2d_2.point_data["Edot"] = uw.function.evaluate(strain_rate_inv2.sym, surf2d_2.points).squeeze()
+surf2d_2.point_data["V"] = uw.function.evaluate(v_soln.sym, surf2d_2.points).squeeze()
 
-surf2d_3.point_data["Edot"] = uw.function.evalf(strain_rate_inv2.sym, surf2d_3.points)
-surf2d_3.point_data["V"] = uw.function.evalf(v_soln.sym, surf2d_3.points)
+surf2d_3.point_data["Edot"] = uw.function.evaluate(strain_rate_inv2.sym, surf2d_3.points).squeeze()
+surf2d_3.point_data["V"] = uw.function.evaluate(v_soln.sym, surf2d_3.points).squeeze()
 
 
 
@@ -317,9 +317,11 @@ pl.show()
 stokes.F1.sym
 
 # %%
-0 / 0
+if not uw.is_notebook():
+    exit()
 
 # %%
-0 / 0
+if not uw.is_notebook():
+    exit()
 
 # %%

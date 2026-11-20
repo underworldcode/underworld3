@@ -126,8 +126,8 @@ v_x = -r * theta_dot * sympy.sin(th)
 v_y = r * theta_dot * sympy.cos(th)
 
 with meshball.access(v_soln):
-    v_soln.data[:, 0] = uw.function.evaluate(v_x, v_soln.coords)
-    v_soln.data[:, 1] = uw.function.evaluate(v_y, v_soln.coords)
+    v_soln.array[:, 0, 0] = uw.function.evaluate(v_x, v_soln.coords)[:, 0, 0]
+    v_soln.array[:, 0, 1] = uw.function.evaluate(v_y, v_soln.coords)[:, 0, 0]
 
 # %% [markdown]
 """

@@ -636,31 +636,35 @@ scaled_symbols = (
 
 def unwrap(fn, keep_constants=True, return_self=True, apply_scaling=False):
     """
-    Unwrap expressions with optional automatic scaling.
+    Expand every named expression in ``fn`` into plain SymPy (#824).
+
+    Every nested ``uw.expression`` is expanded, and every constant is replaced
+    by a number, in both forms; the parameter names are older than this
+    behaviour and do not describe it.
 
     Parameters:
     -----------
     fn : expression
-        The expression to unwrap
+        The expression to unwrap.
     keep_constants : bool, default=True
-        Whether to keep constants in the unwrapped expression
+        Which numbers the constants become. ``True``: the display form, each
+        constant's value in its own units (a viscosity of 1e22 Pa s gives
+        1e22). ``False``: the solver's form, each constant's value in model
+        units (1e22 Pa s against a 1e21 Pa s reference gives 10). Constants
+        are replaced either way. To keep them as symbols use
+        ``uw.function.expressions.unwrap_expression(fn,
+        mode="symbolic_keep_constants")``, which stops at every named
+        expression with no field or coordinate in it.
     return_self : bool, default=True
-        Whether to return self if no unwrapping is needed
+        ``False`` selects the solver's form, as ``keep_constants=False`` does.
     apply_scaling : bool, default=False
-        Whether to automatically apply scale factors to variables with units
+        Has no effect on the result; kept so existing calls run. The model
+        units form is ``keep_constants=False``.
 
     Example:
-        model = uw.Model()
-        model.set_reference_quantities(mantle_temperature=1500*uw.scaling.units.K)
-
-        temperature = uw.discretisation.MeshVariable("T", mesh, 1, units="K")
-        expr = uw.function.expression("heat", 2 * temperature.sym, "heat equation")
-
-        # Normal unwrap
-        result = uw.unwrap(expr)
-
-        # Unwrap with automatic scaling
-        scaled_result = uw.unwrap(expr, apply_scaling=True)
+        eta = uw.expression(r"\eta_0", uw.quantity(1e22, "Pa*s"), "viscosity")
+        uw.unwrap(eta * v.sym[0])                         # 1e22 * v
+        uw.unwrap(eta * v.sym[0], keep_constants=False)   # 10 * v, with a 1e21 Pa s reference
     """
     from .function.expressions import unwrap as _unwrap
 

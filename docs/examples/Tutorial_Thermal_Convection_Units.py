@@ -98,7 +98,7 @@ print(f"Domain: {domain_width} × {domain_height}")
 
 gravity = 9.81 * uw.units.m / uw.units.s**2
 thermal_expansion = 3e-5 * uw.units.K**-1
-thermal_diffusivity = 1e-6 * uw.units.m**2 / uw.units.s
+thermal_diffusivity = uw.quantity(1e-6, "m**2/s")
 reference_density = 3300 * uw.units.kg / uw.units.m**3
 reference_viscosity = 1e21 * uw.units.Pa * uw.units.s
 
@@ -251,7 +251,8 @@ print("Buoyancy force: ρ₀ α g (T - T_ref) z-hat")
 print("All coefficients are passed to the solver as model-unit numbers")
 
 stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
-stokes.constitutive_model.Parameters.shear_viscosity_0 = visc_model.value
+# a dimensional parameter takes a quantity in a units model; it is one model unit here
+stokes.constitutive_model.Parameters.shear_viscosity_0 = uw.quantity(1e21, "Pa*s")
 
 print(f"Viscosity: {visc_model.value:.2f} (model units)")
 
@@ -272,7 +273,7 @@ thermal = uw.systems.AdvDiffusionSLCN(
 )
 
 thermal.constitutive_model = uw.constitutive_models.DiffusionModel
-thermal.constitutive_model.Parameters.diffusivity = kappa_model.value
+thermal.constitutive_model.Parameters.diffusivity = thermal_diffusivity
 
 print("🌡️  THERMAL SOLVER SETUP:")
 print(f"Thermal diffusivity: {kappa_model.value:.2e} (model units)")
