@@ -4464,6 +4464,26 @@ class SolverBaseClass(uw_object):
                         f"slowly; one that stagnates needs a better preconditioner "
                         f"(#585, #625).", RuntimeWarning)
 
+    def _warn_on_capped_rotated_sub_solves(self, info):
+        """The rotated free-slip loop's counterpart of
+        :meth:`_warn_on_capped_sub_solves` (#625). The loop solves its own
+        fieldsplit-Schur KSP, and counts the applications of each sub-solve that
+        stopped at its cap over the whole solve (``info["sub_capped"]``). One
+        warning per capped block, attributed to the user's ``solve()`` line. Rank 0
+        warns; the counts are the same on every rank, and nothing is collective."""
+        capped = (info or {}).get("sub_capped") or {}
+        for block, count in capped.items():
+            if not count:
+                continue
+            with uw.selective_ranks(0) as selected:
+                if selected:
+                    _warn_from_caller(
+                        f"{type(self).__name__}: the rotated free-slip {block} sub-solve "
+                        f"stopped at its iteration cap without converging, in {count} "
+                        f"application(s), so the solve's convergence does not mean that "
+                        f"block solved. Counts in _rotated_freeslip_info['sub_capped'] "
+                        f"(#625).", RuntimeWarning)
+
     def _refuse_unfactorable_pressure_preconditioner(self):
         """Raise on every rank when the solve failed because the pressure block's
         preconditioner hit a zero pivot (#1059); and make the next solve rebuild a
@@ -6626,6 +6646,7 @@ class SolverBaseClass(uw_object):
         # The warm-start flag must follow the rotated solve's own verdict — the SNES
         # was never run, so the generic reader would latch a stale reason.
         self._record_convergence_status(converged=_rotated_report.converged)
+        self._warn_on_capped_rotated_sub_solves(self._rotated_freeslip_info)
         # raised after the result and the convergence status are recorded, so a
         # caller that catches it reads a failed solve (#907)
         if self._rotated_freeslip_info.get("linear_failure"):
