@@ -5652,6 +5652,18 @@ class SolverBaseClass(uw_object):
         else:
             raise TypeError("Unsupported BC 'components' argument")
 
+        # A condition with every component free (essential or natural) states
+        # nothing. It failed later, inside the discretisation set-up, with an
+        # IndexError (UNFILED 46): it is refused here, where the call is named.
+        if components.size == 0:
+            kind = "essential" if c_type == 'dirichlet' else "natural"
+            raise ValueError(
+                f"the {kind} condition on {label!r} leaves every component "
+                f"free ({conds!r}), so it constrains nothing. A condition must "
+                f"set at least one component: give that component a value, "
+                f"e.g. (None, 0.0) to set only the second; or drop the "
+                f"condition to leave {label!r} free.")
+
         # The value holds one entry per field component, the free ones None:
         # a component named by `components` must have its entry. A shorter
         # value (the deprecated `components=` form with only the named values,
