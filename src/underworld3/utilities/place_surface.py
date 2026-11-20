@@ -5718,8 +5718,10 @@ def _ladder_domain_gate_2d(pts, domain):
 # meshes short of its CAD area, loses a rung vertex, or meets no part of the
 # domain. Measured on a unit square with the rung under a straight wall, at cell
 # sizes 0.3, 0.03 and 0.003 alike: refused at 3e-7 and closer, built at 5e-7 and
-# further, so the limit is the kernel's own (absolute) tolerance, not a fraction
-# of the cell; on an annulus the two refusals of #1090 came at about 3e-8 and
+# further, so the limit is absolute, not a fraction of the cell. It is measured,
+# not tied to a gmsh option: it is above Geometry.Tolerance (1e-8), and which
+# OCC boolean tolerance sets it was not determined. On an annulus the two
+# refusals of #1090 came at about 3e-8 and
 # 3e-7. 1e-5 is twenty times the measured edge. A placement changes only where a
 # rung lies within it of the wall: its band, and a split along it, end one rung
 # earlier. Coordinates are the mesh's own, non-dimensional.
