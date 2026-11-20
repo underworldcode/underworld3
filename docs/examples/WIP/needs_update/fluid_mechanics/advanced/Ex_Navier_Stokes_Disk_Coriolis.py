@@ -1,6 +1,7 @@
+# WIP (#944): moved from docs/examples/fluid_mechanics/advanced/Ex_Navier_Stokes_Disk_Coriolis.py: NavierStokes no longer takes velocityStar_fn.
 # %% [markdown]
 """
-# 🎓 Navier Stokes Disk NoSlipBCs-Coriolis ss
+# 🎓 Navier Stokes Disk Coriolis
 
 **PHYSICS:** fluid_mechanics  
 **DIFFICULTY:** advanced  
@@ -37,20 +38,8 @@ The following is the migrated code with minimal modifications.
 #     name: python3
 # ---
 
+
 # # Cylindrical Stokes with Coriolis term (out of plane)
-#
-# We implement Stokes/Navier-Stokes flow in a disc with rigid bc's and take into account the effect of Coriolis terms
-# $2\Omega \times \mathbf{u}$.
-#
-# The non-linear implementation in Stokes flow relies on the Newton (SNES) solver but the structure of the solution (with strong Coriolis terms)
-# is very different from the Stokes flow pattern (especially the pressure gradients) and so we instead set up a Navier-Stokes problem in which
-# we can down-weight the inertial effects but retain a time-evolution terms to approach the solution. In this example, I am using the same
-# trick as for the SS benchmark case where I try to suppress the time dependent term in the Navier-Stokes equation and replace timesteps with
-# pseudo timesteps.
-#
-#
-# This works best if we spin-up the rotation gradually.
-#
 
 # to fix trame issue
 import nest_asyncio
@@ -64,19 +53,27 @@ import underworld3 as uw
 import numpy as np
 import sympy
 
+
+# +
+model = 1
+
+if model == 1:
+    free_slip = False
+    expt_name = "NS_flow_coriolis_disk_no_slip"
+
+elif model == 2:
+    free_slip = True
+    expt_name = "NS_flow_coriolis_disk_free_slip"
+
 # -
 
 
-expt_name = "SS_NS_flow_coriolis_10"
-
-# +
-import meshio
-
-# meshball = uw.meshes.SphericalShell(
-#     dim=2, radius_outer=1.0, radius_inner=0.0, cell_size=0.05, degree=1, verbose=True
-# )
-
-meshball = uw.meshing.Annulus(radiusOuter=1.0, radiusInner=0.0, cellSize=0.05, degree=1, centre=False, gmsh_verbosity=1)
+meshball = uw.meshing.Annulus(
+    radiusOuter=1.0,
+    radiusInner=0.0,
+    cellSize=0.05,
+    qdegree=3,
+    filename="tmp_CoriolisDisk.msh")
 
 # +
 v_soln = uw.discretisation.MeshVariable("U", meshball, 2, degree=2)
@@ -105,7 +102,8 @@ import sympy
 radius_fn = sympy.sqrt(
     meshball.rvec.dot(meshball.rvec)
 )  # normalise by outer radius if not 1.0
-unit_rvec = meshball.rvec / (1.0e-10 + radius_fn)
+
+unit_rvec = meshball.CoordinateSystem.unit_e_0
 gravity_fn = radius_fn
 
 # Some useful coordinate stuff
@@ -133,48 +131,42 @@ navier_stokes = uw.systems.NavierStokesSwarm(
     meshball,
     velocityField=v_soln,
     pressureField=p_soln,
-    velocityStar_fn=v_star.fn,
-    u_degree=v_soln.degree,
-    p_degree=p_soln.degree,
+    velocityStar_fn=v_star.sym,
     rho=1.0,
     theta=0.5,
     verbose=False,
-    projection=True)
+    projection=False)
 
-navier_stokes.petsc_options.delValue(
-    "ksp_monitor"
-)  # We can flip the default behaviour at some point
-navier_stokes._u_star_projector.petsc_options.delValue("ksp_monitor")
-navier_stokes._u_star_projector.petsc_options["snes_rtol"] = 1.0e-2
-navier_stokes._u_star_projector.petsc_options["snes_type"] = "newtontr"
-navier_stokes._u_star_projector.smoothing = 0.0  # navier_stokes.viscosity * 1.0e-6
-navier_stokes._u_star_projector.penalty = 0.0001
-
-# Here we replace the time dependence with the steady state advective transport term
-# to lean towards steady state solutions
-
-navier_stokes.UF0 = (
-    -navier_stokes.rho * (v_soln.fn - v_soln_1.fn) / navier_stokes.delta_t
-)
-
-# Constant visc
-
+navier_stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel(meshball.dim)
+navier_stokes.constitutive_model.Parameters.viscosity = 1
 navier_stokes.rho = 1000.0
 navier_stokes.theta = 0.5
-navier_stokes.penalty = 0.0
-navier_stokes.viscosity = 1.0
-navier_stokes.bodyforce = 1.0e-32 * meshball.N.i
-navier_stokes._Ppre_fn = 1.0 / (
-    navier_stokes.viscosity + navier_stokes.rho / navier_stokes.delta_t
+navier_stokes.bodyforce = sympy.Matrix([0, 0])
+
+navier_stokes.saddle_preconditioner = (
+    1.0 / navier_stokes.constitutive_model.Parameters.viscosity
+)
+
+hw = 1000.0 / meshball.get_min_radius()
+surface_fn = sympy.exp(-((r - 1.0) ** 2) * hw)
+free_slip_penalty = (
+    1.0e4 * Rayleigh * v_soln.sym.dot(unit_rvec) * unit_rvec * surface_fn
 )
 
 # Velocity boundary conditions
 
-navier_stokes.add_dirichlet_bc((0.0, 0.0), "Upper", (0, 1))
+if free_slip:
+    free_slip_penalty = (
+        1.0e4 * Rayleigh * v_soln.sym.dot(unit_rvec) * unit_rvec * surface_fn
+    )
+else:
+    free_slip_penalty = 0.0
+    navier_stokes.add_dirichlet_bc((0.0, 0.0), "Upper", (0, 1))
+
 navier_stokes.add_dirichlet_bc((0.0, 0.0), "Centre", (0, 1))
 
 v_theta = (
-    navier_stokes.theta * navier_stokes.u.fn
+    navier_stokes.theta * navier_stokes.u.sym
     + (1.0 - navier_stokes.theta) * navier_stokes.u_star_fn
 )
 # -
@@ -185,10 +177,12 @@ t_init = sympy.cos(3 * th)
 # Write density into a variable for saving
 
 with meshball.access(t_soln):
-    t_soln.array[:, 0, 0] = uw.function.evaluate(t_init, t_soln.coords)[:, 0, 0]
-    print(t_soln.data.min(), t_soln.data.max())
+    t_soln.array[:, 0, 0] = uw.function.evaluate(t_init, t_soln.coords, meshball.N)[:, 0, 0]
+
 # -
 navier_stokes.bodyforce = Rayleigh * unit_rvec * t_init  # minus * minus
+navier_stokes.bodyforce -= free_slip_penalty
+
 
 # +
 navier_stokes.solve(timestep=10.0)
@@ -207,9 +201,7 @@ swarm.advection(v_soln.fn, delta_t=navier_stokes.estimate_dt(), corrector=False)
 # +
 # check the mesh if in a notebook / serial
 
-
 def plot_V_mesh(filename):
-
     if uw.mpi.size == 1:
 
         import pyvista as pv
@@ -217,10 +209,10 @@ def plot_V_mesh(filename):
 
         pvmesh = vis.mesh_to_pv_mesh(meshball)
         pvmesh.point_data["T"] = vis.scalar_fn_to_pv_points(pvmesh, t_soln.sym)
-        
+
         velocity_points = vis.meshVariable_to_pv_cloud(navier_stokes.u)
         velocity_points.point_data["V"] = vis.vector_fn_to_pv_points(velocity_points, navier_stokes.u.sym)
-
+        
         pl = pv.Plotter(window_size=(1000, 750))
         pl.camera.SetPosition(0.0001, 0.0001, 4.0)
 
@@ -232,36 +224,29 @@ def plot_V_mesh(filename):
             show_edges=True,
             use_transparency=False,
             opacity=0.5)
-        pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=0.05)
+        pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=0.2)
 
         pl.screenshot(
             filename="{}.png".format(filename),
             window_size=(2560, 2560),
             return_img=False)
 
-        pl.close()
 
-        del pl
+# +
+ts = 0
+swarm_loop = 10
 
-
+Omega = 2.0 * meshball.N.k
+navier_stokes.bodyforce = Rayleigh * unit_rvec * t_init  # minus * minus
+navier_stokes.bodyforce -= free_slip_penalty
+navier_stokes.bodyforce -= (
+    2.0 * navier_stokes.rho * meshball.vector.cross(Omega, v_theta)
+)
 # -
 
 
-ts = 0
-swarm_loop = 5
-
-
-# +
-
-for step in range(0, 50):
-
-    Omega = 10.0 * meshball.N.k * min(ts / 25, 1.0)
-    navier_stokes.bodyforce = Rayleigh * unit_rvec * t_init  # minus * minus
-    navier_stokes.bodyforce -= (
-        2.0 * navier_stokes.rho * sympy.vector.cross(Omega, v_theta)
-    )
-
-    delta_t = 10.0 * navier_stokes.estimate_dt()
+for step in range(0, 250):
+    delta_t = 5.0 * navier_stokes.estimate_dt()
 
     navier_stokes.solve(timestep=delta_t, zero_init_guess=False)
 
@@ -290,12 +275,7 @@ for step in range(0, 50):
     idx = np.where(remeshed.data == 1)[0]
     v_star.data[idx] = uw.function.evaluate(v_soln.fn, swarm._particle_coordinates.data[idx])
 
-    if uw.mpi.rank == 0:
-        print(
-            "Iteration (pseudo timestep) {}, dt {}, deltaV {}".format(
-                ts, delta_t, deltaV
-            )
-        )
+    uw.pprint("Timestep {}, dt {}, deltaV {}".format(ts, delta_t, deltaV))
 
     if ts % 1 == 0:
         # nodal_vorticity_from_v.solve()
@@ -308,27 +288,21 @@ for step in range(0, 50):
         # vorticity.save(savefile)
         # meshball.generate_xdmf(savefile)
 
-    navier_stokes._u_star_projector.smoothing = navier_stokes.viscosity * 1.0e-6
-
     ts += 1
 
 
-# +
 # check the mesh if in a notebook / serial
-
-
 if uw.mpi.size == 1:
-
+    
     import pyvista as pv
     import underworld3.visualisation as vis
 
     pvmesh = vis.mesh_to_pv_mesh(meshball)
     pvmesh.point_data["T"] = vis.scalar_fn_to_pv_points(pvmesh, t_soln.sym)
-    pvmesh.point_data["P"] = vis.scalar_fn_to_pv_points(pvmesh, p_soln.sym)
 
     velocity_points = vis.meshVariable_to_pv_cloud(navier_stokes.u)
     velocity_points.point_data["V"] = vis.vector_fn_to_pv_points(velocity_points, navier_stokes.u.sym)
-
+    
     pl = pv.Plotter(window_size=(1000, 750))
 
     # pl.add_mesh(pvmesh,'Black', 'wireframe')
@@ -337,19 +311,17 @@ if uw.mpi.size == 1:
         cmap="coolwarm",
         edge_color="Black",
         show_edges=True,
-        scalars="P",
         use_transparency=False,
         opacity=0.5)
-    pl.add_arrows(velocity_points.points, velocity_points.point_data["V"], mag=0.033)
+    pl.add_arrows(arrow_loc, arrow_length, mag=0.2)
 
     pl.show(cpos="xy")
-# -
 
+
+pl.camera.GetClippingRange()
 
 ((v_inertial - usol) ** 2).mean()
 
 v_inertial.max()
-
-#
 
 # #

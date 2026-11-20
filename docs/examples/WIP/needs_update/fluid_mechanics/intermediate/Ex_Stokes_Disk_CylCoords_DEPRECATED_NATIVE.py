@@ -1,3 +1,4 @@
+# WIP (#944): moved from docs/examples/fluid_mechanics/intermediate/Ex_Stokes_Disk_CylCoords_DEPRECATED_NATIVE.py: native coordinate systems were removed in ee29df2a.
 # %% [markdown]
 """
 # 🔬 Stokes Disk CylCoords

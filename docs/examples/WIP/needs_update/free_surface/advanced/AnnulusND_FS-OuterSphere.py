@@ -1,3 +1,4 @@
+# WIP (#944): moved from docs/examples/free_surface/advanced/AnnulusND_FS-OuterSphere.py: uses FSSA with the factory boundary normals on a deformed mesh, which the library refuses.
 # %% [markdown]
 """
 # 🎓 AnnulusND FS-OuterSphere

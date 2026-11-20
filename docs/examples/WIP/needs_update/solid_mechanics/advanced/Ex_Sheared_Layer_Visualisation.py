@@ -1,3 +1,4 @@
+# WIP (#944): moved from docs/examples/solid_mechanics/advanced/Ex_Sheared_Layer_Visualisation.py: reads swarms with Swarm.load, which is gone.
 # %% [markdown]
 """
 # 🎓 Sheared Layer Visualisation
