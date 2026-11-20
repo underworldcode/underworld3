@@ -317,8 +317,11 @@ def UnstructuredSimplexBox(
         gmsh.finalize()
 
     def box_return_coords_to_bounds(coords):
-
-        epsilon = 1.0e-3
+        # Onto the boundary, as StructuredQuadBox does: a continuous map. An
+        # inset (it was 1e-3 inside) moves a point that is a round-off outside
+        # by the inset and leaves one a round-off inside where it is, so a
+        # trace-back foot on a free-slip wall, where v.n is round-off, landed
+        # either side of a 1e-3 jump.
 
         x00s = coords[:, 0] < minCoords[0]
         x01s = coords[:, 0] > maxCoords[0]
@@ -329,14 +332,14 @@ def UnstructuredSimplexBox(
             x20s = coords[:, 2] < minCoords[2]
             x21s = coords[:, 2] > maxCoords[2]
 
-        coords[x00s, 0] = minCoords[0] + epsilon
-        coords[x01s, 0] = maxCoords[0] - epsilon
-        coords[x10s, 1] = minCoords[1] + epsilon
-        coords[x11s, 1] = maxCoords[1] - epsilon
+        coords[x00s, 0] = minCoords[0]
+        coords[x01s, 0] = maxCoords[0]
+        coords[x10s, 1] = minCoords[1]
+        coords[x11s, 1] = maxCoords[1]
 
         if dim == 3:
-            coords[x20s, 2] = minCoords[2] + epsilon
-            coords[x21s, 2] = maxCoords[2] - epsilon
+            coords[x20s, 2] = minCoords[2]
+            coords[x21s, 2] = maxCoords[2]
 
         return coords
 
@@ -896,21 +899,12 @@ def BoxInternalBoundary(
             gmsh.finalize()
 
     def box_return_coords_to_bounds(coords):
-        x00s = coords[:, 0] < minCoords[0]
-        x01s = coords[:, 0] > maxCoords[0]
-        x10s = coords[:, 1] < minCoords[1]
-        x11s = coords[:, 1] > maxCoords[1]
-
-        coords[x00s, :] = minCoords[0]
-        coords[x01s, :] = maxCoords[0]
-        coords[x10s, :] = minCoords[1]
-        coords[x11s, :] = maxCoords[1]
-
-        if dim == 3:
-            x20s = coords[:, 1] < minCoords[2]
-            x21s = coords[:, 1] > maxCoords[2]
-            coords[x20s, :] = minCoords[2]
-            coords[x21s, :] = maxCoords[2]
+        # Onto the wall the point left by, that coordinate only (as
+        # StructuredQuadBox): every coordinate used to be set to the bound, and
+        # the z bounds were tested against the y column.
+        for axis in range(dim):
+            coords[coords[:, axis] < minCoords[axis], axis] = minCoords[axis]
+            coords[coords[:, axis] > maxCoords[axis], axis] = maxCoords[axis]
 
         return coords
 
@@ -924,7 +918,7 @@ def BoxInternalBoundary(
         useMultipleTags=True,
         useRegions=False,  # BoxInternalBoundary uses _dm_unstack_bcs instead
         markVertices=True,
-        refinement=0.0,
+        refinement=refinement,
         refinement_callback=None,
         return_coords_to_bounds=box_return_coords_to_bounds,
         units=units,
