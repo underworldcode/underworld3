@@ -7949,6 +7949,11 @@ class Mesh(Stateful, uw_object):
         skeletonization array to decide inside from outside, and check the
         points close to the boundary against the cells.
 
+        The claim is not exclusive: a point on a partition seam lies in the
+        cells of every rank on that seam, and each of them claims it. To give
+        each point to one rank, use :meth:`_points_owned_here`, as
+        :meth:`Swarm.add_particles_with_coordinates` does.
+
         Parameters
         ----------
         points : array-like
@@ -7961,6 +7966,62 @@ class Mesh(Stateful, uw_object):
 
         """
         return self._classify_points_in_domain(points, strict_validation)[0]
+
+    def _points_owned_here(self, points, strict_validation=True):
+        """Which of ``points`` this rank owns, when every rank is given the
+        same points: each point :meth:`points_in_domain` claims goes to the
+        lowest rank that claims it, so exactly one rank owns it.
+
+        Only a point in a cell on a partition seam can be claimed by more than
+        one rank (the cells of different ranks meet only there), so only those
+        are compared. Each rank gathers the claimed points in its seam cells,
+        and a point is the same point on two ranks when its coordinates are
+        identical: the ranks were given the same array. A rank given a point
+        no other rank was given keeps it, so pre-partitioned input is kept as
+        it was. A point no rank claims is owned by none, as before.
+
+        Collective: every rank reaches the seam-point reduction and the gather,
+        an empty rank included.
+        """
+        claimed, cells = self._classify_points_in_domain(points, strict_validation)
+        claimed = numpy.asarray(claimed, dtype=bool)
+        if self.dm.getComm().getSize() == 1:
+            return claimed
+
+        from underworld3.utilities._plex_topology import closure_points
+
+        shared = self._seam_points()                             # collective
+        v0, v1 = self.dm.getDepthStratum(0)
+        seam_vertices = numpy.array(sorted(p for p in shared if v0 <= p < v1),
+                                    dtype=numpy.int64)
+        cells = numpy.asarray(cells, dtype=numpy.int64)
+        # A claimed point whose cell this rank did not locate (the sign test of a
+        # mesh that is not straight-sided simplices) is compared too.
+        compared = claimed & (cells < 0)
+        located = numpy.flatnonzero(claimed & (cells >= 0))
+        if located.shape[0] > 0 and seam_vertices.shape[0] > 0:
+            owning, where = numpy.unique(cells[located], return_inverse=True)
+            vertices = closure_points(self.dm, owning, 0)
+            on_seam = numpy.isin(vertices, seam_vertices).any(axis=1)
+            compared[located[on_seam[where]]] = True
+
+        # Shaped by the mesh, not the input: a rank given no points has an
+        # empty array, and must still reach the gather below.
+        mine = numpy.asarray(points, dtype=float).reshape(-1, self.cdim)[compared]
+        counts = numpy.array(uw.mpi.comm.allgather(int(mine.shape[0])), dtype=int)
+        if counts.sum() == 0:
+            return claimed
+        every = numpy.concatenate(uw.mpi.comm.allgather(mine), axis=0)
+        rank_of = numpy.repeat(numpy.arange(counts.shape[0]), counts)
+        _, group = numpy.unique(every, axis=0, return_inverse=True)
+        group = group.reshape(-1)
+        owner = numpy.full(group.max() + 1, counts.shape[0], dtype=int)
+        numpy.minimum.at(owner, group, rank_of)
+        offset = int(counts[:uw.mpi.rank].sum())
+        here = group[offset:offset + mine.shape[0]]
+        owned = claimed.copy()
+        owned[numpy.flatnonzero(compared)] = owner[here] == uw.mpi.rank
+        return owned
 
     def _classify_points_in_domain(self, points, strict_validation=True, exact_location=False):
         """In/out classification, keeping the owning cells it had to locate.
