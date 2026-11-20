@@ -1,3 +1,4 @@
+# WIP (#944): moved from docs/examples/free_surface/advanced/AnnulusFS.py: written for the old evaluate shapes and mesh-mover API, updated only in part.
 # %% [markdown]
 """
 # 🎓 AnnulusFS

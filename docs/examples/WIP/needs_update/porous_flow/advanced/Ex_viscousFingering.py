@@ -1,3 +1,4 @@
+# WIP (#944): moved from docs/examples/porous_flow/advanced/Ex_viscousFingering.py: particle recycling (Swarm recycle_rate > 1) is not implemented.
 # ---
 # jupyter:
 #   jupytext:

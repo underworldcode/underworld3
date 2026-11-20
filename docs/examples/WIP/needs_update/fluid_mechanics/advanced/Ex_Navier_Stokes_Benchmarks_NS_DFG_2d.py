@@ -1,3 +1,4 @@
+# WIP (#944): moved from docs/examples/fluid_mechanics/advanced/Ex_Navier_Stokes_Benchmarks_NS_DFG_2d.py: particle recycling (Swarm recycle_rate > 1) is not implemented.
 # ---
 # jupyter:
 #   jupytext:

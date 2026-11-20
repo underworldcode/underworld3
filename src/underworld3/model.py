@@ -45,6 +45,16 @@ except ImportError:
         pass
 
 
+
+# The SI base unit of each fundamental dimension. Any of them the model has no
+# reference for takes it as its scale: amount of substance always, and length,
+# mass, time or temperature when the reference quantities do not fix it (see
+# Model.get_scale_for_dimensionality).
+_SI_BASE_UNITS = {
+    "length": "meter", "mass": "kilogram", "time": "second", "temperature": "kelvin",
+    "substance": "mole", "current": "ampere", "luminosity": "candela",
+}
+
 class _AutoSentinel:
     """Sentinel for "the user has not said where the transcript goes".
 
@@ -3654,6 +3664,16 @@ class Model(PintNativeModelMixin, BaseModel):
 
             if scale_key in scales:
                 result = result * (scales[scale_key] ** power)
+            elif scale_key in _SI_BASE_UNITS:
+                # No reference for this dimension (amount of substance always;
+                # any other fundamental dimension the references do not fix, a
+                # temperature with no temperature reference among them): its
+                # scale is one SI base unit.
+                # Raising here sent every caller to a raw-number fallback, so an
+                # activation energy over the gas constant (J/mol over
+                # J/(mol K)) never met the temperature reference: 1000 times
+                # too large against 1000 K (UNFILED item 17).
+                result = result * (ureg.Quantity(1.0, _SI_BASE_UNITS[scale_key]) ** power)
             else:
                 available = list(scales.keys())
                 raise ValueError(
