@@ -5404,6 +5404,9 @@ class SolverBaseClass(uw_object):
         label: string
             The label name to apply the BC. To find a label/boundary name run something like
             mesh.view()
+        A quantity in an essential condition on a field with units must have the
+        field's dimension, or it is refused; on a field without units it is not
+        checked, and is converted to model units.
         components: array_like, single int value or None.
             (optional) tuple, or int of active conds components to use. Use 'None' for all conds to be used.
             If 'None' and components in 'cond' equal sympy.oo or -sympy.oo those components won't be used.
@@ -5431,6 +5434,7 @@ class SolverBaseClass(uw_object):
         # rescaled below.
         units_model = uw.get_default_model().has_units()
         in_model_units = set()
+        n_values = len(conds) if isinstance(conds, (tuple, list)) else 1
 
         def quantity_value(q, index):
             import pint
@@ -5446,12 +5450,15 @@ class SolverBaseClass(uw_object):
                          else getattr(self.Unknowns, "p", None) if f_id == 1 else None)
                 field_units = getattr(field, "units", None)
                 if field_units is not None:
-                    field_dim = (1 * uw.units(str(field_units))).dimensionality
+                    # the unit itself, not 1 * unit: an offset unit (degC)
+                    # cannot be multiplied
+                    field_dim = uw.units(str(field_units)).dimensionality
                     if si.dimensionality != field_dim:
+                        where = (f" component {index}" if n_values > 1 else "")
                         raise ValueError(
-                            f"add_dirichlet_bc on '{label}': the value {q} has the "
-                            f"dimension {si.dimensionality}, and the field "
-                            f"'{getattr(field, 'name', field)}' is in {field_units}, "
+                            f"essential (Dirichlet) condition on '{label}'{where}: the "
+                            f"value {q} has the dimension {si.dimensionality}, and the "
+                            f"field '{getattr(field, 'name', field)}' is in {field_units}, "
                             f"{field_dim}. Give the value in the field's units.")
             if not units_model:
                 return si.magnitude

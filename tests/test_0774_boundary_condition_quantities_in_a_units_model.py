@@ -132,3 +132,23 @@ def test_a_pure_number_on_a_field_without_units_is_accepted(units_model):
     poisson = uw.systems.Poisson(mesh)
     poisson.add_dirichlet_bc(0.5, "Left")
     assert _recorded(poisson.essential_bcs[-1]) == pytest.approx([0.5])
+
+
+@pytest.mark.parametrize("value", [uw.quantity(1300, "K"), uw.quantity(1026.85, "degC"),
+                                   uw.quantity(0, "degC")], ids=["K", "degC", "0 degC"])
+def test_a_temperature_on_a_celsius_field_is_accepted(units_model, value):
+    """An offset unit: the field's dimension is read from the unit itself."""
+    mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0),
+                                             cellSize=0.25)
+    T = uw.discretisation.MeshVariable("T_c", mesh, 1, degree=1, units="degC")
+    poisson = uw.systems.Poisson(mesh, u_Field=T)
+    poisson.add_dirichlet_bc(value, "Left")
+
+
+def test_a_length_on_a_celsius_field_is_refused(units_model):
+    mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0),
+                                             cellSize=0.25)
+    T = uw.discretisation.MeshVariable("T_c2", mesh, 1, degree=1, units="degC")
+    poisson = uw.systems.Poisson(mesh, u_Field=T)
+    with pytest.raises(ValueError, match=r"essential \(Dirichlet\) condition on 'Left'"):
+        poisson.add_dirichlet_bc(uw.quantity(5, "km"), "Left")
