@@ -4492,6 +4492,26 @@ class SolverBaseClass(uw_object):
                         f"slowly; one that stagnates needs a better preconditioner "
                         f"(#585, #625).", RuntimeWarning)
 
+    def _warn_on_capped_rotated_sub_solves(self, info):
+        """The rotated free-slip loop's counterpart of
+        :meth:`_warn_on_capped_sub_solves` (#625). The loop solves its own
+        fieldsplit-Schur KSP, and counts the applications of each sub-solve that
+        stopped at its cap over the whole solve (``info["sub_capped"]``). One
+        warning per capped block, attributed to the user's ``solve()`` line. Rank 0
+        warns; the counts are the same on every rank, and nothing is collective."""
+        capped = (info or {}).get("sub_capped") or {}
+        for block, count in capped.items():
+            if not count:
+                continue
+            with uw.selective_ranks(0) as selected:
+                if selected:
+                    _warn_from_caller(
+                        f"{type(self).__name__}: the rotated free-slip {block} sub-solve "
+                        f"stopped at its iteration cap without converging, in {count} "
+                        f"application(s), so the solve's convergence does not mean that "
+                        f"block solved. Counts in _rotated_freeslip_info['sub_capped'] "
+                        f"(#625).", RuntimeWarning)
+
     def _refuse_unfactorable_pressure_preconditioner(self):
         """Raise on every rank when the solve failed because the pressure block's
         preconditioner hit a zero pivot (#1059); and make the next solve rebuild a
@@ -5533,6 +5553,9 @@ class SolverBaseClass(uw_object):
         label: string
             The label name to apply the BC. To find a label/boundary name run something like
             mesh.view()
+        A quantity in an essential condition on a field with units must have the
+        field's dimension, or it is refused; on a field without units it is not
+        checked, and is converted to model units.
         components: array_like, single int value or None.
             (optional) tuple, or int of active conds components to use. Use 'None' for all conds to be used.
             If 'None' and components in 'cond' equal sympy.oo or -sympy.oo those components won't be used.
@@ -5549,29 +5572,73 @@ class SolverBaseClass(uw_object):
         import underworld3 as uw
 
         # process conds and error check
+        #
+        # A quantity (uw.quantity, or a pint Quantity) is a number with units.
+        # In a model with reference quantities the condition is applied in
+        # model units, so the quantity is non-dimensionalised, as the body force
+        # is: 5 mm/yr against a 10 mm/yr reference is 0.5. Its SI magnitude
+        # (1.6e-10 m/s) read as a model value was 3e9 off (#1238). Without
+        # reference quantities, or in a dimension the model has no reference
+        # for, the model works in SI, and the SI magnitude is the value. Entries converted here are in their final form and are not
+        # rescaled below.
+        units_model = uw.get_default_model().has_units()
+        in_model_units = set()
+        n_values = len(conds) if isinstance(conds, (tuple, list)) else 1
+
+        def quantity_value(q, index):
+            import pint
+            if isinstance(q, pint.Quantity):
+                q = uw.quantity(q.magnitude, str(q.units))
+            si = q._pint_qty.to_base_units()
+            if c_type == 'dirichlet':
+                # The value of an essential condition is a value of the field: on
+                # a field with units its dimension must be the field's. 1 MPa on
+                # a velocity wall is refused, not converted to a believable
+                # number (0.0316) in the wrong units.
+                field = (self.Unknowns.u if f_id == 0
+                         else getattr(self.Unknowns, "p", None) if f_id == 1 else None)
+                field_units = getattr(field, "units", None)
+                if field_units is not None:
+                    # the unit itself, not 1 * unit: an offset unit (degC)
+                    # cannot be multiplied
+                    field_dim = uw.units(str(field_units)).dimensionality
+                    if si.dimensionality != field_dim:
+                        where = (f" component {index}" if n_values > 1 else "")
+                        raise ValueError(
+                            f"essential (Dirichlet) condition on '{label}'{where}: the "
+                            f"value {q} has the dimension {si.dimensionality}, and the "
+                            f"field '{getattr(field, 'name', field)}' is in {field_units}, "
+                            f"{field_dim}. Give the value in the field's units.")
+            if not units_model:
+                return si.magnitude
+            try:
+                uw.get_default_model().get_scale_for_dimensionality(si.dimensionality)
+            except ValueError:
+                # The model has no reference for this dimension (a temperature
+                # with only length, mass and time given): a field in it runs at
+                # scaling coefficient 1, in SI (it warns when made), so the SI
+                # magnitude is the model value, as before.
+                return si.magnitude
+            nd = uw.non_dimensionalise(q)
+            in_model_units.add(index)
+            return float(nd.magnitude if hasattr(nd, "magnitude") else nd)
+
+        def is_quantity(x):
+            import pint
+            return (isinstance(x, pint.Quantity)
+                    or (isinstance(x, uw.function.quantities.UWQuantity)
+                        and hasattr(x, "_pint_qty")))
+
         if isinstance(conds, (tuple, list)):
-            # remove all None for sympy.oo, and handle UWQuantity/Pint Quantity objects
+            # None is a free component (sympy.oo); a quantity becomes its value
             processed_conds = []
-            for x in conds:
+            for index, x in enumerate(conds):
                 if x is None:
                     processed_conds.append(sympy.oo)
+                elif is_quantity(x):
+                    processed_conds.append(quantity_value(x, index))
                 elif isinstance(x, uw.function.quantities.UWQuantity):
-                    # Convert UWQuantity to SI base units (dimensionless number)
-                    if hasattr(x, '_pint_qty'):
-                        # Use Pint to convert to base units (m, s, kg, etc.)
-                        base_qty = x._pint_qty.to_base_units()
-                        processed_conds.append(base_qty.magnitude)
-                    else:
-                        # Fallback: use the value as-is
-                        processed_conds.append(x.value)
-                elif hasattr(x, 'magnitude') and hasattr(x, 'units'):
-                    # Direct Pint Quantity (from 300 * uw.units("K"))
-                    import pint
-                    if isinstance(x, pint.Quantity):
-                        base_qty = x.to_base_units()
-                        processed_conds.append(base_qty.magnitude)
-                    else:
-                        processed_conds.append(x)
+                    processed_conds.append(x.value)
                 else:
                     processed_conds.append(x)
             conds = processed_conds
@@ -5579,23 +5646,12 @@ class SolverBaseClass(uw_object):
             conds = (conds,)
         elif isinstance(conds, int):
             conds = (conds,)
+        elif is_quantity(conds):
+            conds = (quantity_value(conds, 0),)
         elif isinstance(conds, uw.function.quantities.UWQuantity):
-            # Single UWQuantity value
-            if hasattr(conds, '_pint_qty'):
-                # Use Pint to convert to base units
-                base_qty = conds._pint_qty.to_base_units()
-                conds = (base_qty.magnitude,)
-            else:
-                # Fallback: use the value as-is
-                conds = (conds.value,)
+            conds = (conds.value,)
         elif hasattr(conds, 'magnitude') and hasattr(conds, 'units'):
-            # Single Pint Quantity (from 300 * uw.units("K"))
-            import pint
-            if isinstance(conds, pint.Quantity):
-                base_qty = conds.to_base_units()
-                conds = (base_qty.magnitude,)
-            else:
-                raise ValueError(f"Unknown quantity type: {type(conds)}")
+            raise ValueError(f"Unknown quantity type: {type(conds)}")
         elif isinstance(conds, sympy.Matrix):
             conds = conds.T
         else:
@@ -5700,8 +5756,11 @@ class SolverBaseClass(uw_object):
                         return False
 
                     scaled_conds = []
-                    for val in conds:
-                        if val == sympy.oo or val == -sympy.oo:
+                    for index, val in enumerate(conds):
+                        if index in in_model_units:
+                            # a quantity, already non-dimensionalised above
+                            scaled_conds.append(val)
+                        elif val == sympy.oo or val == -sympy.oo:
                             # Don't scale infinity (unconstrained components)
                             scaled_conds.append(val)
                         elif is_numeric_only(val):
@@ -6604,6 +6663,12 @@ class SolverBaseClass(uw_object):
         cdef DM _time_dm
         if not (self._rotated_freeslip_bcs or self._fault_contact_faults):
             return False
+        # every solver's rotated path passes here (a vector projection with a
+        # law included); the check reads registrations only, the same on every
+        # rank (#940)
+        from underworld3.utilities.fault_contact import (
+            refuse_essential_conditions_on_law_faults)
+        refuse_essential_conditions_on_law_faults(self)
         # Rotated strong free-slip: delegate to the rotated_bc module (per-node DOF
         # rotation + strong v_n=0 + reaction=sigma_nn). Handles the whole assemble/
         # solve/rotate-back/gauge-removal; stashes info for boundary_normal_traction.
@@ -6654,6 +6719,7 @@ class SolverBaseClass(uw_object):
         # The warm-start flag must follow the rotated solve's own verdict — the SNES
         # was never run, so the generic reader would latch a stale reason.
         self._record_convergence_status(converged=_rotated_report.converged)
+        self._warn_on_capped_rotated_sub_solves(self._rotated_freeslip_info)
         # raised after the result and the convergence status are recorded, so a
         # caller that catches it reads a failed solve (#907)
         if self._rotated_freeslip_info.get("linear_failure"):
@@ -13847,7 +13913,10 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         self._reject_mixed_constraint_mechanisms("solve")
         # a split fault this solver neither ties nor constrains is an open
         # crack: said, not refused (#1099)
-        from underworld3.utilities.fault_contact import warn_unpaired_split_faults
+        from underworld3.utilities.fault_contact import (
+            refuse_essential_conditions_on_law_faults, warn_unpaired_split_faults)
+        # a law and an essential condition on one fault: refused (#940)
+        refuse_essential_conditions_on_law_faults(self)
         warn_unpaired_split_faults(self)
 
         _check_homotopy_value(homotopy)
