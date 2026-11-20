@@ -753,10 +753,13 @@ def _moved_wrap(level, dm, fields, pairs):
 
 
 def _carried_reference(moved, carried, comm):
-    """The reference vertices of the moved level, which rode the move
-    (``fault_mg.reference_vertices`` of the level it was). ``carried`` is the
-    level's coordinates and its reference, vertex by vertex, as
-    ``redistribute_by_assignment`` returned them. The coordinates rode only to
+    """The vertex fields that rode the move of a level, in the moved level's
+    vertex order: its reference vertices (``fault_mg.reference_vertices`` of
+    the level it was) and, for a level that moved since it was made, its
+    transfer geometry and as-built vertices. ``carried`` is the level's
+    coordinates followed by those fields, vertex by vertex, as
+    ``redistribute_by_assignment`` returned them; the fields after the
+    coordinates are returned. The coordinates rode only to
     be compared with the ones the moved mesh holds, so a reference in another
     vertex order cannot be taken silently. Collective."""
     from underworld3.utilities.fault_mg import _cell_vertex_table
@@ -764,13 +767,13 @@ def _carried_reference(moved, carried, comm):
     # refusal below is reached by every rank (#874)
     detail = ""
     try:
-        was, reference = carried
+        was, rest = carried[0], list(carried[1:])
         vxy, _cv = _cell_vertex_table(moved)
         wrong = int(vxy.shape != was.shape)
         if not wrong and vxy.size:
             wrong = int(np.abs(vxy - was).max() > 1e-10 * (1.0 + np.abs(vxy).max()))
     except Exception as err:   # sanctioned: refused on every rank just below
-        wrong, reference = 1, None
+        wrong, rest = 1, None
         detail = f" ({type(err).__name__}: {err})"
     if comm.allreduce(wrong):
         details = [d for d in comm.allgather(detail) if d]
@@ -778,7 +781,7 @@ def _carried_reference(moved, carried, comm):
             "addon_partition internal: the vertices of a moved level are not "
             "in the order its reference coordinates travelled in"
             + (details[0] if details else "") + ".")
-    return reference
+    return rest
 
 
 # --------------------------------------------------------------------------- #
@@ -1026,8 +1029,21 @@ def _partition_addon_body(mesh, region_marks, layers, tolerance, verbose, comm):
                 f"addon_partition internal: level {l} holds the geometry it "
                 f"was made in on some ranks and not on others, or with other "
                 f"rows than the level has vertices (per rank: {held}).")
-        riding = (None if reference is None
-                  else [_cell_vertex_table(lev)[0], reference])
+        # A level that moved since it was made carries its own record of where
+        # it was made (its transfer geometry and as-built vertices) to the copy:
+        # the copy is the same mesh redistributed, so it is read where the level
+        # was made, as the level itself is on one rank (#1091 case 2a). A rank
+        # holds the flag the move set on every rank; checked below.
+        moved_here = bool(getattr(lev, "_moved_since_built", False)
+                          and getattr(lev, "_transfer_vertices", None) is not None)
+        if len(set(agreed_allgather(comm, moved_here))) > 1:
+            raise RuntimeError(
+                f"addon_partition internal: level {l} has moved since it was "
+                f"made on some ranks and not on others.")
+        extra = ([] if reference is None else [reference]) + (
+            [np.asarray(lev._transfer_vertices), np.asarray(lev._as_built_vertices)]
+            if moved_here else [])
+        riding = [_cell_vertex_table(lev)[0]] + extra if extra else None
         old_pairs = getattr(lev, "_fault_point_pairs", None)
         agree()
         dm, new_pairs, dropped, new_fields, carried = redistribute_by_assignment(
@@ -1042,8 +1058,15 @@ def _partition_addon_body(mesh, region_marks, layers, tolerance, verbose, comm):
         agree()
         moved.append(_moved_wrap(lev, dm, new_fields, new_pairs))
         agree()
-        references.append(None if carried is None
-                          else _carried_reference(moved[-1], carried, comm))
+        rest = (None if carried is None
+                else _carried_reference(moved[-1], carried, comm))
+        references.append(None if reference is None else rest[0])
+        if moved_here:
+            # the copy's own record: where the level it copies was made
+            transfer, as_built = rest[-2], rest[-1]
+            moved[-1]._transfer_vertices = transfer
+            moved[-1]._as_built_vertices = as_built
+            moved[-1]._moved_since_built = True
     for l, lev in enumerate(moved):
         # one agreement per level, outside the branches below, before the
         # parent resolution's collectives

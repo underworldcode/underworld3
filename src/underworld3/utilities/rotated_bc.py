@@ -1386,12 +1386,13 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
         * ``"nonlinear_iterations"``, ``"converged"`` — outer-loop count (the number
           of Newton increments solved, ``== len(ksp_its)``) and status;
         * ``"rnorm"``, ``"rnorm0"`` — the final rotated residual norm ‖F̂‖ and the
-          one the reference is set from: the first residual measured, or, on a
-          cold start whose only forcing is a prescribed datum (zero residual at
-          ``u = 0``), the residual of the lifted iterate (feed the solve report);
-        * ``"ref"`` — the scale the relative tolerance is measured against:
-          ``rnorm0``, or ``max(rnorm0, fnorm_rest)`` where the rest-state
-          residual was measured;
+          first one measured, at the initial guess (zero on a cold start whose only
+          forcing is a prescribed datum; the solve report then gives no reduction);
+        * ``"ref"`` — the scale the relative tolerance is measured against: the
+          largest of ``rnorm0``, ``fnorm_rest`` where the rest-state residual was
+          measured, and, on a cold start that lifts a datum, the norm of the
+          lifted right-hand side on the free rows (the forcing the datum exerts
+          on the interior, #883);
         * ``"fnorm_rest"`` — the rest-state residual ‖F̂(0)‖, measured only for a
           warm start of a stationary equation; ``None`` otherwise;
         * ``"rnorm_history"`` — the residual norm at each pass of the loop, the
@@ -1850,10 +1851,7 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
         Fhat = rotated_residual(u, keep_cartesian=True)
         rnorm = Fhat.norm()
         rnorm_history.append(float(rnorm))
-        if r0 is None or (lift_datum and iters == 1 and r0 == 0.0):
-            # A cold start whose only forcing is the prescribed datum (a sheet
-            # breathing with the tide, say) has a zero residual at u = 0, before
-            # the lift; the reference scale is then the lifted iterate's.
+        if r0 is None:
             r0 = rnorm
             ref = max(r0, fnorm_rest) if fnorm_rest is not None else r0
         if verbose:
@@ -1877,7 +1875,8 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
         # Measured against the convergence reference, not r0: a warm start is already
         # in the basin, and against its own residual it had to shrink that a
         # hundredfold under Picard first (12 of 13 iterations on the power-law box).
-        if continuation and phase == "picard" and rnorm <= switch_rtol * ref and iters >= picard:
+        if (continuation and phase == "picard" and rnorm <= switch_rtol * ref
+                and iters >= picard and not (lift_datum and iters == 0)):
             solver._set_newton_alpha(1.0)
             phase = "newton"
             switch_iteration = iters
@@ -1956,6 +1955,17 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
             Aop.zeroRowsColumns(normal_rows, diag=diag_scale, x=xhat, b=bhat)
             xhat.destroy()
             xhat = None
+            # The datum's own scale joins the reference (#883): the lifted
+            # right-hand side on the free rows, the forcing the datum exerts on the
+            # interior. At u = 0 the residual ignores the datum, so a cold start
+            # forced by the datum alone has r0 = 0, and one with a weak body force
+            # beside it has r0 at the body force's scale; either way the
+            # increment that carries the datum is measured against a reference
+            # that does not see it. The norm is collective, on every rank.
+            lifted = bhat.copy()
+            _zero_rows_local(lifted, normal_rows)
+            ref = max(ref, lifted.norm())
+            lifted.destroy()
         elif assemble:
             Aop.zeroRowsColumns(normal_rows, diag=diag_scale)
         # else: the cached Aop already carries the eliminated constraint

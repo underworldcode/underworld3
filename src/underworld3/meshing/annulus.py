@@ -64,8 +64,8 @@ def QuarterAnnulus(
     cellSize : float, default=0.1
         Target mesh element size.
     centre : bool, default=False
-        If True and ``radiusInner=0``, mark the centre point as a
-        boundary for applying point constraints.
+        Not used: QuarterAnnulus always marks the centre point as the
+        ``Centre`` boundary when ``radiusInner=0``.
     degree : int, default=1
         Degree of the mesh coordinates. Only 1, straight-sided cells, is
         supported, and any other value raises (#978). A variable's own
@@ -339,7 +339,7 @@ def Annulus(
 
         - ``Lower``: Inner boundary at :math:`r = r_{inner}`
         - ``Upper``: Outer boundary at :math:`r = r_{outer}`
-        - ``Centre``: Centre point (if :math:`r_{inner} = 0`)
+        - ``Centre``: Centre point (if :math:`r_{inner} = 0` and ``centre=True``)
 
         The mesh includes a refinement callback that snaps boundary
         nodes back to true circular geometry after refinement.
@@ -1031,6 +1031,10 @@ def AnnulusWithSpokes(
 
         if radiusInner > 0.0:
             gmsh.model.remove_entities([(0, p0)])
+        elif centre is True:
+            gmsh.model.addPhysicalGroup(
+                0, [p0], tag=boundaries.Centre.value, name=boundaries.Centre.name
+            )
 
         gmsh.model.mesh.generate(2)
 
@@ -1229,7 +1233,7 @@ def AnnulusInternalBoundary(
         - ``Lower``: Inner boundary at :math:`r = r_{inner}`
         - ``Internal``: Internal boundary at :math:`r = r_{internal}`
         - ``Upper``: Outer boundary at :math:`r = r_{outer}`
-        - ``Centre``: Centre point (if radiusInner=0)
+        - ``Centre``: Centre point (if radiusInner=0 and ``centre=True``)
 
     See Also
     --------
