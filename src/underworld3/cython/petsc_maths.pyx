@@ -46,6 +46,13 @@ def dm_force_coordinate_field(dm):
     coordinate DM.  Must be called after createCoordinateSpace and after
     boundary labels have been added to mesh.dm.
 
+    Two effects, both on ``dm``'s coordinate DM and the field over it: the
+    coordinate ``DMField`` is created now, on every rank that calls this (a
+    lazily created one appeared only on ranks holding cells, and each creation
+    takes a tag from the communicator, #1271, #975); and every label of the
+    coordinate DM but ``depth`` and ``celltype`` is removed. ``dm``'s own
+    labels are untouched.
+
     Issue #96: DMClone (inside createCoordinateSpace) copies ALL labels from
     mesh.dm to the coordinate DM.  When DMPlexComputeBdIntegral later lazily
     recreates the coordinate field, DMCompleteBCLabels_Internal fails with

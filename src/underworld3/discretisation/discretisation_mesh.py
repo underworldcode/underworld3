@@ -2621,7 +2621,10 @@ class Mesh(Stateful, uw_object):
         # ranks' tag counters drift apart, and a later two-sided exchange on it
         # (the next mesh load's label read) waits on messages under a tag the
         # other ranks never use. The field is created here, where every rank
-        # clones.
+        # clones. dm_force_coordinate_field also strips every label but depth
+        # and celltype from the clone's coordinate DM, a clone of the level's
+        # own, whose labels were stripped when the level was built: nothing a
+        # solver reads is lost there (#96).
         new_dm_hierarchy = []
         for dm in dm_hierarchy:
             clone = dm.clone()
@@ -5524,8 +5527,10 @@ class Mesh(Stateful, uw_object):
     def _rebuild_level_coordinate_field(self, level):
         """Rebuild the coordinate field (cell geometry, quadrature Jacobians) of a
         hierarchy level whose coordinates were just set, the way
-        ``nuke_coords_and_rebuild`` rebuilds ``self.dm``'s: a solver's clone of
-        the level inherits it."""
+        ``nuke_coords_and_rebuild`` rebuilds ``self.dm``'s. A solver's clone of
+        the level does not inherit the field (``DMClone`` copies the coordinates,
+        not the ``DMField`` over them): ``clone_dm_hierarchy`` creates the
+        clone's own, on every rank (#1271)."""
         if PETSc.Sys.getVersion() <= (3, 20, 5) and PETSc.Sys.getVersionInfo()["release"] == True:
             level.projectCoordinates(self.petsc_fe)
         elif hasattr(level, "createCoordinateSpace"):
@@ -11667,6 +11672,12 @@ class Mesh(Stateful, uw_object):
         if self.regions is not None:
             depth_label = self.dm.getLabel("depth")
             cell_is = depth_label.getStratumIS(self.dim)
+            # TODO(BUG): rank-local. A rank holding no cells skips this branch,
+            # so it neither creates _CellRegions_ nor sets rgLabel_name, while
+            # the others pass rgLabel="_CellRegions_" to adaptMetric. It matters
+            # only once a parallel remesher is in the build (none of ours adapts
+            # on more than one rank); the label and the name must then be made
+            # on every rank (review of #1287).
             if cell_is:
                 cells = cell_is.getIndices()
                 self.dm.createLabel("_CellRegions_")
