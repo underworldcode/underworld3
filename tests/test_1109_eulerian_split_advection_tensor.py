@@ -28,6 +28,9 @@ def _reset():
 
 VELOCITY = lambda mesh: sympy.Matrix([[-mesh.X[1], mesh.X[0]]])     # a rigid rotation
 COMPONENTS = {(0, 0): lambda x, y: x ** 2, (0, 1): lambda x, y: x * y, (1, 1): lambda x, y: y ** 2}
+# a non-symmetric tensor stores all four, so xy and yx must differ
+FULL = {**COMPONENTS, (1, 0): lambda x, y: x ** 2 - y}
+SHAPES = {uw.VarType.SYM_TENSOR: COMPONENTS, uw.VarType.TENSOR: FULL}
 
 
 def _mesh():
@@ -35,13 +38,12 @@ def _mesh():
                                              cellSize=1.0 / 6, qdegree=3)
 
 
-def _tensor_history(mesh):
-    stress = uw.discretisation.MeshVariable("S", mesh, (2, 2), vtype=uw.VarType.SYM_TENSOR,
-                                            degree=2)
+def _tensor_history(mesh, vtype=uw.VarType.SYM_TENSOR):
+    stress = uw.discretisation.MeshVariable("S", mesh, (2, 2), vtype=vtype, degree=2)
     X = stress.coords
-    for (i, j), f in COMPONENTS.items():
+    for (i, j), f in SHAPES[vtype].items():
         stress.array[:, i, j] = f(X[:, 0], X[:, 1])
-    history = uw.systems.ddt.Eulerian(mesh, stress, uw.VarType.SYM_TENSOR, degree=2,
+    history = uw.systems.ddt.Eulerian(mesh, stress, vtype, degree=2,
                                       continuous=True, V_fn=VELOCITY(mesh))
     history.initialise_history()
     return history, stress
@@ -57,14 +59,15 @@ def _split_correction(history, field):
     return np.asarray(level_0.data) - before
 
 
-def test_every_component_of_a_symmetric_tensor_takes_its_own_correction():
+@pytest.mark.parametrize("vtype", [uw.VarType.SYM_TENSOR, uw.VarType.TENSOR], ids=["symmetric", "full"])
+def test_every_component_of_a_tensor_takes_its_own_correction(vtype):
     """Each stored column of the tensor history takes the correction a scalar
     history of that component alone takes, through the same evaluation."""
     mesh = _mesh()
-    history, stress = _tensor_history(mesh)
+    history, stress = _tensor_history(mesh, vtype)
     tensor = _split_correction(history, stress)
     level_0 = history.psi_star[0]
-    for (i, j), f in COMPONENTS.items():
+    for (i, j), f in SHAPES[vtype].items():
         scalar = uw.discretisation.MeshVariable(f"s{i}{j}", mesh, 1, degree=2)
         scalar.array[:, 0, 0] = f(scalar.coords[:, 0], scalar.coords[:, 1])
         alone = uw.systems.ddt.Eulerian(mesh, scalar, uw.VarType.SCALAR, degree=2,

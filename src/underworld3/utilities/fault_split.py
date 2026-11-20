@@ -1612,7 +1612,8 @@ def _label_embedded_edges(dm, segments, values, exclude=None, verbose=False,
 
 
 def add_fault(mesh, faults, verbose=False, cut=True, exclude=None,
-              blind=1, across_seams=False, partition=True, **place_kwargs):
+              blind=1, across_seams=False, partition=True, on_shared="warn",
+              **place_kwargs):
     """Cut AND split one or more faults into a mesh; return the split Mesh.
 
     The one-call form of the split-node pipeline: for each fault, the tips
@@ -1668,6 +1669,13 @@ def add_fault(mesh, faults, verbose=False, cut=True, exclude=None,
         rank-interior on every add-on level, the load balanced, nothing moved
         by the cut or the split afterwards). ``False`` for a level that is
         already partitioned — the replay of the faults on the add-on levels.
+    on_shared : {"warn", "note"}, optional
+        2-D cut: what :func:`line_cut.pull_vertex_onto` does when a control
+        point goes without a vertex because an earlier one holds every corner
+        it could take (#559). The count is recorded on the returned mesh
+        (``_fault_shared_control_points``) either way; ``"warn"`` also warns.
+        The replay on the coarse add-on levels passes ``"note"``: its fine
+        trace is sampled finer than a coarse level, so sharing is expected.
     **place_kwargs
         3-D: options of :func:`place_surface.place_sheet` (``clearance``,
         ``size``, ``setback``). A bisection-refined mesh needs ``clearance``
@@ -1755,6 +1763,8 @@ def add_fault(mesh, faults, verbose=False, cut=True, exclude=None,
     # fault was left split with nothing tying its sides).
     dm, tracked = _track_fault_records(mesh)
     hosts_marked = bool(cut)
+    n_shared = 0
+    from underworld3.utilities import line_cut as line_cut_module
     if cut:
         # each cell of the mesh being cut carries its own index through the cut
         # and the split, so every cell of the result knows the cell it was made
@@ -1770,7 +1780,9 @@ def add_fault(mesh, faults, verbose=False, cut=True, exclude=None,
             # interior kink is the same problem as a tip — a distinguished
             # point of the geometry that must coincide with a mesh vertex,
             # or the cut leaves the chain fragmented at the turn.
-            dm = pull_vertex_onto(dm, np.asarray(poly, dtype=float))
+            dm = pull_vertex_onto(dm, np.asarray(poly, dtype=float),
+                                  on_shared=on_shared)
+            n_shared += line_cut_module.last_shared_targets["count"]
             dm, info = cut_along_lines(dm, [poly], label=name,
                                        label_value=values[name], **snap)
             if verbose:
@@ -1865,6 +1877,8 @@ def add_fault(mesh, faults, verbose=False, cut=True, exclude=None,
     if hosts_marked:
         # ``cut`` is the cut Mesh by now, no longer the flag
         _read_host_cells(out, mesh, [mesh.dm, cut.dm])
+    # control points that went without a vertex of their own (#559)
+    out._fault_shared_control_points = n_shared
     return out
 
 
