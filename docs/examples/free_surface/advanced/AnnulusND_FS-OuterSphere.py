@@ -159,7 +159,7 @@ stokes.solve()
 
 # %%
 ## From now on, use V_r to drive deformation. Again, create a smooth, continuous field
-diffuser._reset()
+diffuser.reset.all()
 diffuser.add_essential_bc((0), mesh.boundaries.Upper.name)
 diffuser.add_essential_bc(v.sym.dot(mesh.CoordinateSystem.unit_e_0), mesh.boundaries.Internal.name)
 diffuser.add_essential_bc((0), mesh.boundaries.Lower.name)
@@ -224,7 +224,7 @@ if uw.mpi.size == 1:
 
 for step in range(0,100):
         
-    diffuser._reset()
+    diffuser.reset.all()
     diffuser.add_essential_bc((0), mesh.boundaries.Upper.name)
     diffuser.add_essential_bc(v.sym.dot(mesh.CoordinateSystem.unit_e_0), mesh.boundaries.Internal.name)
     diffuser.add_essential_bc((0), mesh.boundaries.Lower.name)

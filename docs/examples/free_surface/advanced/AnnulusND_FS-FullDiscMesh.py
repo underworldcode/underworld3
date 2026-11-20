@@ -276,7 +276,7 @@ stokes.solve()
 
 # %%
 ## From now on, use V_r to drive deformation. Again, create a smooth, continuous field
-Vr_solver._reset()
+Vr_solver.reset.all()
 Vr_solver.add_essential_bc((0), mesh.boundaries.Upper.name)
 Vr_solver.add_essential_bc((v.sym.dot(mesh.CoordinateSystem.unit_e_0)), mesh.boundaries.Internal.name)
 Vr_solver.add_essential_bc((v.sym.dot(mesh.CoordinateSystem.unit_e_0)), mesh.boundaries.Lower.name)

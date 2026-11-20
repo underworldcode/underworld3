@@ -264,3 +264,31 @@ def test_a_wall_off_its_declared_circle_is_refused_with_the_distance():
                        r"declared circle of radius 2\.22: the largest distance is 1\.0\d*e-09 "
                        r"of the radius, beyond the tolerance of 1\.0e-10"):
         stokes.add_cylindrical_zero_slip_transfer(boundary="Upper", sign=1, quadrature=6)
+
+
+@pytest.mark.tier_b
+def test_a_refused_wall_destroys_the_basis_dms_it_cloned(monkeypatch):
+    """The wall geometry clones the P1 and P2 coordinate DMs to read their
+    sections (and the mesh's node-index helpers clone and destroy their own).
+    A refusal (here the off-circle one) destroys every clone made during the
+    call, as the successful build does."""
+    mesh = _annulus()
+    on_upper = _pinned_mask(mesh.dm, ("Upper",))
+    coords = np.array(mesh.X.coords)
+    coords[on_upper] *= 1.0 + 1.0e-9
+    mesh._deform_mesh(coords)  # the low-level move: it keeps the declaration
+    stokes = _stokes(mesh, "D")
+    clones = []
+    clone = type(mesh)._basis_coordinate_dm
+
+    def recording_clone(self, degree, continuous):
+        dm = clone(self, degree, continuous)
+        clones.append(dm)
+        return dm
+
+    monkeypatch.setattr(type(mesh), "_basis_coordinate_dm", recording_clone)
+    with pytest.raises(ValueError, match=r"off its declared circle"):
+        stokes.add_cylindrical_zero_slip_transfer(boundary="Upper", sign=1, quadrature=6)
+    assert len(clones) >= 2
+    left = sum(dm.handle != 0 for dm in clones)
+    assert left == 0, f"{left} of {len(clones)} cloned basis DMs were not destroyed"

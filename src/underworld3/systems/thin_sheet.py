@@ -464,8 +464,11 @@ class SNES_ThinSheet(_StressHistoryMixin, _ConstitutiveModelStateMixin, SNES_Vec
         less than a cell a step): the others leave the faceted surface, the
         trace-backs (``"semi_lagrangian"``, ``"integration_point"``) along a
         characteristic and ``"forward"`` and ``"lagrangian"`` with their
-        points. On a flat mesh they may be chosen, but next to a split-node
-        fault a trace-back reads across the slit."""
+        points. On a flat mesh they may be chosen, except where the mesh has a
+        split-node fault: there the tracing flavours (``"semi_lagrangian"``,
+        ``"integration_point"``, ``"forward"``) are refused when the history is
+        made, because a trace next to the slit reads the other side of it
+        (#871)."""
         return super().stress_transport
 
     @stress_transport.setter
