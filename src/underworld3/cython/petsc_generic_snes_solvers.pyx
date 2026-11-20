@@ -508,7 +508,9 @@ class SolverReset:
         they are rebuilt from the nullspace settings on the next solve.
     ``discretisation``
         The DM, its hierarchy and the SNES; rebuilt on the next solve. The
-        registered conditions are kept.
+        nullspace objects are numbered on the DM, so they go with it (and
+        with ``conditions``, which drops the DM too). The registered
+        conditions are kept.
     ``all``
         All of the above: a new boundary-value problem on the same solver and
         fields.
@@ -12493,6 +12495,10 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
                 addl_total += add_here
             Snew.setConstraintDof(p, Sold.getConstraintDof(p) + addl_total)
 
+        # The field symmetries orient multi-dof edges and faces in reversed
+        # cells; without them a P3 velocity was read in the wrong order next
+        # to every such edge, and the constrained solve came out 26% low.
+        copy_section_symmetries(Sold, Snew)
         Snew.setUp()
 
         # 2b. Constraint INDICES — must follow setUp(). Rebuild the point-local
