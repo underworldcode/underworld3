@@ -209,7 +209,7 @@ stokes.petsc_options["snes_monitor"] = None
 
 # %%
 v_soln.array[...] = uw.function.evaluate(
-    sympy.Matrix(((vx_ps, vy_ps))), v_soln.coords
+    sympy.Matrix([[vx_ps, vy_ps]]), v_soln.coords
 )
 
 # %% [markdown]

@@ -206,11 +206,9 @@ def _maxwell_shear(transport, order, steps=20, dt=0.1, integrator="bdf", solver=
     for _ in range(steps):
         stokes.solve(timestep=dt, zero_init_guess=False)
 
-    # After a solve the Stokes family has committed the new stress into the
-    # history's first level; the trace-back Navier-Stokes solver records it at
-    # the NEXT carry, so there its first level still holds the previous step
-    # and the stress just solved for is the constitutive flux (#742).
-    latest = stokes.DFDt.psi_star[0].sym if solver == "stokes" else stokes.constitutive_model.flux
+    # After a solve every family has committed the new stress into the
+    # history's first level (the trace-back Navier-Stokes solver too, #742).
+    latest = stokes.DFDt.psi_star[0].sym
     origin = np.array([[0.0, 0.0]])
     stress = float(np.asarray(uw.function.evaluate(latest[0, 1], origin)).reshape(-1)[0])
     rate = 2.0 * speed / height

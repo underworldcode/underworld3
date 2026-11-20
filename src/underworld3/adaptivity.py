@@ -597,6 +597,24 @@ def _dm_unstack_bcs(dm, boundaries, stacked_bc_label_name):
 # dmAdaptLabel - but first you need to call dmplex set default distribute False
 
 
+def _isotropic_metric(dm, indicator_vec, field_id):
+    """``dm.metricCreateIsotropic(indicator_vec, field_id)``, on every rank in step (#975).
+
+    When the indicator is not the mesh's first field, PETSc projects it onto
+    the metric's P1 space on the indicator vector's own DM (a variable's
+    one-field DM). The projection needs that DM's coordinate field, which
+    PETSc creates lazily, the first time a cell's geometry is needed: only on
+    ranks holding cells. An object created on the communicator takes a tag
+    from it, so a rank with no cells fell one behind, and the next two-sided
+    exchange (a later ``distribute``) hung. The field is created here first,
+    on every rank.
+    """
+    from underworld3.cython.petsc_maths import dm_force_coordinate_field
+
+    dm_force_coordinate_field(indicator_vec.getDM())
+    return dm.metricCreateIsotropic(indicator_vec, field_id)
+
+
 def mesh_adapt_meshVar(mesh, meshVarH, metricVar, verbose=False, redistribute=False):
     """Remesh ``mesh`` through PETSc's DMAdaptMetric from the isotropic metric in
     ``meshVarH``; return the new DM's mesh.
@@ -615,7 +633,7 @@ def mesh_adapt_meshVar(mesh, meshVarH, metricVar, verbose=False, redistribute=Fa
     # The metric
     field_id = metricVar.field_id
     hvec = meshVarH._lvec
-    metric_vec = mesh.dm.metricCreateIsotropic(hvec, field_id)
+    metric_vec = _isotropic_metric(mesh.dm, hvec, field_id)
 
     if verbose:
         print(f"{uw.mpi.rank} dm adaptation ... begin", flush=True)

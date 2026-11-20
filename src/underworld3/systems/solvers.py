@@ -5930,6 +5930,26 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
         self._solver_is_setup = False
 
     @property
+    def stress_transport(self) -> str:
+        """``"semi_lagrangian"``, the only stress history this solver carries.
+
+        Its flux history is the nodal semi-Lagrangian one, built with the
+        solver. The other flavours (``"integration_point"``, ``"forward"``,
+        ``"lagrangian"``, ``"eulerian"``, ``"none"``) are on
+        ``uw.systems.NavierStokes``.
+        """
+        return "semi_lagrangian"
+
+    @stress_transport.setter
+    def stress_transport(self, value):
+        if str(value) != "semi_lagrangian":
+            raise ValueError(
+                f"NavierStokesSLCN carries its stress history semi-Lagrangian only, so "
+                f"stress_transport={value!r} would be ignored; use 'semi_lagrangian', or "
+                "uw.systems.NavierStokes for 'integration_point', 'forward', "
+                "'lagrangian', 'eulerian' or 'none'.")
+
+    @property
     def DFDt(self):
         """Time derivative operator for stress flux."""
         return self.Unknowns.DFDt
@@ -6045,7 +6065,14 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
         if trace is not None:
             trace.begin_step(timestep)
         self.DuDt.update_pre_solve(timestep, verbose=verbose, evalf=_evalf)
-        self.DFDt.update_pre_solve(timestep, verbose=verbose, evalf=_evalf)
+        # A stress history is committed after the solve, as the Stokes family
+        # commits it (_stress_history_post_solve), so its level 0 holds the
+        # stress the solve produced; recording it here, at the next step's
+        # start, left level 0 a step stale after every solve (#742). A purely
+        # viscous flux history keeps its record at the start of the step.
+        _commits_stress = getattr(_cm, "requires_stress_history", False)
+        self.DFDt.update_pre_solve(timestep, verbose=verbose, evalf=_evalf,
+                                   store_result=not _commits_stress)
         if trace is not None:
             trace.finish_step()
         if getattr(_cm, "requires_stress_history", False):
@@ -6072,6 +6099,9 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
             print(f"NS solver - post-solve DuDt update", flush=True)
 
         self.DuDt.update_post_solve(timestep, verbose=verbose, evalf=_evalf)
+        if _commits_stress:
+            self.DFDt.commit_flux_to_history(_history_record(self.constitutive_model),
+                                             verbose=verbose)
         self.DFDt.update_post_solve(timestep, verbose=verbose, evalf=_evalf)
 
         self.is_setup = True
