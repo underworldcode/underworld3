@@ -359,87 +359,51 @@ def _sum_node_vectors_across_ranks(solver, contribs):
 
     Each boundary facet is labelled on exactly one rank, and on the rank that owns it
     (measured: no facet is labelled twice and none is labelled away from its owner), so
-    a plain ADD is exact and needs no de-duplication. The velocity field already has
-    ``dim`` DOFs at exactly these points, so the sum rides the DM's own local↔global
-    scatter: ADD into the global vector accumulates the ghost copies onto the owner,
-    and scattering back gives every rank the identical total.
+    a plain ADD is exact and needs no de-duplication.
+
+    The sum rides the DM's point star forest, ``dim`` doubles per point: each rank's
+    contributions are reduced onto the point's owner and the total is broadcast back
+    to every copy. It used to ride the velocity field's local-to-global scatter, which
+    carries no DOF an essential condition constrains: at a node where a rotated wall
+    meets a wall pinning one component, that component kept each rank's own
+    contribution, zero on a rank holding none of the node's facets. The normal there
+    then depended on the partition (#941), and so did the traction read at the node
+    and, since #939, the value the corner's reduced constraint takes from the pinned
+    part of the normal. Every component is summed now.
 
     COLLECTIVE — a rank owning no facet of this boundary still takes part.
     """
+    from mpi4py import MPI
+
     dm = solver.dm
     dim = solver.mesh.cdim
     if dm.comm.getSize() == 1:
         return contribs
 
-    lsec = dm.getLocalSection()
-    lvec = dm.getLocalVec()
-    gvec = dm.getGlobalVec()
+    pStart, pEnd = dm.getChart()
+    local = np.zeros((pEnd - pStart, dim))
+    for q, v in contribs.items():
+        local[q - pStart] = v
+    total = local.copy()
+    sf = dm.getPointSF()
+    unit = MPI.DOUBLE.Create_contiguous(dim)
+    unit.Commit()
     try:
-        lvec.set(0.0)
-        larr = lvec.getArray()
-        for q, v in contribs.items():
-            lo = lsec.getFieldOffset(q, _VELOCITY_FIELD)
-            larr[lo:lo + dim] = v
-        gvec.set(0.0)
-        dm.localToGlobal(lvec, gvec, addv=PETSc.InsertMode.ADD_VALUES)
-        dm.globalToLocal(gvec, lvec)
-        summed = lvec.getArray()
-        out = {}
-        for q in _local_boundary_candidates(dm, lsec) | set(contribs):
-            lo = lsec.getFieldOffset(q, _VELOCITY_FIELD)
-            w = np.array(summed[lo:lo + dim], dtype=float)
-            # LOAD-BEARING: the candidate set over-collects (see
-            # _local_boundary_candidates); a point off this boundary contributes
-            # nothing anywhere, so its summed normal is exactly zero and it is
-            # dropped here. This is what makes the over-collection safe.
-            if w.any():
-                out[q] = w
-            elif q in contribs:
-                # Velocity DOFs constrained out of the global vector (an essential
-                # BC meeting this boundary) are not written back: they keep this
-                # rank's own contribution, which the first branch already takes, so
-                # this one is reached only by a node whose sum is zero in every
-                # component. build_rotation builds a reduced frame on a node's free
-                # components and skips a fully constrained node; the traction
-                # readers read zero at a constrained component, so an essential
-                # wall's components contribute nothing to σ_nn (#936). The nodes are
-                # the corners where a rotated wall meets an essential one (measured:
-                # 2 of 75 on the test_1070 configuration). A marker (the analytic
-                # path) loses only the constrained components, so where one component
-                # is free such a node is kept on every rank that holds it.
-                out[q] = contribs[q]
-        return out
+        # leaves (copies this rank does not own) add onto their owner's row; the
+        # owner's own contribution is already in its row of `total`
+        sf.reduceBegin(unit, local, total, MPI.SUM)
+        sf.reduceEnd(unit, local, total, MPI.SUM)
+        # and every copy takes the owner's total (separate buffers: the owner's
+        # rows are the roots, the copies' rows the leaves)
+        summed = total.copy()
+        sf.bcastBegin(unit, total, summed, MPI.REPLACE)
+        sf.bcastEnd(unit, total, summed, MPI.REPLACE)
     finally:
-        dm.restoreLocalVec(lvec)
-        dm.restoreGlobalVec(gvec)
-
-
-def _local_boundary_candidates(dm, lsec):
-    """Velocity points on a support-1 facet of this rank's LOCAL mesh — a SUPERSET of
-    its boundary nodes, deliberately.
-
-    The labelled facet list is not enough to enumerate a rank's boundary nodes: a rank
-    can OWN a node every one of whose labelled facets lives on a neighbour (the label
-    goes to one rank per facet, so a seam node's facets are split between them), and
-    such a node would otherwise never get a constraint row.
-
-    Support 1 does NOT mean "on the domain boundary": the facets on the outer fringe of
-    the overlap layer also have support 1 locally while being interior globally, and
-    measured they are 13-27% of what this returns. The caller is what makes the result
-    correct — those points receive no contribution from any labelled facet, so their
-    summed normal is exactly zero and the ``w.any()`` test in
-    :func:`_sum_node_vectors_across_ranks` drops them. That test is load-bearing, not
-    an aside; do not remove it while over-collecting here.
-    """
-    fS, fE = dm.getHeightStratum(1)
-    out = set()
-    for f in range(fS, fE):
-        if dm.getSupportSize(f) != 1:
-            continue
-        for q in (int(c) for c in dm.getTransitiveClosure(f)[0]):
-            if lsec.getFieldDof(q, _VELOCITY_FIELD) > 0:
-                out.add(q)
-    return out
+        unit.Free()
+    # LOAD-BEARING: a point off this boundary contributes nothing anywhere, so its
+    # total is exactly zero and it is dropped here
+    rows = np.flatnonzero(np.any(summed != 0.0, axis=1))
+    return {int(r) + pStart: summed[r].copy() for r in rows}
 
 
 def _eval_datum(dspec, coords, solver):
