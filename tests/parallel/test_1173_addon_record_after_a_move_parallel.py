@@ -117,6 +117,11 @@ def test_a_moved_base_is_partitioned_on_the_parents_it_was_refined_from(
     held = out._addon_reference
     assert held is not None and held[0] is below
     reference = held[1]
+    # the copy keeps the moved base's own record of where it was made: it is
+    # the same mesh redistributed (stage 2 of the coarse levels, case 2a)
+    assert out._moved_since_built
+    assert _largest(np.asarray(out._as_built_vertices) - reference) == 0.0
+    assert _largest(np.asarray(out._transfer_vertices) - reference) == 0.0
     vxy, cv = _cell_vertex_table(out)
     if mover is _deform:
         # the geometry the base was made in rode the move vertex by vertex:

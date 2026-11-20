@@ -53,37 +53,49 @@ pytestmark = [pytest.mark.mpi(min_size=2), pytest.mark.timeout(600)]
 # ABSOLUTE accuracy anchors, gated on the mesh fingerprint.
 #
 # The self-referential comparison below proves the answer does not depend on the
-# PARTITION. It says nothing about whether the answer is RIGHT — a solve that broke
-# identically at every rank count would sail through it. These are the pre-#568
-# goldens, kept for that second job and gated so that a host whose gmsh triangulates
-# differently SKIPS the accuracy claim rather than failing it. That is what the #564
-# investigation recommended and it costs nothing.
+# PARTITION. It says nothing about whether the answer is the same answer as before -- a
+# solve that broke identically at every rank count would sail through it. These anchors
+# do that second job, gated so that a host whose gmsh triangulates differently SKIPS the
+# claim rather than failing it (the #564 investigation's recommendation). They are
+# regression gates on the coarse discrete answer, not accuracy claims: at cellSize 0.12
+# the topography is 0.7 % (iso) and 2 % (ti) from its converged value. Accuracy against
+# the exact solution is test_1063_constrained_freeslip_exact_annulus.py's job.
 #
-# rtol is 1e-2 on purpose: this is not a reproducibility gate (that is `compare`, six
-# to eight orders tighter), it only has to notice that the answer became a different
-# answer. Recompute the fingerprint with `python <thisfile> <kind>`.
+# The topography is ``solver.topography()``: the full boundary traction h + r(u.n - g)
+# since a9945bc9 (#617, 2026-09-03). The macOS values recorded on 2026-08-15 (#568) were
+# the bare multiplier h, which topography() returned then; they were re-recorded in
+# #826 from the integration desk's macOS run (velocity unchanged to 4e-11). One anchor
+# per host mesh: accuracy_anchor takes the one whose fingerprint matches. Recompute with
+# `python <thisfile> <kind>`.
 _ANCHOR_MESH = [434, 2.355685412534114]         # Annulus(1.0, 0.5, cellSize=0.12), macOS
-# Linux's gmsh builds that annulus with 430 cells; recorded on hyperion at np 2 with the
-# conda-forge stack CI uses (2026-11-06). One anchor per host mesh: accuracy_anchor
-# takes the one whose fingerprint matches.
+# Linux's gmsh builds that annulus with 430 cells; recorded on a Linux workstation at np 2
+# with the conda-forge stack CI uses (2026-11-06), from the traction.
 _ANCHOR_MESH_LINUX = [430, 2.355685412534116]
 ANCHORS = {
     "iso": [{"fingerprint": _ANCHOR_MESH,
-             "values": (6.194547793955e-01, 3.786068778041e+01)},
+             "values": (6.194547793812e-01, 3.804161797961e+01)},
             {"fingerprint": _ANCHOR_MESH_LINUX,
              "values": (6.194403143328553e-01, 3.8038815818522956e+01)}],
     "ti": [{"fingerprint": _ANCHOR_MESH,
-            "values": (3.925981604039e-01, 3.707799837159e+01)},
+            "values": (3.925981604187e-01, 3.775254788356e+01)},
            {"fingerprint": _ANCHOR_MESH_LINUX,
             "values": (3.926249052154835e-01, 3.773944137979907e+01)}],
 }
 # (velocity L2, mean-stripped topography). The raw mean pressure is NOT anchored: it is
-# pinned to ~0, and a relative gate on a number near machine zero measures nothing —
-# it has its own absolute assertion in the test.
+# pinned to ~0, and a relative gate on a number near machine zero measures nothing --
+# it has its own absolute assertion in the test. The macOS gauge anchor held the bare
+# multiplier (37.818; Linux's bare h is 37.817, its traction 37.997). It is re-recorded
+# from the traction, serially on macOS (12-core Apple M4, gmsh 4.15.2, PETSc 3.25.3),
+# development 9564201e: 37.999, 0.007 % from Linux's on its 430-cell mesh.
 ANCHOR_GAUGE = [{"fingerprint": _ANCHOR_MESH,
-                 "values": (6.194547487092e-01, 3.781793823254e+01)},
+                 "values": (6.194547492337418e-01, 3.79994402830938e+01)},
                 {"fingerprint": _ANCHOR_MESH_LINUX,
                  "values": (6.194402844543104e-01, 3.7996633118089264e+01)}]
+
+# The anchors are checked at np 2 to 4 against values recorded at np 1 or 2, so the gate
+# cannot be tighter than the partition reproducibility below (topography 1e-5). 1e-4 is
+# ten times that, and 70 times below the 0.7 % to 1.8 % move #826 is about.
+_RTOL_ANCHOR = 1.0e-4
 
 # Velocity reproduces to the parallel reduction order. The topography is read off
 # the multiplier, whose [p,lambda] Schur sub-block grinds into its 200-iteration cap
@@ -194,7 +206,7 @@ def test_constrained_raw_gauge_partition_independent():
             rtols=(_RTOL_VELOCITY, _RTOL_TOPOGRAPHY), labels=labels,
             fingerprint=fingerprint, what="constrained raw-gauge annulus")
     accuracy_anchor((L2, topo), ANCHOR_GAUGE, fingerprint, labels,
-                    what="constrained raw-gauge annulus")
+                    what="constrained raw-gauge annulus", rtol=_RTOL_ANCHOR)
 
 
 @pytest.mark.parametrize("kind", ["iso", "ti"])
@@ -208,7 +220,7 @@ def test_constrained_freeslip_partition_independent(kind):
             rtols=(_RTOL_VELOCITY, _RTOL_TOPOGRAPHY), labels=labels,
             fingerprint=fingerprint, what=f"constrained free-slip [{kind}]")
     accuracy_anchor(values, ANCHORS[kind], fingerprint, labels,
-                    what=f"constrained free-slip [{kind}]")
+                    what=f"constrained free-slip [{kind}]", rtol=_RTOL_ANCHOR)
 
 
 if __name__ == "__main__":

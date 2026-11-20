@@ -1109,7 +1109,13 @@ def cut_along_lines(dm, lines, snap_frac=0.10, label=CUT_LABEL, label_value=1,
     }
 
 
-def pull_vertex_onto(dm, targets, min_quality=0.1):
+# The targets of the last pull_vertex_onto call left without a vertex because a
+# later target of the call took theirs (#559): ``{"count": n, "first": [target,
+# ...]}``, the first five. The same on every rank.
+last_shared_targets = {"count": 0, "first": []}
+
+
+def pull_vertex_onto(dm, targets, min_quality=0.1, on_shared="warn"):
     """Move the nearest mesh vertex onto each target point; return a new mesh.
 
     COLLECTIVE. This is how a fault TIP or a network JUNCTION is placed, and both
@@ -1142,6 +1148,15 @@ def pull_vertex_onto(dm, targets, min_quality=0.1):
         mesh returned: the nearest corner itself is taken with no such test,
         as it always was, and so is an interior corner exactly as near as
         the boundary corner. ``None`` disables the test.
+    on_shared : {"warn", "note"}
+        What to say when a later target takes the vertex an earlier target of
+        the call was put on, leaving the earlier one without (the trace is
+        sampled finer than the mesh there). Either way the earlier targets
+        left without are recorded in ``line_cut.last_shared_targets``;
+        ``"warn"`` also warns, once per call. ``"note"`` is for the replay of
+        a fault on the coarse levels of its multigrid tail, where the fine
+        trace's points are 0.25 to 0.5 of a coarse cell apart and sharing is
+        expected.
 
     Returns
     -------
@@ -1240,6 +1255,13 @@ def pull_vertex_onto(dm, targets, min_quality=0.1):
 
     Two targets of one call can still choose the same vertex, and the later one
     then takes it from the earlier, which is left with no vertex (issue #559).
+    The earlier target is recorded and, on the user's path, named in a warning
+    (``on_shared``). The placement itself is unchanged. A rule that kept the
+    vertex on the earlier target and sent the later one to another free corner
+    of its cell broke the cut on the thin-sheet sphere faults of the test
+    suite (the snap inverted cells); this rule cuts them, with the trace in
+    either direction. Which of two such targets the cut needs the vertex at,
+    and why, is open.
     The boundary rule makes this easier to reach beside a boundary: two targets
     in neighbouring boundary cells that share their one interior corner collide
     at one cell spacing, and a target whose nearer interior corner is passed
@@ -1291,7 +1313,11 @@ def pull_vertex_onto(dm, targets, min_quality=0.1):
                         dm.getComm())
     wound = np.where(_cell_quality(X, cell_verts, flip) < 0.0, -1.0, 1.0)
 
+    if on_shared not in ("warn", "note"):
+        raise ValueError(f"on_shared must be 'warn' or 'note', not {on_shared!r}")
     cdim = X.shape[1]
+    placed_from = np.empty((0, cdim))            # where each moved vertex was
+    placed_on = []                               # and the target it was put on
     for t in np.atleast_2d(np.asarray(targets, dtype=float))[:, :cdim]:
         # Candidates are the vertices of the smallest face CONTAINING the
         # target, not every vertex in the mesh. The nearest vertex overall can
@@ -1431,7 +1457,30 @@ def pull_vertex_onto(dm, targets, min_quality=0.1):
                 op=MPI.MIN)
             refused.append((where, n_ruined, worst))
         arr[hit] = t
+        # the vertex goes to this target; an earlier target it was on is left
+        # without one (#559). `where` is the same on every rank (reduced).
+        if placed_from.size:
+            again = np.flatnonzero(np.linalg.norm(placed_from - where, axis=1)
+                                   < 1e-12 * scale)
+            for k in again:
+                placed_on[k] = (placed_on[k][0], True)
+        placed_from = np.vstack([placed_from, where[None]])
+        placed_on.append((tuple(float(x) for x in t), False))
 
+    global last_shared_targets
+    left = [target for target, taken in placed_on if taken]
+    last_shared_targets = {"count": len(left), "first": left[:5]}
+    if left and on_shared == "warn":
+        import warnings
+        with uw.selective_ranks(0) as selected:
+            if selected:
+                warnings.warn(
+                    f"pull_vertex_onto: {len(left)} of the call's {len(placed_on)} "
+                    f"target(s) were left without a "
+                    f"vertex, the first at {left[0]}: a later target of the call "
+                    f"chose the same vertex and took it. The trace is sampled finer "
+                    f"than the mesh there; thin it to the cell spacing "
+                    f"(line_cut.resample) or refine the mesh (#559).", UserWarning)
     out = dm.clone()
     _set_coordinates(out, np.arange(len(arr)), arr)
     return out
