@@ -1017,11 +1017,21 @@ def provenance_transfer_parallel(coarse, fine, pre, degree, continuous,
     # The fine nodes are taken back to the geometry of ``coarse`` they were made
     # in when ``pre`` holds a reference (below). A coarse level that moved with
     # the finest is then read where it was made, its nodes and its cells, so the
-    # pair stands on one geometry. Collective (as_built_nodes), on every rank.
-    reference = reference_vertices(pre, coarse)
-    if reference is not None and getattr(coarse, "_moves_with_the_finest", False):
+    # pair stands on one geometry. The reference is read rank-locally under a
+    # guard, and the move check (as_built_nodes, collective) is entered by
+    # every rank when any rank's coarse side follows the finest.
+    reference, follows, problem = None, False, None
+    try:
+        reference = reference_vertices(pre, coarse)
+        follows = (reference is not None
+                   and getattr(coarse, "_moves_with_the_finest", False))
+    except Exception as err:   # sanctioned: raised on every rank just below
+        problem = (f"fault_mg: the provenance transfer failed to read the "
+                   f"reference vertices: {type(err).__name__}: {err}")
+    _collective_raise(problem, error=CollectiveBuildError)
+    if m4.allreduce(bool(follows), op=MPI.LOR):
         built = as_built_nodes(coarse, degree, continuous)
-        if built is not None:
+        if follows and built is not None:
             coarse_coords = built
     problem = None
     try:
@@ -1143,7 +1153,6 @@ def provenance_transfer_parallel(coarse, fine, pre, degree, continuous,
         cn_u = np.arange(nu * nb).reshape(nu, nb)
         cv_u = np.arange(nu * nv).reshape(nu, nv)
         Xw = Xf[mine]
-        reference = reference_vertices(pre, coarse)
         if mine.size:
             if reference is not None:
                 at = _barycentric(Xw, vxy_p[cv_p[pcell]])
