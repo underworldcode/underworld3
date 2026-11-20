@@ -91,3 +91,20 @@ def test_load_from_h5_plex_vector(written, on):
     R = uw.discretisation.MeshVariable(f"L_{on}", target, 1, degree=2)
     R.load_from_h5_plex_vector(var_file, data_name="T")
     assert _max_deviation(R) < 1e-12
+
+
+# UNFILED 49: a file written with create_xdmf=False holds no fields/ group.
+# read_timestep's rank 0 raised KeyError there while the other ranks waited in
+# a bcast. It now reads the file's PETSc payload through read_checkpoint.
+
+@pytest.mark.parametrize("into", ["T", "U"])
+def test_read_timestep_of_a_payload_only_file(into):
+    mesh = _box()
+    T = uw.discretisation.MeshVariable("T", mesh, 1, degree=2)
+    T.array[:, 0, 0] = _field(np.asarray(T.coords))
+    out = uw.mpi.comm.bcast(tempfile.mkdtemp() if uw.mpi.rank == 0 else None)
+    mesh.write_timestep("ck", index=0, outputPath=out, meshVars=[T],
+                        create_xdmf=False, petsc_reload=True)
+    R = T if into == "T" else uw.discretisation.MeshVariable(into, mesh, 1, degree=2)
+    R.read_timestep("ck", "T", 0, outputPath=out)
+    assert _max_deviation(R) < 1e-12

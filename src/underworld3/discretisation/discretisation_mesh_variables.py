@@ -1606,16 +1606,32 @@ class _BaseMeshVariable(Stateful, uw_object):
         cdim = self.mesh.cdim
 
         if not is_v1_1:
+            # Rank 0 alone reads the file. A file written with
+            # create_xdmf=False holds no fields/ group, and rank 0 raised
+            # KeyError while the others waited in the bcast (UNFILED 49). What
+            # it found is shared first; a PETSc-native payload, if the file has
+            # one, is then read through read_checkpoint, and otherwise every
+            # rank raises the same error.
+            has_field, representation = False, None
             if uw.mpi.rank == 0:
                 with h5py.File(data_file, "r") as h5f:
-                    representation = h5f[f"fields/{data_name}"].attrs.get(
-                        "representation"
-                    )
-                    if isinstance(representation, bytes):
-                        representation = representation.decode()
-            else:
-                representation = None
-            representation = uw.mpi.comm.bcast(representation, root=0)
+                    has_field = f"fields/{data_name}" in h5f
+                    if has_field:
+                        representation = h5f[f"fields/{data_name}"].attrs.get(
+                            "representation"
+                        )
+                        if isinstance(representation, bytes):
+                            representation = representation.decode()
+            has_field, representation = uw.mpi.comm.bcast(
+                (has_field, representation), root=0)
+            if not has_field:
+                if self._petsc_payload_name(data_file, data_name) is not None:
+                    return self.read_checkpoint(data_file, data_name=data_name)
+                raise RuntimeError(
+                    f"read_timestep: {data_file} holds no field {data_name!r} "
+                    f"(no fields/{data_name}) and no PETSc reload payload for it. "
+                    f"Write it with create_xdmf=True for read_timestep, or with "
+                    f"petsc_reload=True for read_checkpoint.")
             if representation == "dg1_corner_nodal":
                 return self._read_dg1_corner_timestep(
                     data_file,
