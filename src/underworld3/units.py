@@ -105,6 +105,9 @@ def _owning_meshvar(symbol):
     return ref() if callable(ref) else ref
 
 
+from underworld3.function.unit_conversion import MismatchedSumError  # noqa: E402
+
+
 def _extract_units_info(obj):
     """
     Extract units information from various object types.
@@ -196,6 +199,8 @@ def _extract_units_info(obj):
                 sym_units_info = _extract_units_info(obj.sym)
                 if sym_units_info[0]:  # If .sym has units, return them
                     return sym_units_info
+        except MismatchedSumError:
+            raise                   # a mismatched sum inside is refused, not unread
         except Exception:
             pass
         return False, None, None

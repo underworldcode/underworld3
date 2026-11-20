@@ -481,7 +481,7 @@ def _arrhenius_constants():
 @pytest.mark.parametrize("func", ["exp", "log", "sin", "tanh"])
 def test_a_dimensional_argument_is_refused(units_model, func):
     """``exp(eta1)`` has no meaning: a transcendental function needs a
-    dimensionless argument (H1's case ``T*exp(eta1)`` was accepted)."""
+    dimensionless argument (``T*exp(eta1)`` was accepted)."""
     _box()
     e1, _e0, _E, _R, _T0 = _arrhenius_constants()
     with pytest.raises(ValueError, match=func):
@@ -512,7 +512,7 @@ def test_dimensionless_arguments_are_accepted(units_model):
 @pytest.mark.tier_b
 def test_coordinates_divided_by_a_length_are_dimensionless_arguments(units_model):
     """``sin(pi*x/W)`` and ``exp(x/L)``: a coordinate carries length, so divided by
-    a length it is a dimensionless argument (H1's regression on #1197)."""
+    a length it is a dimensionless argument (a regression found in the parallel review of #1197)."""
     mesh = _box()
     x, y = mesh.X
     W = uw.expression("W_c", uw.quantity(30, "km"), "width")
@@ -554,7 +554,7 @@ def test_a_dimensional_argument_is_refused_at_the_parameter_setter(units_model):
     st.constitutive_model.Parameters.shear_viscosity_0 = e0 * sympy.exp(-e1 / e0)
 
 
-# --- H1's review of #1197 at cca957b4 -------------------------------------
+# --- The parallel review of #1197 at cca957b4 -------------------------------------
 # The verdict was cached per expression; a named expression keeps its identity
 # when its value is reassigned, so the verdict went stale in both directions.
 
@@ -690,7 +690,7 @@ def test_the_hint_for_a_power_shows_the_power(units_model):
         uw.function.evaluate(2 ** x, _PTS)
 
 
-# --- H1's review of #1197 at 883f1c52 -------------------------------------
+# --- The parallel review of #1197 at 883f1c52 -------------------------------------
 # get_units read a sum of dimensionless terms as "unknown", and then took the
 # units of the first field in it: T/T0 - 1 came back in kelvin, so the
 # normalised Arrhenius factor was refused while the same factor written as a
@@ -747,7 +747,7 @@ def test_a_sum_of_terms_with_different_dimensions_is_refused_naming_them(units_m
     assert "W_m" in str(refused.value) and "T_a" in str(refused.value)
 
 
-# --- H1's review of #1197 at 7355f469 -------------------------------------
+# --- The parallel review of #1197 at 7355f469 -------------------------------------
 
 
 @pytest.mark.level_1
@@ -791,8 +791,101 @@ def test_a_mismatched_sum_is_refused_at_the_setter(units_model):
 def test_the_mismatch_message_prints_a_negated_constant_as_its_number(units_model):
     mesh = _box()
     x, _y = mesh.X
-    c = uw.quantity(-3.5, "dimensionless")
+    c = uw.quantity(-3.5, "K")
     with pytest.raises(ValueError) as refused:
         uw.function.evaluate(x - c, _PTS)
     assert "--" not in str(refused.value)
-    assert "give it its units" in str(refused.value)
+    assert "3.5" in str(refused.value) and "units of" in str(refused.value)
+
+
+# --- The parallel review of #1197 at 5bac99b5 -----------------------------
+# Min, Max and Piecewise read as pure numbers, so a viscosity floor, cap or
+# layer beside a viscosity was a mismatched sum.
+
+
+def _stokes_with(viscosity):
+    mesh = _box()
+    st = uw.systems.Stokes(mesh)
+    st.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    st.constitutive_model.Parameters.shear_viscosity_0 = viscosity
+    for wall in ("Top", "Bottom", "Left", "Right"):
+        st.add_essential_bc((0.0, 0.0), wall)
+    return st
+
+
+@pytest.mark.level_2
+@pytest.mark.tier_b
+@pytest.mark.parametrize("form", ["floor and cap", "layer"])
+def test_a_viscosity_with_min_max_or_piecewise_sets_and_solves(units_model, form):
+    e1, e0, E, R, T0 = _arrhenius_constants()
+    eta_max = uw.expression(r"\eta_{max}", uw.quantity(1e25, "Pa*s"), "cap")
+    W = uw.expression("W_p", uw.quantity(30, "km"), "width")
+    mesh = _box()
+    x, _y = mesh.X
+    viscosity = {
+        "floor and cap": e1 + sympy.Min(e1 * sympy.exp(E / (R * T0)), eta_max),
+        "layer": e0 + sympy.Piecewise((e1, x > W / 2), (e0, True)),
+    }[form]
+    assert uw.get_units(viscosity) is not None
+    st = uw.systems.Stokes(mesh)
+    st.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    st.constitutive_model.Parameters.shear_viscosity_0 = viscosity
+    for wall in ("Top", "Bottom", "Left", "Right"):
+        st.add_essential_bc((0.0, 0.0), wall)
+    st.solve()
+
+
+@pytest.mark.level_1
+@pytest.mark.tier_b
+def test_max_of_two_temperatures_over_one_is_dimensionless(units_model):
+    mesh = _box()
+    T = _temperature_field(mesh).sym[0]
+    _e1, _e0, _E, _R, T0 = _arrhenius_constants()          # T0 1600 K, T 1400 K
+    r = uw.function.evaluate(sympy.exp(sympy.Max(T, T0) / T0 - 1), _PTS)
+    assert float(np.asarray(r).ravel()[0]) == pytest.approx(1.0)
+
+
+@pytest.mark.level_1
+@pytest.mark.tier_b
+def test_a_min_of_different_dimensions_is_refused(units_model):
+    mesh = _box()
+    T = _temperature_field(mesh).sym[0]
+    e1, *_ = _arrhenius_constants()
+    with pytest.raises(ValueError, match="Min of terms with different dimensions"):
+        uw.function.evaluate(sympy.Min(e1, T), _PTS)
+
+
+@pytest.mark.level_1
+@pytest.mark.tier_b
+@pytest.mark.parametrize("form", ["number", "dimensionless quantity", "non-dimensionalised"])
+def test_a_dimensionless_constant_beside_a_length_is_read_in_model_units(units_model, form):
+    """Dimensionless is dimensionless, whatever form it comes in."""
+    mesh = _box()
+    x, _y = mesh.X
+    c = {"number": 0.25,
+         "dimensionless quantity": uw.quantity(0.25, "dimensionless"),
+         "non-dimensionalised": uw.non_dimensionalise(uw.quantity(7.5, "km"))}[form]
+    r = uw.function.evaluate(x - c, _PTS)
+    assert float(np.asarray(getattr(r, "magnitude", r)).ravel()[0]) == pytest.approx(
+        float(np.asarray(uw.function.evaluate(x - 0.25, _PTS).magnitude).ravel()[0]))
+
+
+@pytest.mark.level_2
+@pytest.mark.tier_b
+def test_a_sum_made_mismatched_by_a_reassignment_is_refused_at_the_solve(units_model):
+    """A sum with a coordinate in it (a sum of constants only is folded into one
+    constant when set, and does not follow its parts)."""
+    _e1, e0, _E, _R, _T0 = _arrhenius_constants()
+    k = uw.expression("k_v", uw.quantity(1e22, "Pa*s"), "made a temperature later")
+    W = uw.expression("W_v", uw.quantity(30, "km"), "width")
+    mesh = _box()
+    x = mesh.X[0]
+    st = uw.systems.Stokes(mesh)
+    st.constitutive_model = uw.constitutive_models.ViscousFlowModel
+    st.constitutive_model.Parameters.shear_viscosity_0 = e0 + k * x / W
+    for wall in ("Top", "Bottom", "Left", "Right"):
+        st.add_essential_bc((0.0, 0.0), wall)
+    st.solve()
+    k.sym = uw.quantity(300, "K")
+    with pytest.raises(ValueError, match="different dimensions"):
+        st.solve()
