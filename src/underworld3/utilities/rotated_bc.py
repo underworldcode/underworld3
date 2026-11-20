@@ -1963,6 +1963,29 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
             _zero_rows_local(lifted, normal_rows)
             ref = max(ref, lifted.norm())
             lifted.destroy()
+            # A declared pressure null space says the domain is enclosed, so the
+            # datum's net normal flux must vanish. The lifted right-hand side
+            # carries that flux on the pressure rows; a datum with a net flux has
+            # no solution, and was only warned about after the solve (UNFILED 36).
+            # Both reductions are collective, so every rank refuses alike.
+            if use_pnull:
+                bp = bhat.getSubVector(pres_is)
+                net_flux, bp_norm = bp.sum(), bp.norm()
+                bhat.restoreSubVector(pres_is, bp)
+                if abs(net_flux) > 1.0e-8 * bp_norm:
+                    linear_failure = (
+                        f"[rotated_bc] the wall-normal datum carries a net flux of "
+                        f"{net_flux:.4e} (the sum of the lifted right-hand side over "
+                        f"the pressure rows, against its norm {bp_norm:.4e}) into a "
+                        f"domain declared enclosed (petsc_use_pressure_nullspace). An "
+                        f"incompressible flow in an enclosed domain has no net "
+                        f"boundary flux, so this has no solution. Make the datum's "
+                        f"surface integral zero, or leave a wall open (a natural or "
+                        f"traction condition) and unset the pressure null space.")
+                    exit_reason = _SNES_DIVERGED_LINEAR_SOLVE
+                    bhat.destroy()
+                    Fhat.destroy()
+                    break
         elif assemble:
             Aop.zeroRowsColumns(normal_rows, diag=diag_scale)
         # else: the cached Aop already carries the eliminated constraint
