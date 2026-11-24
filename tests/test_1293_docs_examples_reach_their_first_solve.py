@@ -6,6 +6,8 @@ This runs each listed script in a subprocess, in a copy of its own folder, and
 stops it cleanly after its first solve returns: the script has built its mesh,
 variables, solver and conditions with the current API, and the solve has run.
 What follows the first solve (plots, time loops, output) is not checked.
+Five beginner tutorials, the first thing a new user runs, are executed whole as
+notebooks (NOTEBOOKS below), with the same rendering stub.
 
 Selection rule: scripts that ran to completion in #944's runs, a few per
 physics family, each at most 30 s there to its end (macOS, Apple M4, serial),
@@ -26,6 +28,18 @@ import pytest
 pytestmark = [pytest.mark.level_2, pytest.mark.tier_b, pytest.mark.timeout(1800)]
 
 EXAMPLES = pathlib.Path(__file__).resolve().parent.parent / "docs" / "examples"
+TUTORIALS = pathlib.Path(__file__).resolve().parent.parent / "docs" / "beginner" / "tutorials"
+
+# Beginner tutorials, the first thing a new user runs: executed whole, as a
+# reader would, since each takes 8 to 10 s to its end (#944). The rule: the
+# cheapest of those that ran to completion as notebooks on development.
+NOTEBOOKS = [
+    "2-Variables.ipynb",
+    "4-Solvers-i-Poisson.ipynb",
+    "5-Solvers-i-Poisson-Validation.ipynb",
+    "7-Timestepping-simple.ipynb",
+    "16-Richards-Equation-Groundwater.ipynb",
+]
 
 SCRIPTS = [
     # Poisson, diffusion and the semi-Lagrangian heat solvers
@@ -114,3 +128,34 @@ def test_the_script_reaches_its_first_solve(script, tmp_path):
     tail = (run.stdout + run.stderr)[-3000:]
     assert "REACHED_FIRST_SOLVE" in run.stdout, tail
     assert run.returncode == 0, tail
+
+
+def test_every_listed_tutorial_exists():
+    missing = [n for n in NOTEBOOKS if not (TUTORIALS / n).is_file()]
+    assert not missing, missing
+
+
+@pytest.mark.parametrize("notebook", NOTEBOOKS)
+def test_the_tutorial_runs_as_a_notebook(notebook, tmp_path, monkeypatch):
+    nbformat = pytest.importorskip("nbformat")
+    nbclient = pytest.importorskip("nbclient")
+    work = tmp_path / "tutorials"
+    shutil.copytree(TUTORIALS, work, ignore=shutil.ignore_patterns("*.out.ipynb", "__pycache__"))
+    nb = nbformat.read(work / notebook, as_version=4)
+    # the same rendering stub as the scripts' bootstrap: CI has no OpenGL
+    stub = textwrap.dedent("""
+        import pyvista
+        class _NoRender:
+            def __init__(self, *args, **kwargs):
+                pass
+            def __getattr__(self, name):
+                return lambda *args, **kwargs: None
+        pyvista.OFF_SCREEN = True
+        pyvista.Plotter = _NoRender
+    """)
+    nb.cells.insert(0, nbformat.v4.new_code_cell(stub))
+    for key, value in (("OMP_NUM_THREADS", "1"), ("MPLBACKEND", "Agg"), ("PYVISTA_OFF_SCREEN", "true")):
+        monkeypatch.setenv(key, value)
+    client = nbclient.NotebookClient(nb, timeout=300, kernel_name="python3",
+                                     resources={"metadata": {"path": str(work)}})
+    client.execute()

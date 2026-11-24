@@ -615,8 +615,17 @@ P2). `boundary_normal_traction` and
 (`_wall_normal_loads`), which counts each node once, on the rank owning its
 first free component. Before #936 both read those components from an unzeroed
 pooled vector, and the integral dropped a node whose first component was
-constrained. At such a corner the rotated constraint itself still ignores a
-nonzero pinned value (#939).
+constrained.
+
+At such a corner the rotated constraint is reduced onto the free components
+with the pinned ones at their values: `n_F·v_F = −n_P·g_P` (#939). With the
+lid normal (3/5, 4/5) meeting `u_z = 1/20` on a side wall, the corner takes
+`u_x = −1/15`. Before the fix the reduction held the pinned components at zero,
+so `n·v = 0.04` there. A solver whose corner pin is anything but a plain zero
+rebuilds its rotation at every solve, so a pin that follows the model clock is
+read again each time. The solve still warns where the wall's condition cannot
+hold: every component pinned, a wall normal lying wholly in the pinned
+components, or a pin that cannot be evaluated at the node (a field).
 
 ### Which de-smearing mass (3-D)
 

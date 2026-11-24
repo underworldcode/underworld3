@@ -154,6 +154,29 @@ def _datum_net_flux(solver, datum_specs):
     return F, S
 
 
+def _refuse_a_field_normal(normal, boundary):
+    """Refuse a ``normal=`` that holds a field. It takes an expression of the
+    mesh coordinates, evaluated at each wall node; a mesh variable's ``.sym`` is a
+    function of the coordinates, passes the check for stray symbols, and failed
+    inside ``lambdify`` with a SyntaxError (UNFILED 37). The expression is the
+    same on every rank, so every rank refuses alike."""
+    if not isinstance(normal, sympy.MatrixBase):
+        return
+    from sympy.core.function import AppliedUndef
+    from underworld3.function.expressions import unwrap
+    fields = set()
+    for c in normal:
+        expr = sympy.sympify(unwrap(c, keep_constants=False, return_self=False))
+        fields |= {str(f.func) for f in expr.atoms(AppliedUndef)}
+    if fields:
+        raise ValueError(
+            f"add_rotated_freeslip_bc: normal= for boundary '{boundary}' holds the "
+            f"field(s) {sorted(fields)}. normal= takes an expression of the mesh "
+            f"coordinates (mesh.X), such as X / |X| on a spherical wall, or a "
+            f"constant; it is evaluated at each wall node, and a field is not. "
+            f"Leave normal=None for the geometric normal of the mesh's own wall.")
+
+
 def _normal_source(solver, normal, boundary):
     """``(sym_fn, const_normal)`` for an analytic / constant normal spec: a
     lambdified numpy callable of ``mesh.X`` for a sympy normal (unwrapped first,
@@ -163,6 +186,7 @@ def _normal_source(solver, normal, boundary):
     if normal is None:
         return None, None
     if isinstance(normal, sympy.Matrix):
+        _refuse_a_field_normal(normal, boundary)
         from underworld3.function.expressions import unwrap
         comps = [sympy.sympify(unwrap(normal[0, k], keep_constants=False,
                                       return_self=False))
@@ -389,87 +413,51 @@ def _sum_node_vectors_across_ranks(solver, contribs):
 
     Each boundary facet is labelled on exactly one rank, and on the rank that owns it
     (measured: no facet is labelled twice and none is labelled away from its owner), so
-    a plain ADD is exact and needs no de-duplication. The velocity field already has
-    ``dim`` DOFs at exactly these points, so the sum rides the DM's own local↔global
-    scatter: ADD into the global vector accumulates the ghost copies onto the owner,
-    and scattering back gives every rank the identical total.
+    a plain ADD is exact and needs no de-duplication.
+
+    The sum rides the DM's point star forest, ``dim`` doubles per point: each rank's
+    contributions are reduced onto the point's owner and the total is broadcast back
+    to every copy. It used to ride the velocity field's local-to-global scatter, which
+    carries no DOF an essential condition constrains: at a node where a rotated wall
+    meets a wall pinning one component, that component kept each rank's own
+    contribution, zero on a rank holding none of the node's facets. The normal there
+    then depended on the partition (#941), and so did the traction read at the node
+    and, since #939, the value the corner's reduced constraint takes from the pinned
+    part of the normal. Every component is summed now.
 
     COLLECTIVE — a rank owning no facet of this boundary still takes part.
     """
+    from mpi4py import MPI
+
     dm = solver.dm
     dim = solver.mesh.cdim
     if dm.comm.getSize() == 1:
         return contribs
 
-    lsec = dm.getLocalSection()
-    lvec = dm.getLocalVec()
-    gvec = dm.getGlobalVec()
+    pStart, pEnd = dm.getChart()
+    local = np.zeros((pEnd - pStart, dim))
+    for q, v in contribs.items():
+        local[q - pStart] = v
+    total = local.copy()
+    sf = dm.getPointSF()
+    unit = MPI.DOUBLE.Create_contiguous(dim)
+    unit.Commit()
     try:
-        lvec.set(0.0)
-        larr = lvec.getArray()
-        for q, v in contribs.items():
-            lo = lsec.getFieldOffset(q, _VELOCITY_FIELD)
-            larr[lo:lo + dim] = v
-        gvec.set(0.0)
-        dm.localToGlobal(lvec, gvec, addv=PETSc.InsertMode.ADD_VALUES)
-        dm.globalToLocal(gvec, lvec)
-        summed = lvec.getArray()
-        out = {}
-        for q in _local_boundary_candidates(dm, lsec) | set(contribs):
-            lo = lsec.getFieldOffset(q, _VELOCITY_FIELD)
-            w = np.array(summed[lo:lo + dim], dtype=float)
-            # LOAD-BEARING: the candidate set over-collects (see
-            # _local_boundary_candidates); a point off this boundary contributes
-            # nothing anywhere, so its summed normal is exactly zero and it is
-            # dropped here. This is what makes the over-collection safe.
-            if w.any():
-                out[q] = w
-            elif q in contribs:
-                # Velocity DOFs constrained out of the global vector (an essential
-                # BC meeting this boundary) are not written back: they keep this
-                # rank's own contribution, which the first branch already takes, so
-                # this one is reached only by a node whose sum is zero in every
-                # component. build_rotation builds a reduced frame on a node's free
-                # components and skips a fully constrained node; the traction
-                # readers read zero at a constrained component, so an essential
-                # wall's components contribute nothing to σ_nn (#936). The nodes are
-                # the corners where a rotated wall meets an essential one (measured:
-                # 2 of 75 on the test_1070 configuration). A marker (the analytic
-                # path) loses only the constrained components, so where one component
-                # is free such a node is kept on every rank that holds it.
-                out[q] = contribs[q]
-        return out
+        # leaves (copies this rank does not own) add onto their owner's row; the
+        # owner's own contribution is already in its row of `total`
+        sf.reduceBegin(unit, local, total, MPI.SUM)
+        sf.reduceEnd(unit, local, total, MPI.SUM)
+        # and every copy takes the owner's total (separate buffers: the owner's
+        # rows are the roots, the copies' rows the leaves)
+        summed = total.copy()
+        sf.bcastBegin(unit, total, summed, MPI.REPLACE)
+        sf.bcastEnd(unit, total, summed, MPI.REPLACE)
     finally:
-        dm.restoreLocalVec(lvec)
-        dm.restoreGlobalVec(gvec)
-
-
-def _local_boundary_candidates(dm, lsec):
-    """Velocity points on a support-1 facet of this rank's LOCAL mesh — a SUPERSET of
-    its boundary nodes, deliberately.
-
-    The labelled facet list is not enough to enumerate a rank's boundary nodes: a rank
-    can OWN a node every one of whose labelled facets lives on a neighbour (the label
-    goes to one rank per facet, so a seam node's facets are split between them), and
-    such a node would otherwise never get a constraint row.
-
-    Support 1 does NOT mean "on the domain boundary": the facets on the outer fringe of
-    the overlap layer also have support 1 locally while being interior globally, and
-    measured they are 13-27% of what this returns. The caller is what makes the result
-    correct — those points receive no contribution from any labelled facet, so their
-    summed normal is exactly zero and the ``w.any()`` test in
-    :func:`_sum_node_vectors_across_ranks` drops them. That test is load-bearing, not
-    an aside; do not remove it while over-collecting here.
-    """
-    fS, fE = dm.getHeightStratum(1)
-    out = set()
-    for f in range(fS, fE):
-        if dm.getSupportSize(f) != 1:
-            continue
-        for q in (int(c) for c in dm.getTransitiveClosure(f)[0]):
-            if lsec.getFieldDof(q, _VELOCITY_FIELD) > 0:
-                out.add(q)
-    return out
+        unit.Free()
+    # LOAD-BEARING: a point off this boundary contributes nothing anywhere, so its
+    # total is exactly zero and it is dropped here
+    rows = np.flatnonzero(np.any(summed != 0.0, axis=1))
+    return {int(r) + pStart: summed[r].copy() for r in rows}
 
 
 def _eval_datum(dspec, coords, solver):
@@ -597,6 +585,9 @@ def build_rotation(solver, boundaries, datum_specs=None):
     given_dofs = {}
     datum_nodes = []                             # (global row, point, boundary name, normal sign)
     pinned_value_conflicts = []
+    # rotated rows that carry a pinned value at a partly constrained node (#939)
+    pin_datum = {}
+    pins_live = False
     for q, nrms in node_normals.items():
         lo = lsec.getFieldOffset(q, _VELOCITY_FIELD)
         grows = [int(l2g.apply([lo + c])[0]) for c in range(dim)]
@@ -604,11 +595,14 @@ def build_rotation(solver, boundaries, datum_specs=None):
         # components an essential condition holds (read from the section, so a
         # ghost copy of the node gives the same answer as its owner)
         pinned = [int(c) for c in lsec.getFieldConstraintIndices(q, _VELOCITY_FIELD)]
+        pin = None
         if pinned and q not in node_dspec:
-            conflict = _pinned_value_along_normal(solver, dm, q, pinned, nrms)
+            pin = _pinned_values_at(solver, dm, q, pinned, nrms)
+            pins_live = pins_live or pin[3]
+        if not free:                             # every component pinned already
+            conflict = _pinned_value_along_normal(pin, nrms)
             if conflict is not None:
                 pinned_value_conflicts.append(conflict)
-        if not free:                             # every component pinned already
             continue
         if len(free) < dim:
             # PARTIALLY CONSTRAINED NODE — a rotated wall meeting an essential one.
@@ -623,19 +617,41 @@ def build_rotation(solver, boundaries, datum_specs=None):
             # sides (issue #616; the corner reaction of #608 is the same node).
             #
             # The constraint is still imposable on what is left: with the pinned
-            # components held at zero, n̂·v = 0 reduces to n̂_F·v_F = 0 on the free
-            # subspace F. Build the frame there and constrain its normal rows.
+            # components at their values g_P, n̂·v = 0 reduces to
+            # n̂_F·v_F = -n̂_P·g_P on the free subspace F (#939). Build the frame
+            # there, constrain its normal rows, and give them that value.
             if q in node_dspec:
                 # A prescribed v_n datum at such a node needs the pinned components'
                 # values to reduce the affine constraint, which are not read here.
                 # Preserve the previous behaviour rather than impose the wrong datum.
                 _warn_once_partial_datum()
                 continue
-            Mf = np.array(nrms, dtype=float)[:, free]
-            scale = float(np.linalg.norm(np.array(nrms, dtype=float)))
+            M = np.array(nrms, dtype=float)
+            Mf = M[:, free]
+            scale = float(np.linalg.norm(M))
             if float(np.linalg.norm(Mf)) <= 1e-12 * max(scale, 1.0):
-                # the normal lies entirely in the pinned subspace: already implied
+                # the normal lies entirely in the pinned subspace: the pinned value
+                # decides v.n there, and nothing free is left to correct it
+                conflict = _pinned_value_along_normal(pin, nrms)
+                if conflict is not None:
+                    pinned_value_conflicts.append(conflict)
                 continue
+            # the free components' share of each wall's condition: the least-squares
+            # v_F with M_F v_F = -M_P g_P. With one normal (a wall meeting a pin) it
+            # is exact; a residual means the node's walls ask for more than the free
+            # components can give, which is reported as before.
+            v_free = np.zeros(len(free))
+            if pin is not None:
+                values, walls, known, _live = pin
+                if values:
+                    cols = sorted(values)
+                    b = -M[:, cols] @ np.array([values[c] for c in cols])
+                    v_free = np.linalg.lstsq(Mf, b, rcond=None)[0]
+                    left_over = float(np.linalg.norm(Mf @ v_free - b))
+                    if left_over > 1.0e-12 * max(float(np.linalg.norm(b)), 1.0e-300):
+                        pinned_value_conflicts.append((walls, left_over, known))
+                if not known:
+                    pinned_value_conflicts.append((walls, 0.0, False))
             rows = [grows[c] for c in free]
             if not (rstart <= rows[0] < rend):   # not owned by this rank → skip
                 continue
@@ -645,6 +661,10 @@ def build_rotation(solver, boundaries, datum_specs=None):
                 for j in range(len(free)):
                     Q.setValue(rows[i], rows[j], float(Vtf[i, j]))
             normal_rows.extend(rows[:rf])
+            for i in range(rf):
+                held = float(Vtf[i] @ v_free)
+                if held != 0.0:
+                    pin_datum[rows[i]] = held
             for name, nrm in node_given.get(q, ()):
                 given_dofs.setdefault(name, []).append((grows, nrm))
             continue
@@ -794,6 +814,17 @@ def build_rotation(solver, boundaries, datum_specs=None):
                 # takes the untouched free-slip RHS path and is bit-identical to it.
                 if val != 0.0:
                     datum_map[grow0] = float(sgn * val)
+    # a pinned value at a partly constrained node is a datum on its reduced row
+    # (#939); a zero one is left out, as a zero datum is
+    datum_map.update(pin_datum)
+    # a fixed pin's datum is kept with a cached rotation and reused with it
+    solver._rotated_pin_datum = dict(pin_datum)
+    # whether any pin at such a node can change between solves (the clock, a
+    # named expression, a field): the rotation is then rebuilt at every solve,
+    # so the value is read again (a cached rotation would keep its first value).
+    # The same on every rank.
+    from mpi4py import MPI
+    solver._rotated_pins_live = bool(mpi.comm.allreduce(bool(pins_live), op=MPI.LOR))
     solver._rotated_given_wall_dofs = {
         name: (np.array([g for g, _n in entries], dtype=np.int64).reshape(-1, dim),
                np.array([n for _g, n in entries], dtype=float).reshape(-1, dim))
@@ -830,24 +861,22 @@ def _value_at_point(solver, value, x):
     return float(expr) if expr.is_number else None
 
 
-def _pinned_value_along_normal(solver, dm, point, pinned, normals):
-    """How far an essential value at ``point`` breaks the rotated wall's condition.
+def _pinned_values_at(solver, dm, point, pinned, normals):
+    """The essential values at ``point`` on the ``pinned`` velocity components that
+    the rotated walls' ``normals`` see (#939).
 
-    The reduced constraint at a node shared with an essential condition holds the
-    ``pinned`` components at zero, so the wall-normal velocity there comes out as
-    n_P . g_P: the pinned part of the normal against the prescribed value (#939).
-    Returns ``(walls, size, known)``: the essential walls whose values contribute,
-    the largest |n_P . g_P| over the node's normals, and whether every value could
-    be evaluated here. ``None`` when nothing contributes.
-
-    The value is read when the rotation is built. The rotation is kept across
-    solves, so a value that changes later (one that follows the model clock) is
-    not read again until the rotation is rebuilt.
+    Returns ``(values, walls, known, live)``: ``{component: value}`` for the values
+    that could be evaluated here and are nonzero, the essential walls whose values
+    contribute, whether every value could be evaluated, and whether any value is
+    not identically zero as written (one that follows the model clock is live at
+    t = 0). Rank-local; a value that cannot be read is reported as unknown, never
+    raised, so every rank reaches the collective steps after it.
     """
     dim = len(normals[0])
     values = {}
     walls = []
     known = True
+    live = False
     x = None
     for bc in solver.essential_bcs:
         if bc.f_id != _VELOCITY_FIELD or not dm.hasLabel(bc.boundary):
@@ -873,6 +902,23 @@ def _pinned_value_along_normal(solver, dm, point, pinned, normals):
                 value, number = bc, None
             if value is None:
                 continue
+            try:
+                # Read as written, before any unwrapping: the model clock (mesh.t)
+                # and any named expression unwrap to their values now, zero at a
+                # first solve, which says nothing about the next one. A value that
+                # can change between solves is live: a named expression or the
+                # clock (a symbol other than a coordinate) or a field (an applied
+                # function). A number or an expression of the coordinates alone is
+                # fixed on a fixed mesh, and a moved mesh tears the cache down.
+                written = sympy.sympify(value)
+                from sympy.core.function import AppliedUndef
+                from sympy.vector.scalar import BaseScalar
+                live = live or bool(
+                    {a for a in written.free_symbols if not isinstance(a, BaseScalar)}
+                    or written.atoms(AppliedUndef))
+            except Exception:
+                # Sanctioned: as above, a value that cannot be read is taken as live
+                live = True
             if number is None:
                 known = False
             elif number == 0.0:
@@ -881,6 +927,18 @@ def _pinned_value_along_normal(solver, dm, point, pinned, normals):
                 values[c] = number
             if bc.boundary not in walls:
                 walls.append(bc.boundary)
+    return values, walls, known, live
+
+
+def _pinned_value_along_normal(pin, normals):
+    """How far the pinned values ``pin`` (from :func:`_pinned_values_at`) break the
+    rotated wall's condition at a node where it cannot be met: every velocity
+    component pinned, or a wall normal that lies wholly in the pinned components.
+    Returns ``(walls, size, known)``, the largest |n_P . g_P| over the node's
+    normals, or ``None`` when nothing contributes."""
+    if pin is None:
+        return None
+    values, walls, known, _live = pin
     if not walls:
         return None
     size = max(abs(sum(float(n[c]) * g for c, g in values.items())) for n in normals)
@@ -905,17 +963,16 @@ def _report_pinned_values_along_normals(solver, conflicts):
     for wall in sorted(set(largest) - reported):
         reported.add(wall)
         size, known = largest[wall]
-        found = (f"has a component of {size:.3g} along the wall normal" if known else
+        found = (f"has a component of {size:.3g} along the wall normal that the free "
+                 f"velocity components there cannot cancel (every component is pinned, "
+                 f"or the walls meeting there ask for more than is left free), so v.n "
+                 f"there is not the prescribed one" if known else
                  "could not be evaluated at the node and may have a component along "
-                 "the wall normal")
+                 "the wall normal; the wall's condition there is reduced as if it were "
+                 "zero, so v.n may not be the prescribed one")
         mpi.pprint(f"[rotated_bc] WARNING: a rotated wall shares a node with the essential "
-                   f"BC on {wall!r}, whose prescribed value there {found}. The wall-normal "
-                   f"constraint at such a node is reduced as if the essential value were "
-                   f"zero (the affine reduction against the pinned components is not "
-                   f"implemented), so v.n there is not the prescribed one. Other nodes "
-                   f"are unaffected. The value was read as the rotation was built; a "
-                   f"value that changes later is not read again while the rotation is "
-                   f"kept.")
+                   f"BC on {wall!r}, whose prescribed value there {found}. Other nodes "
+                   f"are unaffected (#939).")
 
 
 _PARTIAL_DATUM_WARNED = [False]
@@ -1628,13 +1685,17 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
     if cache is not None:
         Q, Qt = cache["Q"], cache["Qt"]
         normal_rows = cache["normal_rows"]
-        datum_map = {}                       # cache_allowed excludes datum solves
+        # cache_allowed excludes datum solves; a fixed pin's datum rides the cache
+        datum_map = dict(cache.get("pin_datum", {}))
         custom_Pl = cache.get("custom_Pl")
         rotation_reused = True
     else:
         Q, Qt, normal_rows, datum_map = build_rotation(solver, boundaries, datum_specs)
         custom_Pl = None if use_lu else _build_rotated_custom_Pl(solver, Q, normal_rows)
         rotation_reused = False
+        if getattr(solver, "_rotated_pins_live", False):
+            # a pinned value on a reduced row is read at every solve (#939)
+            cache_allowed = False
 
     # The iteration-0 fast path: skip Jacobian assembly / ptap / PCSetUp when
     # the operator key proves nothing operator-relevant changed AND the
@@ -1979,6 +2040,26 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
                 Mp = _pressure_mass_schur_pmat(solver) if has_pressure else None
                 nsp = _rotated_nullspace(solver, Q, normal_rows)   # J assembled above
                 _collect_rotation_modes(nsp)
+                if rot_modes and iters == 0:
+                    # The modes exist only from here on an uncached solve (#884):
+                    # iteration 0's residual, r0 and the rest-state residual were
+                    # measured with the component the solve cannot reduce, which
+                    # every later residual, and a cached re-solve's, leave out. They
+                    # are measured in the same quotient space now, before the line
+                    # search starts from rnorm. Every rank holds the same modes.
+                    for m in rot_modes:
+                        Fhat.axpy(-Fhat.dot(m), m)
+                    rnorm = Fhat.norm()
+                    rnorm_history[-1] = float(rnorm)
+                    r0 = rnorm
+                    if fnorm_rest is not None:
+                        z = dm.getGlobalVec()
+                        z.set(0.0)
+                        Fz = rotated_residual(z)
+                        fnorm_rest = Fz.norm()
+                        Fz.destroy()
+                        dm.restoreGlobalVec(z)
+                    ref = max(r0, fnorm_rest) if fnorm_rest is not None else r0
             else:
                 # a cached workspace keeps its null space, and the verdict on the
                 # declared modes it was built with
@@ -2248,6 +2329,7 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
             "geometry_sig": geometry_sig,
             "tolerance": float(solver.tolerance),
             "Q": Q, "Qt": Qt, "normal_rows": normal_rows,
+            "pin_datum": dict(getattr(solver, "_rotated_pin_datum", {})),
             "custom_Pl": custom_Pl,
             "Ahat": Ahat, "diag_scale": diag_scale, "ctx": ctx,
             "coefficient_variables": coefficient_variables,
