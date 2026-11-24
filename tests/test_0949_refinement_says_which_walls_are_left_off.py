@@ -11,6 +11,7 @@ warned only that "N vertices ... stay where refinement placed them". The warning
 now names the walls they are left off and, for CubedSphere, the remedy. The
 cross-patch flip that would place them is still open on #949.
 """
+import ast
 import re
 import warnings
 
@@ -34,10 +35,15 @@ def test_a_crease_that_holds_vertices_back_names_the_walls_and_the_remedy():
     with uw.selective_ranks(0) as selected:
         if selected:
             assert len(messages) == 1, messages
-            # all on the inner wall; the count is the platform's gmsh mesh's
+            # the count, and which walls hold the crease vertices, are the
+            # platform's gmsh mesh's: on macOS all on Lower, on a Linux build
+            # not (H5, 2026-11-22); so any non-empty list of the shell's walls
             held = re.search(r"(\d+) vertices it moved", messages[0])
             assert held and int(held.group(1)) > 0, messages[0]
-            assert "off the walls ['Lower']" in messages[0]
+            walls = re.search(r"off the walls (\[[^\]]*\])", messages[0])
+            assert walls, messages[0]
+            named = ast.literal_eval(walls.group(1))
+            assert named and set(named) <= {"Lower", "Upper"}, messages[0]
             assert "numElements=4" in messages[0] and "simplex=False" in messages[0]
 
 
