@@ -2640,9 +2640,19 @@ def _build_rotated_custom_Pl(solver, Q, normal_rows):
                 advice = ("Build the mesh with refinement levels or through "
                           "adapt() so a coarse tail rides through, and register it "
                           f"with custom_mg.set_custom_fmg(solver, levels{field}).")
+            # A tight datum solve on the fallback asks for less than it can give
+            # (UNFILED 36): measured, not a law, so it is said only then.
+            floor = ""
+            if (float(solver.tolerance) < 1.0e-9
+                    and getattr(solver, "_rotated_freeslip_datum", None)):
+                floor = (f" With a wall-normal datum this fallback was measured to "
+                         f"stall near 1e-10 relative (an annulus, 4e-10 at cell size "
+                         f"0.2 and 1.2e-10 at 0.1), above the requested tolerance "
+                         f"{float(solver.tolerance):.1e}; a registered hierarchy "
+                         f"(custom FMG) reached about 2e-12 on the same case.")
             mpi.pprint("[rotated_bc] WARNING: no multigrid hierarchy is registered "
                        "for this solver (no set_custom_fmg registration, no adapt "
-                       "tail); the velocity block falls back to GAMG. " + advice)
+                       "tail); the velocity block falls back to GAMG. " + advice + floor)
             solver._rotated_gamg_fallback_warned = True
         return None
     walls = bool(getattr(solver, "_rotated_freeslip_bcs", None))
