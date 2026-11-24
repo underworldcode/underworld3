@@ -124,6 +124,36 @@ def _point_coord(dm, dim, cvec, csec, v0, v1, q):
     return np.mean([cvec[csec.getOffset(v) // dim] for v in verts], axis=0)
 
 
+# The datum's net flux through a boundary declared enclosed, relative to its
+# scale: F = ∫ g ds and S = ∫ |g| ds over the walls that carry a datum, by facet
+# quadrature at the mesh's qdegree (UNFILED 36). Measured (annuli and a box,
+# h 0.2 and 0.1): a flux-free datum on walls whose nodes slid along the circle
+# gives F/S = 5e-4 at h 0.2, falling as h^2 (discretisation); walls whose shape
+# moved give a real flux, 7e-3 to 5e-2; a datum with a net flux into a closed
+# box gives 1. Above _NET_FLUX_REFUSE the datum is refused, 40x above the
+# coarse discretisation level and 50x below the box; from _NET_FLUX_WARN up it
+# is warned about, since real and discretisation fluxes can mix at coarse h.
+_NET_FLUX_REFUSE = 2.0e-2
+_NET_FLUX_WARN = 1.0e-3
+
+
+def _datum_net_flux(solver, datum_specs):
+    """``(F, S)`` for the datums in ``datum_specs`` ({boundary: g}); collective."""
+    import underworld3 as uw
+
+    F = S = 0.0
+    from underworld3.function.expressions import unwrap_expression
+
+    for boundary, g in (datum_specs or {}).items():
+        # F and S on one footing: the datum unwrapped once to its non-dimensional
+        # form, then integrated as it is and as its modulus. A dimensional datum
+        # integrated as given and under Abs came back at two scales (H7's review).
+        g = sympy.sympify(unwrap_expression(g, mode="nondimensional"))
+        F += float(uw.maths.BdIntegral(solver.mesh, g, boundary).evaluate())
+        S += float(uw.maths.BdIntegral(solver.mesh, sympy.Abs(g), boundary).evaluate())
+    return F, S
+
+
 def _refuse_a_field_normal(normal, boundary):
     """Refuse a ``normal=`` that holds a field. It takes an expression of the
     mesh coordinates, evaluated at each wall node; a mesh variable's ``.sym`` is a
@@ -1780,6 +1810,18 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
     # residual for singular systems. The Cartesian reaction stash is UNPROJECTED
     # (σ_nn reads velocity rows only).
     use_pnull = has_pressure and bool(getattr(solver, "_petsc_use_pressure_nullspace", False))
+    # the datum's net flux, when the domain is declared enclosed (UNFILED 36)
+    datum_flux = _datum_net_flux(solver, datum_specs) if (use_pnull and datum_specs) else None
+    datum_flux_ratio = (abs(datum_flux[0]) / datum_flux[1]
+                        if datum_flux and datum_flux[1] > 0.0 else 0.0)
+    solver._rotated_datum_flux = datum_flux
+    if _NET_FLUX_WARN < datum_flux_ratio <= _NET_FLUX_REFUSE:
+        mpi.pprint(f"[rotated_bc] WARNING: the wall-normal datum has a net flux of "
+                   f"{datum_flux[0]:.3e} ({datum_flux_ratio:.2e} of its scale ∫|g| ds = "
+                   f"{datum_flux[1]:.3e}) through a boundary declared enclosed "
+                   f"(petsc_use_pressure_nullspace). This is a real flux of the datum on "
+                   f"the walls as they are (a moved wall changes the datum's flux): the "
+                   f"solution violates mass conservation by that amount.")
     # L2 norm of the LAST projected-out gauge component (|mean|·√N over the
     # pressure rows) — kept observable so an INCOMPATIBLE datum cannot hide
     # behind the projection (see the guard after the Newton loop).
@@ -2047,6 +2089,26 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
             _zero_rows_local(lifted, normal_rows)
             ref = max(ref, lifted.norm())
             lifted.destroy()
+            # A declared pressure null space says the domain is enclosed, so the
+            # datum's net normal flux must vanish: one with a real net flux has no
+            # solution, and was only warned about after the solve (UNFILED 36).
+            # F/S is the datum's own surface integral against its scale, the same
+            # on every rank (collective quadrature), so every rank refuses alike.
+            if datum_flux_ratio > _NET_FLUX_REFUSE:
+                linear_failure = (
+                    f"[rotated_bc] the wall-normal datum has a net flux of "
+                    f"{datum_flux[0]:.4e} through the walls that carry it "
+                    f"({datum_flux_ratio:.2e} of its scale ∫|g| ds = "
+                    f"{datum_flux[1]:.4e}), into a domain declared enclosed "
+                    f"(petsc_use_pressure_nullspace). An incompressible flow in an "
+                    f"enclosed domain has no net boundary flux, so this has no "
+                    f"solution. Make the datum's surface integral zero on the walls "
+                    f"as they are, or leave a wall open (a natural or traction "
+                    f"condition) and unset the pressure null space.")
+                exit_reason = _SNES_DIVERGED_LINEAR_SOLVE
+                bhat.destroy()
+                Fhat.destroy()
+                break
         elif assemble:
             Aop.zeroRowsColumns(normal_rows, diag=diag_scale)
         # else: the cached Aop already carries the eliminated constraint
@@ -2222,15 +2284,24 @@ def solve_rotated_freeslip(solver, boundaries, remove_rotation_gauge=True,
     if use_pnull:
         solver._rotated_pressure_gauge_residual = pnull_gauge[0]
         if converged and pnull_gauge[0] > 10.0 * max(rnorm, atol):
-            mpi.pprint(f"[rotated_bc] WARNING: converged in the pressure-gauge "
-                       f"QUOTIENT space, but the projected-out gauge component "
-                       f"(|F̂_p·1|/√N = {pnull_gauge[0]:.2e}) dominates the "
-                       f"converged residual ({rnorm:.2e}). The wall-normal datum "
-                       f"carries a net boundary flux this enclosed incompressible "
-                       f"domain cannot absorb — the velocity field violates mass "
-                       f"conservation at that level. Check the datum's surface "
-                       f"integral (solver._rotated_pressure_gauge_residual holds "
-                       f"this number).")
+            if datum_flux is not None and datum_flux_ratio <= _NET_FLUX_WARN:
+                mpi.pprint(f"[rotated_bc] note: the projected-out pressure-gauge "
+                           f"component (|F̂_p·1|/√N = {pnull_gauge[0]:.2e}) exceeds the "
+                           f"converged residual ({rnorm:.2e}), but the datum's own net "
+                           f"flux is {datum_flux_ratio:.2e} of its scale: the component "
+                           f"comes from the wall discretisation (nodes moved along the "
+                           f"wall), not from a mass-conservation violation, and falls "
+                           f"with the mesh size.")
+            else:
+                mpi.pprint(f"[rotated_bc] WARNING: converged in the pressure-gauge "
+                           f"QUOTIENT space, but the projected-out gauge component "
+                           f"(|F̂_p·1|/√N = {pnull_gauge[0]:.2e}) dominates the "
+                           f"converged residual ({rnorm:.2e}). The wall-normal datum "
+                           f"carries a net boundary flux this enclosed incompressible "
+                           f"domain cannot absorb — the velocity field violates mass "
+                           f"conservation at that level. Check the datum's surface "
+                           f"integral (solver._rotated_pressure_gauge_residual holds "
+                           f"this number).")
 
     Fc.destroy()                     # residual output buffer (reaction persists in the result dict)
     if not rotation_reused:

@@ -90,7 +90,10 @@ def _rotated_annulus(monkeypatch, name, coarse, datum=0):
     th = sympy.atan2(X[1], X[0])
     stokes.bodyforce = (1.0e3 * sympy.cos(4 * th) * sympy.sin(sympy.pi * (r - 0.5) / 0.5)
                         * sympy.Matrix([X[0] / r, X[1] / r]))
-    stokes.add_rotated_freeslip_bc(datum, "Lower")
+    # a nonzero datum is given the shape cos 2θ, whose net flux through the
+    # wall is zero: a constant one would carry a net flux into this domain,
+    # declared enclosed below, and is refused at the lift (UNFILED 36)
+    stokes.add_rotated_freeslip_bc(datum * sympy.cos(2 * th) if datum else 0, "Lower")
     stokes.add_rotated_freeslip_bc(0, "Upper")
     stokes.petsc_use_pressure_nullspace = True
     stokes.tolerance = 1.0e-6
