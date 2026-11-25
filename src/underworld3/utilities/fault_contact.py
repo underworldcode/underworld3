@@ -1,9 +1,11 @@
-r"""Interface conditions on a split-node fault: the frictionless contact.
+r"""Interface conditions on a split-node fault: contact, slip and friction.
 
 A split fault (:mod:`underworld3.utilities.fault_split`) carries two
 geometrically coincident boundaries, ``<name>Plus`` / ``<name>Minus``, whose
 degrees of freedom pair exactly through the split's clone map. This module
-imposes the **frictionless (perfectly slippery) contact** on those pairs:
+imposes the contact condition on those pairs and, on top of it, a law for the
+shear traction. The base case is the **frictionless (perfectly slippery)
+contact**:
 
 .. math::
 
@@ -22,22 +24,35 @@ orthogonal :math:`2\,\mathrm{dim}\times 2\,\mathrm{dim}` block that transforms
 :math:`(\hat n,\hat t)`. The jump-normal row is strongly constrained to zero;
 every other row — the two mean rows and the slip row — is left free, and a
 free slip row IS the zero-shear-traction condition (its conjugate reaction is
-the shear traction, and an unconstrained row carries none). Friction, later,
-is a nonlinear relation placed on that same slip row; prescribed jump-only
-slip is a datum on it.
+the shear traction, and an unconstrained row carries none). An interface law
+is a relation placed on that same slip row,
+
+.. math::
+
+    \hat t\cdot\sigma\cdot\hat n = \tau(V, \sigma_n, \theta),
+
+with :math:`\sigma_n` the effective normal stress and :math:`\theta` a
+state variable. The laws provided are viscous (:func:`add_viscous_fault_bc`,
+:math:`\tau = \eta_f V`), regularised Coulomb
+(:func:`add_coulomb_fault_bc`) and regularised rate-and-state
+(:func:`add_rate_state_fault_bc`); :class:`SymbolicFaultLaw` takes any other.
+:math:`\sigma_n` is either prescribed or taken per node from the no-opening
+constraint's reaction. Prescribed jump-only slip is a datum on the slip row.
 
 Both points of a pair are rank-local (a seam-touching fault is
 redistributed onto one rank before the split; a direct low-level split of
 one is refused), so every pair block sits inside one rank's diagonal
 portion of ``Q``, exactly like the single-node wall blocks.
 
-Until the interface lands in the solver API proper, the entry points are
-module functions::
+The frictionless and viscous cases are the solver method
+``stokes.add_fault_bc(conds, boundary)`` (``conds = 0`` frictionless,
+``conds > 0`` the interface viscosity :math:`\eta_f`). The frictional laws
+are, for now, module functions::
 
     child = split_fault(cut_mesh, "Fault")
     stokes = uw.systems.Stokes(child, ...)
     ... wall BCs ...
-    add_frictionless_fault_bc(stokes, "Fault")
+    add_coulomb_fault_bc(stokes, 0.6, "Fault", sigma_n="reaction", V0=1e-5)
     info = solve_with_fault(stokes)
     s, V, leak = fault_slip(stokes, "Fault", info)
 """
@@ -412,12 +427,18 @@ def add_viscous_fault_bc(solver, conds, boundary, normal=None):
     .. math::  \hat t\cdot\sigma\cdot\hat n = \eta_f\, V,
                \qquad V = [\mathbf v]\cdot\hat t,
 
-    with ``conds`` = :math:`\eta_f`, the interface viscosity (viscosity per
-    unit length: the zero-thickness limit of a shear band is
-    :math:`\eta_f = \eta_{band}/w` with :math:`\eta_{band}` the band's OWN
-    — weak-zone — viscosity and :math:`w` its width. Not the background
-    viscosity: matching a layer means :math:`V = \tau w/\eta_{band}`, and
-    with the background value the layer would not be weak). The
+    with ``conds`` = :math:`\eta_f`, the interface viscosity. :math:`V` is
+    the slip rate, a velocity jump (m/s), not a strain rate, so
+    :math:`\eta_f` is a viscosity per unit length (Pa s/m). It is the
+    zero-thickness limit of a shear band of width :math:`w`: across the band
+    the slip is a shear rate :math:`\dot\gamma = V/w`, so
+    :math:`\tau = \eta_{band}\dot\gamma` gives
+
+    .. math::  \eta_f = \frac{\eta_{band}}{w},
+
+    with :math:`\eta_{band}` the band's own weak-zone viscosity, not the
+    background viscosity (with the background value the layer would not be
+    weak). The
     no-opening constraint rides along as always. Limits: ``conds = 0`` is the
     frictionless contact; ``conds`` large welds the fault. The natural scale
     is :math:`\eta/a` (bulk viscosity over fault half-length), at which the
@@ -426,8 +447,8 @@ def add_viscous_fault_bc(solver, conds, boundary, normal=None):
     This is the linear member of the interface-law family: the term enters
     the rotated system as :math:`2\eta_f M` on the slip rows (:math:`M` the
     1-D trace mass), which is exactly the tangent structure a friction law
-    occupies with :math:`2\,(\partial\tau/\partial V)\,M` — so everything
-    downstream of this hook is what friction will reuse.
+    occupies with :math:`2\,(\partial\tau/\partial V)\,M`; the frictional
+    laws use the same path.
     """
     add_frictionless_fault_bc(solver, boundary, normal=normal)
     eta_f = float(conds)
@@ -470,8 +491,9 @@ state_variable = sympy.Symbol(r"\theta_{state}", real=True, positive=True)
 
 
 class SymbolicFaultLaw:
-    r"""An interface law :math:`\tau(V)` given as a sympy expression in
-    :data:`slip_rate`.
+    r"""An interface law :math:`\tau(V, \sigma_n, \theta)` given as a sympy
+    expression in :data:`slip_rate` and, optionally, :data:`normal_stress`
+    and :data:`state_variable`.
 
     The consistent tangent :math:`d\tau/dV` is derived symbolically and
     both are lambdified ONCE at registration into fast numpy callables —
@@ -509,7 +531,11 @@ class SymbolicFaultLaw:
 
 
 def ViscousFaultLaw(eta_f):
-    r"""The linear member, :math:`\tau = \eta_f V`, as a symbolic law."""
+    r"""The linear member, :math:`\tau = \eta_f V`, as a symbolic law.
+
+    :math:`V` is the slip rate (m/s), so :math:`\eta_f` is a viscosity per
+    unit length (Pa s/m); see :func:`add_viscous_fault_bc`.
+    """
     return SymbolicFaultLaw(float(eta_f) * slip_rate)
 
 
@@ -526,10 +552,16 @@ def CoulombFaultLaw(mu, sigma_n, V0, background=0.0):
     Smooth, bounded by the strength :math:`\mu\sigma_n`, monotone. Below
     the regularisation velocity :math:`V_0` the fault sticks (residual
     creep :math:`\sim V_0`); above it the shear traction saturates and the
-    fault slides at constant stress drop. ``sigma_n`` is PRESCRIBED here;
-    feeding it from the no-opening constraint's reaction (Picard-lagged) is
-    the follow-up increment. The tangent comes from ``sympy.diff``, not a
-    hand-coded derivative.
+    fault slides at constant stress drop.
+
+    ``sigma_n`` is either a prescribed effective normal stress (positive in
+    compression) or ``"reaction"``. With ``"reaction"`` it is taken per node
+    from the no-opening constraint's reaction, updated once per Newton
+    iteration, and the strength is clamped at zero,
+    :math:`\mu\max(\sigma_n + \sigma_b, 0)`, so a cohesionless fault loses
+    its strength when the normal stress turns tensile. ``background`` is
+    :math:`\sigma_b` in either case. The tangent comes from ``sympy.diff``,
+    not a hand-coded derivative.
     """
     if sigma_n == "reaction":
         # the strength clamp is the law's own: bare friction loses all
@@ -546,9 +578,14 @@ def add_coulomb_fault_bc(solver, conds, boundary, sigma_n=None, V0=1.0e-5,
     """Regularised Coulomb friction on the split fault ``boundary``
     (value-first: ``conds`` is the friction coefficient mu).
 
-    ``sigma_n`` is the effective normal stress, prescribed and required in
-    this version (reaction-fed sigma_n is the next increment). ``V0`` is the
-    regularisation velocity — choose it well below the slip rates the flow
+    ``sigma_n`` is required: either a prescribed effective normal stress
+    (positive in compression) or ``"reaction"``, which takes it per node from
+    the no-opening constraint's reaction, updated once per Newton iteration
+    (see :data:`normal_stress`). ``background`` adds a constant effective
+    normal stress, compression positive, to either. Where the reaction-fed
+    value is tensile and the strength has fallen to zero, the constraint holds
+    the fault shut with a tensile reaction; check the sign of
+    :func:`fault_normal_traction`. ``V0`` is the regularisation velocity — choose it well below the slip rates the flow
     produces; below it the fault sticks (creep ~ V0), above it the shear
     traction saturates at mu*sigma_n and the fault slides at constant
     stress drop.
