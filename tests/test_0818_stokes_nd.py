@@ -118,7 +118,7 @@ def test_stokes_dimensional_vs_nondimensional(resolution):
     stokes_dim.constitutive_model.Parameters.viscosity = model_units(1.0, "Pa*s")  # Dimensionless for test
 
     # Boundary conditions: simple shear (top moves right, bottom fixed)
-    stokes_dim.add_dirichlet_bc((1.0, 0.0), "Top")  # vx=1, vy=0 on top
+    stokes_dim.add_dirichlet_bc((uw.quantity(1.0, "m/s"), 0.0), "Top")  # vx=1, vy=0 on top
     stokes_dim.add_dirichlet_bc((0.0, 0.0), "Bottom")  # vx=0, vy=0 on bottom
     stokes_dim.add_dirichlet_bc((sympy.oo, 0.0), "Left")  # vy=0 on left (vx free)
     stokes_dim.add_dirichlet_bc((sympy.oo, 0.0), "Right")  # vy=0 on right (vx free)
@@ -142,7 +142,7 @@ def test_stokes_dimensional_vs_nondimensional(resolution):
     stokes_nd.constitutive_model.Parameters.viscosity = model_units(1.0, "Pa*s")
 
     # Same BCs (dimensional values - scaling happens internally)
-    stokes_nd.add_dirichlet_bc((1.0, 0.0), "Top")
+    stokes_nd.add_dirichlet_bc((uw.quantity(1.0, "m/s"), 0.0), "Top")
     stokes_nd.add_dirichlet_bc((0.0, 0.0), "Bottom")
     stokes_nd.add_dirichlet_bc((sympy.oo, 0.0), "Left")
     stokes_nd.add_dirichlet_bc((sympy.oo, 0.0), "Right")
@@ -325,7 +325,7 @@ def test_stokes_variable_viscosity():
     stokes_dim.constitutive_model = uw.constitutive_models.ViscousFlowModel(stokes_dim.Unknowns)
     stokes_dim.constitutive_model.Parameters.viscosity = eta_field
 
-    stokes_dim.add_dirichlet_bc((1.0, 0.0), "Top")
+    stokes_dim.add_dirichlet_bc((uw.quantity(1.0, "m/s"), 0.0), "Top")
     stokes_dim.add_dirichlet_bc((0.0, 0.0), "Bottom")
     stokes_dim.add_dirichlet_bc((sympy.oo, 0.0), "Left")
     stokes_dim.add_dirichlet_bc((sympy.oo, 0.0), "Right")
@@ -342,7 +342,7 @@ def test_stokes_variable_viscosity():
     stokes_nd.constitutive_model = uw.constitutive_models.ViscousFlowModel(stokes_nd.Unknowns)
     stokes_nd.constitutive_model.Parameters.viscosity = eta_field
 
-    stokes_nd.add_dirichlet_bc((1.0, 0.0), "Top")
+    stokes_nd.add_dirichlet_bc((uw.quantity(1.0, "m/s"), 0.0), "Top")
     stokes_nd.add_dirichlet_bc((0.0, 0.0), "Bottom")
     stokes_nd.add_dirichlet_bc((sympy.oo, 0.0), "Left")
     stokes_nd.add_dirichlet_bc((sympy.oo, 0.0), "Right")

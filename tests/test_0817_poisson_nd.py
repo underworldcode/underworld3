@@ -89,7 +89,7 @@ def test_poisson_dimensional_vs_nondimensional(resolution):
 
     # Boundary conditions (dimensional values in Kelvin)
     poisson_dim.add_dirichlet_bc(0.0, "Left")
-    poisson_dim.add_dirichlet_bc(1000.0, "Right")
+    poisson_dim.add_dirichlet_bc(uw.quantity(1000.0, "kelvin"), "Right")
 
     poisson_dim.solve()
 
@@ -111,7 +111,7 @@ def test_poisson_dimensional_vs_nondimensional(resolution):
 
     # Same BCs (dimensional values - scaling happens internally)
     poisson_nd.add_dirichlet_bc(0.0, "Left")
-    poisson_nd.add_dirichlet_bc(1000.0, "Right")
+    poisson_nd.add_dirichlet_bc(uw.quantity(1000.0, "kelvin"), "Right")
 
     poisson_nd.solve()
 
@@ -245,7 +245,7 @@ def test_poisson_scaling_improves_conditioning():
     poisson.f = 0.0
 
     poisson.add_dirichlet_bc(0.0, "Left")
-    poisson.add_dirichlet_bc(1000.0, "Right")
+    poisson.add_dirichlet_bc(uw.quantity(1000.0, "kelvin"), "Right")
 
     poisson.solve()
 
