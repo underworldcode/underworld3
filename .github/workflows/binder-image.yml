@@ -7,18 +7,10 @@ name: "GHCR: Binder Base Image"
 # images (also on GHCR, different image name).
 
 on:
+  # Images are built for releases only (v* tags), or by hand. Building on
+  # every push to main/development cost dozens of builds a day (Louis, 2026-11-25).
   push:
-    branches: [main, development]
-    tags: ['v*']  # Build on release tags (v3.0.0, v3.1.0, etc.)
-    paths:
-      # Only rebuild when these files change (Cython/dependencies require rebuild)
-      # Note: path filters are ignored for tag pushes (GitHub always triggers on tags)
-      - 'container/Dockerfile.base.optimized'
-      - 'pixi.toml'
-      - 'pixi.lock'
-      - 'src/**/*.pyx'
-      - 'src/**/*.c'
-      - 'setup.py'
+    tags: ['v*']
   workflow_dispatch:
     inputs:
       uw3_branch:

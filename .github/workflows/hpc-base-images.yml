@@ -8,13 +8,8 @@ name: "GHCR: HPC platform base images"
 # base change rebuild PETSc (hpc-petsc-image.yml), then UW3.
 
 on:
-  push:
-    branches:
-      - main
-      - development
-    paths:
-      - 'docs/developer/hpc_containers/base.*'
-      - '.github/workflows/hpc-base-images.yml'
+  # Built by hand (workflow_dispatch) when the base definition changes;
+  # never on branch pushes (Louis, 2026-11-25).
   workflow_dispatch:
     inputs:
       force_rebuild:
