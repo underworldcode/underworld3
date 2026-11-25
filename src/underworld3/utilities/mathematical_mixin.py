@@ -824,6 +824,58 @@ class UnitAwareDerivativeMatrix:
         """
         return self._matrix
 
+    # Arithmetic (UNFILED 40): the result is the plain sympy Matrix of the same
+    # arithmetic on the underlying derivatives, so s.diff(x) + s.diff(y) equals
+    # s.sym.diff(x) + s.sym.diff(y); get_units reads its units from the
+    # derivatives in it. A scalar applies to every entry (sympy itself refuses
+    # Matrix + scalar), which for a scalar field's 1x1 derivative is plain
+    # addition.
+
+    @staticmethod
+    def _operand(other):
+        return other._matrix if isinstance(other, UnitAwareDerivativeMatrix) else other
+
+    @staticmethod
+    def _is_matrix(value):
+        import sympy
+        return isinstance(value, sympy.MatrixBase)
+
+    def __add__(self, other):
+        other = self._operand(other)
+        if self._is_matrix(other):
+            return self._matrix + other
+        return self._matrix.applyfunc(lambda entry: entry + other)
+
+    def __radd__(self, other):
+        other = self._operand(other)
+        if self._is_matrix(other):
+            return other + self._matrix
+        return self._matrix.applyfunc(lambda entry: other + entry)
+
+    def __sub__(self, other):
+        other = self._operand(other)
+        if self._is_matrix(other):
+            return self._matrix - other
+        return self._matrix.applyfunc(lambda entry: entry - other)
+
+    def __rsub__(self, other):
+        other = self._operand(other)
+        if self._is_matrix(other):
+            return other - self._matrix
+        return self._matrix.applyfunc(lambda entry: other - entry)
+
+    def __mul__(self, other):
+        return self._matrix * self._operand(other)
+
+    def __rmul__(self, other):
+        return self._operand(other) * self._matrix
+
+    def __truediv__(self, other):
+        return self._matrix / self._operand(other)
+
+    def __neg__(self):
+        return -self._matrix
+
     @property
     def has_units(self):
         """Check if this derivative matrix has units (for protocol compatibility)."""

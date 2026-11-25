@@ -896,6 +896,18 @@ def non_dimensionalise(expression, model=None) -> Any:
     except ImportError:
         pass
 
+    # An expression built from fields, coordinates and quantities, or a Matrix
+    # of them (temperature / velocity[0]): its model-unit form, every constant
+    # as its model value and every field as the model-unit value it stores
+    # (UNFILED 41). A named expression holding a quantity or a number goes to
+    # its .data below.
+    import sympy
+    from underworld3.function.expressions import UWexpression, unwrap
+    holds_a_value = isinstance(expression, UWexpression) and not isinstance(
+        getattr(expression, "_sym", None), sympy.Basic)
+    if isinstance(expression, (sympy.Basic, sympy.MatrixBase)) and not holds_a_value:
+        return unwrap(expression, keep_constants=False)
+
     # Protocol 6: Check for .non_dimensional_value() method (backward compatibility for Variables)
     # This comes last because UWQuantity also has this method but it doesn't work correctly for plain quantities
     if hasattr(expression, "non_dimensional_value") and hasattr(expression, "data"):
