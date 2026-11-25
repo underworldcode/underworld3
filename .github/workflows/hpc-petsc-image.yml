@@ -8,14 +8,8 @@ name: "GHCR: HPC PETSc images"
 # petsc.hpc, its patches and the bases can change the result.
 
 on:
-  push:
-    branches:
-      - main
-      - development
-    paths:
-      - 'docs/developer/hpc_containers/petsc.hpc'
-      - 'petsc-custom/patches/**'
-      - '.github/workflows/hpc-petsc-image.yml'
+  # Built by hand (workflow_dispatch) when the base definition changes;
+  # never on branch pushes (Louis, 2026-11-25).
   workflow_dispatch:
     inputs:
       petsc_version:

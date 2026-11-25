@@ -23,6 +23,13 @@ on:
 
   workflow_dispatch:
 
+# A new push to a PR, or a new merge to a branch, supersedes the run before it:
+# cancel the older run instead of letting a 6-shard, 40-80 minute job finish
+# for a commit nobody will merge.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 env:
   # Some Azure runners carry a MANA NIC whose InfiniBand verbs device UCX
   # advertises but cannot open: uct_iface_open(ud_verbs/mana_0) fails inside

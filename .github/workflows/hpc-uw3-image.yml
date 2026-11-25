@@ -9,21 +9,10 @@ name: "GHCR: HPC Underworld3 images"
 # images match each HPC system's OS and MPI ABI.
 
 on:
+  # Images are built for releases only (v* tags), or by hand. Building on
+  # every push to main/development cost dozens of builds a day (Louis, 2026-11-25).
   push:
-    branches:
-      - main
-      - development
     tags: ['v*']
-    paths:
-      - 'docs/developer/hpc_containers/underworld3.hpc'
-      - '.github/workflows/hpc-uw3-image.yml'
-      - 'pixi.toml'
-      - 'pyproject.toml'
-      - 'setup.py'
-      - 'src/**'
-  # Never fires in practice: release.yml creates the Release with
-  # GITHUB_TOKEN, which raises no workflow events. The `tags:` filter
-  # above is what builds the tagged image. Kept for a hand-published Release.
   release:
     types: [published]
   workflow_dispatch:

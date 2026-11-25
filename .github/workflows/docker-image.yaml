@@ -7,21 +7,10 @@ name: "GHCR: Command-Line Container"
 # optimized for mybinder.org.
 
 on:
+  # Images are built for releases only (v* tags), or by hand. Building on
+  # every push to main/development cost dozens of builds a day (Louis, 2026-11-25).
   push:
-    branches: [main, development]
-    # release.yml creates the Release with GITHUB_TOKEN, which raises no
-    # workflow events, so `release:` below never fires. This is the path
-    # that produces a version-tagged image.
     tags: ['v*']
-    paths:
-      # Only rebuild when these files change
-      - 'container/Containerfile'
-      - 'pixi.toml'
-      - 'pixi.lock'
-      - 'src/**/*.pyx'
-      - 'src/**/*.c'
-      - 'setup.py'
-      - 'pyproject.toml'
   workflow_dispatch:
     inputs:
       force_rebuild:
