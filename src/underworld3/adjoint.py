@@ -382,7 +382,7 @@ def _boundary_reads_of(solver, variables):
             # unwrap_expression, not _peel: a bare named expression as the
             # element (b = 2 a, a wrapping f) is not expanded by _peel, which
             # substitutes only the expressions found inside it
-            found |= set(unwrap_expression(sympy.sympify(element)).atoms(sympy.Function))
+            found |= set(sympy.sympify(unwrap_expression(sympy.sympify(element))).atoms(sympy.Function))
         atoms.append((kind, found))
     out = []
     for var in variables:
