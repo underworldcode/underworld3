@@ -118,7 +118,7 @@ The following is the migrated code with minimal modifications.
 #
 # In this form, known as the Mandel notation, $\tau^*_I\varepsilon^*_I \equiv \tau_{ij} \varepsilon_{ij}$, and the fourth order identity matrix:
 #
-# $$I_{ijkl} = \frac{1}{2} \left( \delta_{ij}\delta_{kj} + \delta_{kl}\delta_{il} \right)$$ 
+# $$I_{ijkl} = \frac{1}{2} \left( \delta_{ik}\delta_{jl} + \delta_{il}\delta_{jk} \right)$$ 
 #
 # transforms to 
 #

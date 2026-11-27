@@ -204,10 +204,11 @@ r"""
 
 The `TransverseIsotropicFlowModel` defines an anisotropic viscosity tensor:
 
-$$\eta_{ijkl} = \eta_0 \cdot I_{ijkl} + (\eta_0 - \eta_1) \cdot A_{ijkl}(\hat{n})$$
+$$\eta_{ijkl} = \eta_0 I_{ijkl} - (\eta_0 - \eta_1) \Lambda_{ijkl}(\hat{n}),
+\qquad \tau_{ij} = 2\eta_{ijkl}\dot\varepsilon_{kl}$$
 
-where $\hat{n}$ is the director (fault normal) and $A_{ijkl}$ couples shear
-to the weak plane orientation.
+where $\hat{n}$ is the director (fault normal) and $\Lambda_{ijkl}$ projects the
+strain rate onto its shear on the weak plane, so that shear sees $\eta_1$.
 
 - Far from fault: $\eta_1 = \eta_0$ → isotropic behavior
 - Near fault: $\eta_1 < \eta_0$ → anisotropic weakness
