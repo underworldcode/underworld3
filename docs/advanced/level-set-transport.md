@@ -48,15 +48,17 @@ viscosity = level_set.material_property_field(psi.sym[0], [eta_outside, eta_insi
 
 **Band thickness.** `interface_thickness(scale=0.35)`, the g-adopt default,
 gives a band well under one cell, which a continuous-Galerkin transport rings
-at. Measured on a rotating circle at 32 cells across, one revolution, SUPG with
-no mass correction:
+at. Measured on a rotating circle at 32 cells across (`cellSize` $h = 1/32$),
+one revolution in 200 steps, SUPG with no mass correction, reinitialisation every
+fifth step; $\varepsilon / h$ is the mean of $\varepsilon$ over the level set's
+nodes divided by $h$:
 
 | `scale` | $\varepsilon / h$ | volume drift |
 |---|---|---|
-| 0.35 | 0.12 | +0.84% (clipped ringing) |
-| 1.0 | 0.36 | +0.28% |
-| 2.0 | 0.71 | -0.18% (ringing gone) |
-| 3.0 | 1.07 | -0.85% (reinitialisation curvature error) |
+| 0.35 | 0.16 | +0.84% (clipped ringing) |
+| 1.0 | 0.46 | +0.28% |
+| 2.0 | 0.92 | -0.18% (ringing gone) |
+| 3.0 | 1.38 | -0.86% (reinitialisation curvature error) |
 
 For the SUPG transport a `scale` of 1.5 to 2, a band of two to three cells, is
 the sensible setting; the thickness trades interface resolution for a clean

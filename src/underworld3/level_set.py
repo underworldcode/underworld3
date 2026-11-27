@@ -45,6 +45,7 @@ from typing import Optional, Union
 
 import numpy as np
 import sympy
+from petsc4py import PETSc
 
 import underworld3 as uw
 from underworld3 import discretisation, systems
@@ -131,8 +132,12 @@ def interface_thickness(
     r"""Interface thickness :math:`\varepsilon` from the local cell size.
 
     :math:`\varepsilon = \mathrm{scale}\cdot V^{1/d}/\sqrt{d}` per cell
-    (or ``scale`` times the shortest edge), carried to ``phi``'s nodes from
-    the nearest cell centroid. Returned as a scalar MeshVariable of the same
+    (or ``scale`` times the shortest edge), carried to each of ``phi``'s nodes
+    as the mean over the cells that hold the node. The mean is summed over
+    every rank's owned cells, so the field is the same at any rank count; the
+    nearest local cell centroid it replaces depended on the partition, and the
+    initial level set with it, by up to 1.3e-3 of the enclosed volume (measured
+    in the review of #1234). Returned as a scalar MeshVariable of the same
     degree as ``phi``.
 
     ``scale=0.35`` (the default, following the discontinuous-Galerkin
@@ -145,14 +150,11 @@ def interface_thickness(
     takes over (0.85%). For the SUPG transport, ``scale`` between 1.5 and 2
     is the sensible setting.
     """
-    from scipy.spatial import cKDTree
-
     dm = mesh.dm
     dim = mesh.dim
     c_start, c_end = dm.getHeightStratum(0)
     n_cells = c_end - c_start
     cell_epsilon = np.empty(n_cells)
-    cell_centroids = np.empty((n_cells, dim))
 
     if use_min_edge_length:
         if mesh.qdegree > 1:
@@ -166,22 +168,58 @@ def interface_thickness(
             edges = [np.linalg.norm(v_coords[a] - v_coords[b])
                      for a in range(len(verts)) for b in range(a + 1, len(verts))]
             cell_epsilon[i] = scale * min(edges)
-            cell_centroids[i, :] = v_coords.mean(axis=0)
     else:
         factor = scale / np.sqrt(dim)
         for i, cell in enumerate(range(c_start, c_end)):
-            vol, centroid, _ = dm.computeCellGeometryFVM(cell)
+            vol, _, _ = dm.computeCellGeometryFVM(cell)
             cell_epsilon[i] = factor * float(np.asarray(vol).ravel()[0]) ** (1.0 / dim)
-            cell_centroids[i, :] = np.asarray(centroid).ravel()[:dim]
 
     # One per level-set variable, named after it: a field of its own, which
     # neither another level set nor a user variable called epsilon shares.
     epsilon = discretisation.MeshVariable(
         f"epsilon_{phi.clean_name}", mesh, 1, degree=phi.degree, continuous=phi.continuous,
         varsymbol=r"\epsilon")
-    _, nearest = cKDTree(cell_centroids).query(np.asarray(phi.coords))
-    epsilon.array[:, 0, 0] = cell_epsilon[nearest]
+    epsilon.array[:, 0, 0] = _mean_over_the_cells_of_each_node(
+        mesh, phi.degree, phi.continuous, cell_epsilon)
     return epsilon
+
+
+def _mean_over_the_cells_of_each_node(mesh, degree, continuous, cell_values):
+    """The mean of ``cell_values`` (one per local cell) over the cells holding
+    each node of the degree-``degree`` space, in the rows of
+    ``mesh._get_coords_for_basis``. Collective.
+
+    Each rank adds its owned cells' values and counts at their nodes, and the
+    sums are added over the ranks (``localToGlobal`` with ``ADD_VALUES``), so a
+    node on a partition boundary sees every cell around it, once.
+    """
+    from underworld3.utilities._plex_topology import closure_dof_rows
+
+    basis = mesh._basis_coordinate_dm(degree, continuous)
+    try:
+        c_start, c_end = mesh.dm.getHeightStratum(0)
+        rows = closure_dof_rows(basis, basis.getLocalSection(),
+                                np.arange(c_start, c_end), mesh.cdim)
+        owned = np.asarray(mesh._get_owned_cells_mask(), dtype=bool)
+        local = basis.createLocalVector()
+        glob = basis.createGlobalVector()
+        try:
+            table = local.array.reshape(-1, mesh.cdim)
+            table[...] = 0.0
+            for k in np.flatnonzero(owned):
+                nodes = rows[k][rows[k] >= 0]
+                table[nodes, 0] += cell_values[k]
+                table[nodes, 1] += 1.0
+            glob.set(0.0)
+            basis.localToGlobal(local, glob, addv=PETSc.InsertMode.ADD_VALUES)
+            basis.globalToLocal(glob, local, addv=PETSc.InsertMode.INSERT_VALUES)
+            table = local.array.reshape(-1, mesh.cdim)
+            return table[:, 0] / table[:, 1]
+        finally:
+            local.destroy()
+            glob.destroy()
+    finally:
+        basis.destroy()
 
 
 def _signed_distance_closed(polygon, points):
