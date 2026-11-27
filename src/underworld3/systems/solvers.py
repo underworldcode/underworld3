@@ -5772,7 +5772,15 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
         # little benefit from specific choices here other than
         # discontinuous flux variables amplifying instabilities.
 
-        self.Unknowns.DFDt = uw.systems.ddt.SemiLagrangian(
+        self.Unknowns.DFDt = self._flux_history(self._order)
+
+        ## Add in the history terms provided ...
+
+        return
+
+    def _flux_history(self, order):
+        """The flux history: a nodal semi-Lagrangian one of the given order."""
+        return uw.systems.ddt.SemiLagrangian(
             self.mesh,
             sympy.Matrix.zeros(self.mesh.dim, self.mesh.dim),
             self.u.sym,
@@ -5782,12 +5790,41 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
             varsymbol=rf"{{ F[ {self.u.symbol} ] }}",
             verbose=self.verbose,
             bcs=None,
-            order=self._order,
+            order=order,
         )
 
-        ## Add in the history terms provided ...
+    @property
+    def constitutive_model(self):
+        """The constitutive model (see :attr:`SNES_Stokes_SaddlePt.constitutive_model`)."""
+        return SNES_Stokes_SaddlePt.constitutive_model.fget(self)
 
-        return
+    @constitutive_model.setter
+    def constitutive_model(self, model_or_class):
+        # A model with a stress history keeps the order it asks for, and the
+        # history is built at that order (UNFILED 39). The solver's own order is
+        # its momentum history's; the base setter would otherwise overwrite the
+        # model's order with it, so a BDF-2 model ran at the solver's order.
+        wants = None
+        if (isinstance(model_or_class, uw.constitutive_models.Constitutive_Model)
+                and getattr(model_or_class, "requires_stress_history", False)):
+            wants = int(model_or_class.order)
+            if self.Unknowns.DFDt.order != wants:
+                if self.Unknowns.DFDt._history_initialised:
+                    raise ValueError(
+                        f"NavierStokesSLCN: the stress history is order "
+                        f"{self.Unknowns.DFDt.order} and has been used, so a model of "
+                        f"order {wants} cannot be given to this solver now; build the "
+                        f"solver with the model in place, or a new solver.")
+                self.Unknowns.DFDt = self._flux_history(wants)
+                if hasattr(self, "_characteristics"):
+                    del self._characteristics
+        saved = self._order
+        if wants is not None:
+            self._order = wants
+        try:
+            SNES_Stokes_SaddlePt.constitutive_model.fset(self, model_or_class)
+        finally:
+            self._order = saved
 
     @property
     def F0(self):
@@ -5818,10 +5855,20 @@ class SNES_NavierStokes(SNES_Stokes_SaddlePt):
                     "SNES_NavierStokes reads its history as a flux (Adams-Moulton), so it cannot "
                     "decode a log-conformation history; use uw.systems.NavierStokes")
             DFDt.psi_fn = getattr(self._constitutive_model, 'history_flux', self._constitutive_model.flux).T
+            # A viscoelastic model integrates its stress in time itself (its BDF or
+            # exponential update reads the stress history), so the momentum flux is
+            # that stress, as in Stokes. An Adams-Moulton average of the stress
+            # levels on top is a second integration in time, unstable at order 2
+            # (UNFILED 39). A viscous flux has no history of its own, and the
+            # average is the time integration.
+            if getattr(self._constitutive_model, "requires_stress_history", False):
+                flux = self._constitutive_model.flux.T
+            else:
+                flux = DFDt.adams_moulton_flux()
 
             F1 = expression(
                 r"\mathbf{F}_1\left( \mathbf{u} \right)",
-                DFDt.adams_moulton_flux()
+                flux
                 - sympy.eye(self.mesh.dim) * (self.p.sym[0])
                 + self.penalty * self.div_u * sympy.eye(dim),
                 "NStokes pointwise flux term: F_1(u)",
