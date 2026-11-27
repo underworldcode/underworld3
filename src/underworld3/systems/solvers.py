@@ -3891,6 +3891,18 @@ class SNES_Projection(_SmoothingLengthMixin, SNES_Scalar):
         ("smoothing", "screened-Poisson smoothing length alpha (0 = none)"),
     )
 
+    # A projection is a linear solve, warm-started by default once it has a
+    # solution, and the library re-solves its projections every step of a time loop
+    # (stress histories' commit, flux and forcing projections, semi-Lagrangian
+    # histories, the free surface's velocity, Darcy's velocity). Under the
+    # stationary reference its target is rtol * ||F(0)||, the whole field, so a step
+    # whose change stays inside that target takes no iteration and the projection
+    # keeps the previous step's answer; a history that stores it then drifts (the
+    # forward stress history: 6.4e-4 to 8.0e-3, from step 161 on). Measured against
+    # its own first residual, a warm projection reduces the step's change by rtol,
+    # a cold one is unchanged, and an unchanged field converges in one iteration.
+    _convergence_reference_rule = "increment"
+
     @timing.routine_timer_decorator
     def __init__(
         self,
@@ -4178,6 +4190,9 @@ class SNES_Vector_Projection(_SmoothingLengthMixin, SNES_Vector):
         ("uw_function", "the function being projected onto the mesh variable"),
         ("smoothing", "screened-Poisson smoothing length alpha (0 = none)"),
     )
+
+    # Measured against its own first residual, as SNES_Projection explains.
+    _convergence_reference_rule = "increment"
 
     @timing.routine_timer_decorator
     def __init__(
@@ -4534,6 +4549,9 @@ class SNES_MultiComponent_Projection(_SmoothingLengthMixin, SNES_MultiComponent)
         ("uw_function", "the function being projected onto the mesh variable"),
         ("smoothing", "screened-Poisson smoothing length alpha (0 = none)"),
     )
+
+    # Measured against its own first residual, as SNES_Projection explains.
+    _convergence_reference_rule = "increment"
 
     @timing.routine_timer_decorator
     def __init__(
