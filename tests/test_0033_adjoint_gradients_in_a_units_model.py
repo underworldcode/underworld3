@@ -24,7 +24,7 @@ by accident.
 import pytest
 import sympy
 import underworld3 as uw
-from _units_helpers import model_units
+from _units_helpers import model_length, model_units
 
 pytestmark = [pytest.mark.level_2, pytest.mark.tier_b]
 
@@ -50,21 +50,21 @@ def _box(case, references):
         stokes.constitutive_model.Parameters.shear_viscosity_0 = alpha * eta
     else:
         stokes.constitutive_model.Parameters.shear_viscosity_0 = model_units(1.0, "Pa*s")
-    stokes.bodyforce = sympy.Matrix([0, -sympy.sin(sympy.pi * x)])
+    stokes.bodyforce = sympy.Matrix([0, -sympy.sin(sympy.pi * x / model_length())])
     lid = alpha * x * (1 - x) if case == "datum" else 0.0
     free_top = case in ("traction", "dimensional traction")
     stokes.add_dirichlet_bc((lid, None if free_top else 0.0), "Top")
     for wall in ("Bottom", "Left", "Right"):
         stokes.add_dirichlet_bc((0.0, 0.0), wall)
     if case == "traction":
-        stokes.add_natural_bc((0.0, alpha * sympy.sin(sympy.pi * x)), "Top")
+        stokes.add_natural_bc((0.0, alpha * sympy.sin(sympy.pi * x / model_length())), "Top")
     if case == "dimensional traction":
         tau = uw.expression(r"\tau_0", uw.quantity(1e6, "Pa"), "traction scale")
-        stokes.add_natural_bc((0.0, alpha * tau * sympy.sin(sympy.pi * x)), "Top")
+        stokes.add_natural_bc((0.0, alpha * tau * sympy.sin(sympy.pi * x / model_length())), "Top")
     stokes.tolerance = 1.0e-11
     stokes.solve()
     u = stokes.Unknowns.u
-    misfit = u.sym[1] * sympy.sin(sympy.pi * x) + u.sym[0] * y
+    misfit = u.sym[1] * sympy.sin(sympy.pi * x / model_length()) + u.sym[0] * y / model_length()   # both terms a velocity
     if case == "explicit":
         misfit = alpha * misfit
     return stokes, misfit, alpha

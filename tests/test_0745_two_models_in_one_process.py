@@ -13,7 +13,7 @@ import pytest
 import sympy
 
 import underworld3 as uw
-from _units_helpers import model_units
+from _units_helpers import model_length, model_units
 
 R_IN, R_OUT = 0.5, 1.0
 
@@ -26,7 +26,7 @@ def _first_model():
     st.constitutive_model = uw.constitutive_models.ViscousFlowModel
     st.constitutive_model.Parameters.shear_viscosity_0 = (
         model_units(1.0, "Pa*s") * (1 + 20 * (x ** 2 + y ** 2)))
-    st.bodyforce = sympy.Matrix([0, -sympy.sin(sympy.pi * x)])
+    st.bodyforce = sympy.Matrix([0, -sympy.sin(sympy.pi * x / model_length())])
     st.add_dirichlet_bc((0.0, 0.0), "Bottom")
     st.add_dirichlet_bc((0.0, 0.0), "Top")
     st.solve()

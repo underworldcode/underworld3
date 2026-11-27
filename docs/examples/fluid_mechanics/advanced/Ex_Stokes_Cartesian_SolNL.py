@@ -103,7 +103,8 @@ sol_visc = sol.fn_viscosity
 # -
 
 # %%
-# P2/P1 (Taylor-Hood): stable, unlike P1/P0, whose nonlinear solve diverges here
+# P2/P1 (Taylor-Hood): stable, unlike P1/P0, whose nonlinear solve diverges here;
+# Stokes refuses a P1 velocity on simplices.
 v = uw.discretisation.MeshVariable("U", mesh, mesh.dim, degree=2)
 p = uw.discretisation.MeshVariable("P", mesh, 1, degree=1)
 

@@ -98,6 +98,10 @@ class Integral:
 
         self.mesh = mesh
         self.fn = sympy.sympify(fn)
+        # In a model with reference quantities a function of a dimensional
+        # argument (sin(pi*x), x a length) is refused, as at evaluate.
+        from underworld3.function import functions_unit_system as _fus
+        _fus._refuse_dimensional_function_argument(self.fn, where="Integral")
         super().__init__()
 
     @timing.routine_timer_decorator
@@ -300,6 +304,10 @@ class CellWiseIntegral:
 
         self.mesh = mesh
         self.fn = sympy.sympify(fn)
+        # In a model with reference quantities a function of a dimensional
+        # argument (sin(pi*x), x a length) is refused, as at evaluate.
+        from underworld3.function import functions_unit_system as _fus
+        _fus._refuse_dimensional_function_argument(self.fn, where="CellWiseIntegral")
         super().__init__()
 
     @timing.routine_timer_decorator
@@ -431,6 +439,10 @@ class BdIntegral:
 
         self.mesh = mesh
         self.fn = sympy.sympify(fn)
+        # In a model with reference quantities a function of a dimensional
+        # argument (sin(pi*x), x a length) is refused, as at evaluate.
+        from underworld3.function import functions_unit_system as _fus
+        _fus._refuse_dimensional_function_argument(self.fn, where="BdIntegral")
         self.boundary = boundary
 
         # Validate boundary name

@@ -2636,8 +2636,14 @@ class SNES_Stokes(_StressHistoryMixin, _ConstitutiveModelStateMixin, SNES_Stokes
     @bodyforce.setter
     def bodyforce(self, value):
         """Set the body force vector (e.g., gravity, buoyancy)."""
-        self._needs_function_rewire = True
+        from underworld3.function import functions_unit_system as _fus
+
         if isinstance(value, uw.function.expressions.UWexpression):
+            # A function of a dimensional argument (sin(pi*x) with x a length)
+            # is refused here, as for a constitutive parameter; the solve
+            # checks again, for a value reassigned inside it later.
+            _fus._refuse_dimensional_function_argument(value, where="'bodyforce'")
+            self._needs_function_rewire = True
             self._bodyforce.sym = value.sym
         else:
             # Convert UWQuantity components to their NON-DIMENSIONAL value before
@@ -2660,7 +2666,10 @@ class SNES_Stokes(_StressHistoryMixin, _ConstitutiveModelStateMixin, SNES_Stokes
                         converted_value.append(sympified)
                 else:
                     converted_value.append(item)
-            self._bodyforce.sym = sympy.Matrix(converted_value)
+            converted = sympy.Matrix(converted_value)
+            _fus._refuse_dimensional_function_argument(converted, where="'bodyforce'")
+            self._needs_function_rewire = True
+            self._bodyforce.sym = converted
 
     def set_pressure_gauge(self, boundary, reference=0.0):
         r"""Pin the pressure gauge by removing the surface-mean pressure each iteration.

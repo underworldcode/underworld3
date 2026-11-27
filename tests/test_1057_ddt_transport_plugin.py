@@ -16,6 +16,7 @@ import pytest
 import sympy
 
 import underworld3 as uw
+from _units_helpers import model_length
 from underworld3.utilities._api_tools import Template
 
 pytestmark = [pytest.mark.level_1, pytest.mark.tier_a]
@@ -28,7 +29,8 @@ def mesh():
 
 
 def _gaussian(x, y, x0=0.5, y0=0.0, width=0.03):
-    return sympy.exp(-((x - x0) ** 2 + (y - y0) ** 2) / width)
+    L = model_length()
+    return sympy.exp(-((x / L - x0) ** 2 + (y / L - y0) ** 2) / width)
 
 
 def _is_zero(M):

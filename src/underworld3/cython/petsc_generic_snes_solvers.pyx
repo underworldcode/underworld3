@@ -1761,18 +1761,9 @@ class SolverBaseClass(uw_object):
                 )
             opts[gkey] = "both"
 
-    def _check_expression_meshes(self):
-        """Check that all MeshVariable symbols in solver expressions
-        belong to this solver's mesh.
-
-        Raises a clear error if variables from a different mesh are
-        found, rather than letting the JIT fail with a cryptic message.
-        """
-        from underworld3.function.expressions import extract_meshes
-
-        solver_mesh = self.mesh
-
-        # Collect all sympy expressions from the solver
+    def _input_expressions(self):
+        """The solver's own inputs as sympy expressions: the body force, the
+        natural boundary values and the constitutive parameters."""
         exprs = []
 
         if hasattr(self, 'bodyforce') and self.bodyforce is not None:
@@ -1800,6 +1791,41 @@ class SolverBaseClass(uw_object):
                             exprs.append(val)
                     except (AttributeError, TypeError):
                         pass
+        return exprs
+
+    def _refuse_dimensional_function_arguments(self):
+        """In a model with reference quantities, refuse a function of a
+        dimensional argument (``sin(pi*x)``, ``exp(eta1)``) anywhere in the
+        solver's inputs: the body force, the source term, the boundary values
+        and the constitutive parameters. Run at every solve, so a named
+        expression reassigned after it was set is checked too. The same on
+        every rank: the inputs are."""
+        from underworld3.function import functions_unit_system as _fus
+
+        if _fus._internal_resampling_depth or not uw.get_default_model().has_units():
+            return
+        exprs = self._input_expressions()
+        f = getattr(self, "f", None) if hasattr(type(self), "f") else None
+        if hasattr(f, "atoms"):
+            exprs.append(f)
+        for bc in getattr(self, "essential_bcs", []):
+            fn = getattr(bc, "fn", None)
+            if hasattr(fn, "atoms"):
+                exprs.append(fn)
+        for expr in exprs:
+            _fus._refuse_dimensional_function_argument(expr, where=f"{type(self).__name__}.solve")
+
+    def _check_expression_meshes(self):
+        """Check that all MeshVariable symbols in solver expressions
+        belong to this solver's mesh.
+
+        Raises a clear error if variables from a different mesh are
+        found, rather than letting the JIT fail with a cryptic message.
+        """
+        from underworld3.function.expressions import extract_meshes
+
+        solver_mesh = self.mesh
+        exprs = self._input_expressions()
 
         # Extract all meshes from all expressions
         foreign_meshes = set()
@@ -5262,6 +5288,7 @@ class SolverBaseClass(uw_object):
                     ):
 
         self._check_expression_meshes()
+        self._refuse_dimensional_function_arguments()
         if self._materials is not None:
             self._materials.check()
 
@@ -9984,6 +10011,17 @@ class SNES_Stokes_SaddlePt(SolverBaseClass):
         ## `degree - 1`), and a passed field of another degree is refused rather
         ## than paired with one that does not match it.
         u_units, p_units = _stokes_default_units()   # refuses a kinematic model
+        ## A degree-1 velocity on simplices: P1/P0 locks and P1/P1 is unstable, so
+        ## it is refused whichever way it was asked for, before any field is
+        ## created. isSimplex is agreed over ranks at mesh construction, so every
+        ## rank refuses together. Q1/P0 on quadrilaterals and hexahedra is the
+        ## classic element and stays allowed.
+        velocity_degree = velocityField.degree if velocityField is not None else degree
+        if self.mesh.isSimplex and velocity_degree == 1:
+            raise ValueError(
+                "Stokes: a velocity of degree 1 on a simplex mesh does not make a "
+                "stable pair (P1/P0 locks, P1/P1 is unstable). Use degree=2 (P2/P1), "
+                "or pass a velocity of degree 2 or more.")
         if (velocityField is None) != (pressureField is None):
             if velocityField is not None and velocityField.degree != degree:
                 raise ValueError(
