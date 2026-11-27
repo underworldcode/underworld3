@@ -425,30 +425,25 @@ def _lambdify_and_evaluate(expr, coords, interpolated_results, coord_sys=None, m
     elif isinstance(subbedexpr, sympy.vector.Dyadic):
         subbedexpr = subbedexpr.to_matrix(N)[0:dim, 0:dim]
 
-    # 4. Create lambdified function and evaluate
-    lambfn = lambdify((r, varfns_symbols.values()), subbedexpr, docstring_limit=0)
-
-    coords_list = [coords[:, i] for i in range(dim)]
-    results = lambfn(coords_list, interpolated_results.values())
-
-    # 5. Handle result shape
+    # 4. Lambdify the entries as a flat list and fill the result entry by entry.
+    # An entry that depends on no coordinate and no variable comes back as a
+    # number; numpy broadcasts it over the points. Nothing is added to the
+    # expression to make the entries alike, so every value is the expression's.
     try:
         shape = expr.shape
     except AttributeError:
         shape = (1, 1)
+    entries = list(subbedexpr) if isinstance(subbedexpr, sympy.MatrixBase) else [subbedexpr]
+    lambfn = lambdify((r, varfns_symbols.values()), entries, docstring_limit=0)
 
-    try:
-        results_shape = results.shape
-    except AttributeError:
-        results_shape = (1, 1)
+    coords_list = [coords[:, i] for i in range(dim)]
+    values = lambfn(coords_list, interpolated_results.values())
 
-    # Broadcast constant results to span all coordinates
-    if shape == results_shape:
-        results_new = np.zeros((coords.shape[0], *shape))
-        results_new[...] = results
-        results = results_new
-    else:
-        results = np.moveaxis(results, -1, 0)
+    values = [np.asarray(value) for value in values]
+    dtype = np.result_type(np.float64, *values)
+    results = np.empty((coords.shape[0], len(entries)), dtype=dtype)
+    for k, value in enumerate(values):
+        results[:, k] = value
 
     return results.reshape(-1, *shape)
 
@@ -1624,15 +1619,8 @@ def petsc_interpolate(   expr,
         print(f"Expression to be evaluated: {expr}")
 
 
-    # In general, non-constant expressions means that we have a matrix that has at least
-    # one spatially-variable function. That can cause a problem if other Matrix entries
-    # are not constants (numpy cannot see this as a uniform array). The mesh.CoordinateSystem.zero_matrix is
-    # the fix for this. We add it here (so it is not visible in the user-space)
-
-    if mesh is not None:
-        expr = expr + mesh.CoordinateSystem.zero_matrix(expr.shape)
-        ## NOTE: Use _unwrap_expressions (not fn_substitute_expressions) to prevent double-scaling
-        expr = uw.function.expressions._unwrap_expressions(expr, keep_constants=False)
+    # A matrix that mixes constant and coordinate-dependent entries is shaped in
+    # _lambdify_and_evaluate, entry by entry; nothing is added to the expression.
 
     # if (len(varfns)==0) and (coords is None):
     #     raise RuntimeError("Interpolation coordinates not specified by supplied expression contains mesh variables.\n"
@@ -2021,16 +2009,8 @@ def rbf_evaluate(  expr,
     if simplify:
         expr = sympy.simplify(expr)
 
-    if mesh is not None:
-        expr = expr + mesh.CoordinateSystem.zero_matrix(expr.shape)
-        expr = uw.function.expressions._unwrap_expressions(expr, keep_constants=False)
-    else:
-        try:
-            any_basis_vector = tuple(expr.atoms(sympy.vector.scalar.BaseScalar))[0]
-            expr = expr + any_basis_vector.CS.zero_matrix(expr.shape)
-            expr = uw.function.expressions._unwrap_expressions(expr, keep_constants=False)
-        except IndexError:
-            pass
+    # Constant entries are broadcast in _lambdify_and_evaluate; nothing is added
+    # to the expression.
 
 
     # 2. Collect and evaluate all mesh variables via RBF interpolation
