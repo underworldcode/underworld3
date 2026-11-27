@@ -217,9 +217,9 @@ def set_friction(values):
 # more.
 
 # %%
-eta_0 = 1
-cohesion = _nd(params.uw_cohesion / REF_STRESS)
-rho_g = _nd(DENSITY * GRAVITY * DOMAIN_DEPTH / REF_STRESS)
+eta_0 = uw.expression(r"\eta_0", REF_VISCOSITY, "bulk viscosity")
+cohesion = uw.expression("C", params.uw_cohesion, "cohesion")
+rho_g = uw.expression(r"\rho g", DENSITY * GRAVITY, "weight per unit volume")
 
 E = mesh.vector.strain_tensor(v.sym)
 t_hat = sympy.Matrix([[-n_hat[1], n_hat[0]]])
@@ -247,8 +247,9 @@ stokes.tolerance = 1e-8
 stokes.bodyforce = sympy.Matrix([0, -rho_g])
 
 stokes.add_essential_bc((0.0, 0.0), "Bottom")
-stokes.add_essential_bc((0.5, None), "Left")
-stokes.add_essential_bc((-0.5, None), "Right")
+V_wall = uw.expression(r"V_w", CONVERGENCE_RATE / 2, "the shortening speed at each side wall")
+stokes.add_essential_bc((V_wall, None), "Left")
+stokes.add_essential_bc((-V_wall, None), "Right")
 
 # %% [markdown]
 # ## The observations
