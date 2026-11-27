@@ -898,6 +898,17 @@ class UWQuantity:
             pass
 
 
+
+def from_raw_pint(value):
+    """A raw pint Quantity (``1e-6 * uw.units.m**2 / uw.units.s``) as a
+    UWQuantity, so every setter that takes a uw.quantity takes the raw form the
+    same way (UNFILED 35); anything else is returned unchanged."""
+    import pint
+    if isinstance(value, pint.Quantity) and not isinstance(value, UWQuantity):
+        return UWQuantity(value.magnitude, str(value.units))
+    return value
+
+
 def quantity(
     value: Union[float, int, np.ndarray],
     units: Optional[str] = None

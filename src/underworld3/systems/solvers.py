@@ -2649,6 +2649,8 @@ class SNES_Stokes(_StressHistoryMixin, _ConstitutiveModelStateMixin, SNES_Stokes
             # exist on UWQuantity; _sympy_ raises on a dimensional quantity.)
             converted_value = []
             for item in value:
+                # a raw pint quantity is taken as a uw.quantity is (UNFILED 35)
+                item = uw.function.quantities.from_raw_pint(item)
                 if isinstance(item, uw.function.quantities.UWQuantity):
                     nd = uw.non_dimensionalise(item)
                     sympified = nd.magnitude if hasattr(nd, "magnitude") else nd

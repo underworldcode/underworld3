@@ -368,6 +368,10 @@ class ExpressionDescriptor:
         # Get or create the expression
         expr = self.__get__(obj, type(obj))
 
+        # A raw pint quantity is taken as a uw.quantity is (UNFILED 35)
+        from ..function.quantities import from_raw_pint
+        value = from_raw_pint(value)
+
         # A bare number for a parameter that declares a dimension, in a model
         # with reference quantities, is ambiguous and is refused (ruling,
         # 2026-11-13). Numbers inside expressions are not affected.
